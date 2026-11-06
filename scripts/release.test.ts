@@ -1,8 +1,9 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+// @vitest-environment node
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { UNSIGNED_WARNING, changelogSection, latestJson, main, releaseNotes } from './release.ts'
+import { UNSIGNED_WARNING, changelogSection, main, releaseNotes } from './release.ts'
 
 const CHANGELOG = `# xcreenshot
 
@@ -50,52 +51,21 @@ describe('releaseNotes', () => {
   })
 })
 
-describe('latestJson', () => {
-  it('points both Mac architectures at the universal build', () => {
-    const json = JSON.parse(
-      latestJson('0.2.0', 'notes', 'https://x/a.tar.gz', 'sig\n', new Date('2026-01-02T03:04:05Z')),
-    )
-    const platform = { signature: 'sig', url: 'https://x/a.tar.gz' }
-    expect(json).toEqual({
-      version: '0.2.0',
-      notes: 'notes',
-      pub_date: '2026-01-02T03:04:05.000Z',
-      platforms: { 'darwin-aarch64': platform, 'darwin-x86_64': platform },
-    })
-  })
-})
-
-function setup() {
-  const dir = mkdtempSync(join(tmpdir(), 'release-'))
-  writeFileSync(join(dir, 'app.sig'), 'SIG')
-  writeFileSync(join(dir, 'CHANGELOG.md'), CHANGELOG)
-  return dir
-}
-
 describe('main', () => {
-  const now = new Date('2026-01-02T00:00:00Z')
+  const dir = mkdtempSync(join(tmpdir(), 'release-'))
+  const changelogPath = join(dir, 'CHANGELOG.md')
+  writeFileSync(changelogPath, CHANGELOG)
 
-  it('writes notes.md and latest.json', () => {
-    const dir = setup()
-    const args = ['0.2.0', 'https://x/a.tar.gz', join(dir, 'app.sig'), dir, '--unsigned']
-    main(args, now, join(dir, 'CHANGELOG.md'))
-    const notes = readFileSync(join(dir, 'notes.md'), 'utf8')
-    expect(notes).toContain(UNSIGNED_WARNING)
-    expect(notes).toContain('Add the editor.')
-    const json = JSON.parse(readFileSync(join(dir, 'latest.json'), 'utf8'))
-    expect(json.notes).toBe('### Minor Changes\n\n- abc123: Add the editor.')
-    expect(json.platforms['darwin-aarch64'].signature).toBe('SIG')
+  it('returns the notes for the version', () => {
+    expect(main(['0.2.0'], changelogPath)).toBe('### Minor Changes\n\n- abc123: Add the editor.\n')
+    expect(main(['0.2.0', '--unsigned'], changelogPath)).toContain(UNSIGNED_WARNING)
   })
 
   it('works without a changelog', () => {
-    const dir = setup()
-    main(['0.1.0', 'https://x/a.tar.gz', join(dir, 'app.sig'), dir], now, join(dir, 'none.md'))
-    expect(readFileSync(join(dir, 'notes.md'), 'utf8')).toBe(
-      'No changelog entry for this version.\n',
-    )
+    expect(main(['0.1.0'], join(dir, 'none.md'))).toBe('No changelog entry for this version.\n')
   })
 
-  it('rejects missing arguments', () => {
-    expect(() => main(['0.1.0'])).toThrow('usage')
+  it('rejects a missing version', () => {
+    expect(() => main([])).toThrow('usage')
   })
 })

@@ -3,12 +3,15 @@ name: Release
 # On every push to main, Changesets keeps a "chore(release): version packages" PR up to date
 # with the pending changes. Merging it bumps package.json (the only version source;
 # tauri.conf.json reads it) and writes CHANGELOG.md.
-# That version bump then triggers build-release.yml, which builds the DMG and drafts the GitHub
-# Release. Publishing the draft creates the tag (docs/releasing.md).
+# Once no changesets are pending and v<version> isn't released yet, the build job makes the
+# universal macOS app and DMG and uploads them to a draft GitHub Release. The maintainer checks
+# the draft and publishes it, which creates the tag (docs/releasing.md).
+# Developer ID signing and notarization switch on when the APPLE_CERTIFICATE secret is set.
 
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 concurrency: release-${{ github.ref }}
 
@@ -19,13 +22,205 @@ permissions:
 jobs:
   version:
     name: Version PR
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    outputs:
+      hasChangesets: ${{ steps.changesets.outputs.hasChangesets }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup
       - uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
+        id: changesets
         with:
           version-script: pnpm changeset version
           commit-message: 'chore(release): version packages'
           pr-title: 'chore(release): version packages'
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  plan:
+    name: Check release
+    needs: version
+    if: >-
+      !cancelled() && (github.event_name == 'workflow_dispatch' ||
+      (needs.version.result == 'success' && needs.version.outputs.hasChangesets == 'false'))
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      build: ${{ steps.plan.outputs.build }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Only release from main
+        if: github.ref != 'refs/heads/main'
+        run: echo "::error::Run this workflow from main, not $GITHUB_REF_NAME"; exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: plan
+        run: |
+          version=$(jq -r .version package.json)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if gh api "repos/$GH_REPO/git/ref/tags/v$version" > /dev/null 2>&1; then
+            echo "v$version is already tagged, nothing to build."; exit 0
+          fi
+          draft=$(gh release view "v$version" --json isDraft --jq .isDraft 2> /dev/null || true)
+          if [ "$draft" = false ]; then
+            echo "v$version is already published, nothing to build."; exit 0
+          fi
+          if [ "$draft" = true ]; then
+            # Rebuild from this commit; a draft has no tag yet, so this deletes only the draft.
+            echo "Deleting the existing v$version draft."
+            gh release delete "v$version" --yes
+          fi
+          echo "build=true" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build and draft v${{ needs.plan.outputs.version }}
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.build == 'true' }}
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      DMG: src-tauri/target/universal-apple-darwin/release/bundle/dmg/xcreenshot_${{ needs.plan.outputs.version }}_universal.dmg
+      APP: src-tauri/target/universal-apple-darwin/release/bundle/macos/xcreenshot.app
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      # secrets.* can't be used in `if`, so this step decides and exports what the build needs.
+      # Values go through GITHUB_ENV only when signing: Tauri treats an empty APPLE_CERTIFICATE
+      # as set.
+      - name: Check secrets
+        id: secrets
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set; updates can't be signed."; exit 1
+          fi
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "::warning::APPLE_CERTIFICATE is not set: unsigned test build, no latest.json."
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            # Ad-hoc signature: without one Gatekeeper calls the downloaded app "damaged".
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          missing=""
+          for name in APPLE_CERTIFICATE_PASSWORD APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_P8; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::APPLE_CERTIFICATE is set but these secrets are missing:$missing"; exit 1
+          fi
+          key_path="$RUNNER_TEMP/AuthKey_$APPLE_API_KEY.p8"
+          printf '%s\n' "$APPLE_API_KEY_P8" > "$key_path"
+          {
+            # The Tauri bundler imports the certificate into a temporary keychain itself.
+            echo "APPLE_CERTIFICATE=$(printf '%s' "$APPLE_CERTIFICATE" | tr -d '\r\n ')"
+            echo "APPLE_CERTIFICATE_PASSWORD=$APPLE_CERTIFICATE_PASSWORD"
+            echo "APPLE_API_KEY=$APPLE_API_KEY"
+            echo "APPLE_API_ISSUER=$APPLE_API_ISSUER"
+            echo "APPLE_API_KEY_PATH=$key_path"
+          } >> "$GITHUB_ENV"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: src-tauri
+          key: release-universal
+
+      - name: Release notes from CHANGELOG.md
+        id: notes
+        env:
+          SIGNED: ${{ steps.secrets.outputs.signed }}
+        run: |
+          flags=()
+          [ "$SIGNED" = true ] || flags+=(--unsigned)
+          {
+            echo 'body<<END_OF_NOTES'
+            node scripts/release.ts "$VERSION" "${flags[@]}"
+            echo 'END_OF_NOTES'
+          } >> "$GITHUB_OUTPUT"
+
+      # Builds, signs and notarizes the app (when signing), signs the updater bundle, then creates
+      # the draft release and uploads the DMG, .app.tar.gz, .sig and (signed builds only) latest.json.
+      # Tauri skips the Finder step that lays out the DMG window when CI=true;
+      # TAURI_BUNDLER_DMG_IGNORE_CI keeps it.
+      - name: Build and upload (custom DMG window)
+        id: build
+        continue-on-error: true
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_BUNDLER_DMG_IGNORE_CI: 'true'
+        with:
+          tauriScript: pnpm tauri
+          args: --target universal-apple-darwin --bundles app,dmg
+          tagName: v__VERSION__
+          releaseName: xcreenshot __VERSION__
+          releaseBody: ${{ steps.notes.outputs.body }}
+          releaseDraft: true
+          uploadUpdaterJson: ${{ steps.secrets.outputs.signed == 'true' }}
+
+      # The Finder layout step can time out on hosted runners. If the app was built but the DMG
+      # wasn't, retry once with the default DMG window. Any other failure stops here.
+      - name: Check build result
+        id: layout
+        if: steps.build.outcome == 'failure'
+        run: |
+          if [ -d "$APP" ] && [ ! -f "$DMG" ]; then
+            echo "::warning::DMG layout step failed; retrying with the default DMG window."
+            echo "retry=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Build failed before or after the DMG step; see the step above."; exit 1
+          fi
+
+      - name: Build and upload (default DMG window)
+        if: steps.layout.outputs.retry == 'true'
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tauriScript: pnpm tauri
+          args: --target universal-apple-darwin --bundles app,dmg
+          tagName: v__VERSION__
+          releaseName: xcreenshot __VERSION__
+          releaseBody: ${{ steps.notes.outputs.body }}
+          releaseDraft: true
+          uploadUpdaterJson: ${{ steps.secrets.outputs.signed == 'true' }}
+
+      - name: Report DMG layout
+        env:
+          RETRIED: ${{ steps.layout.outputs.retry }}
+        run: |
+          if [ "$RETRIED" = true ]; then
+            echo "::notice::DMG uses the default window (the Finder layout step failed)."
+          else
+            echo "::notice::DMG uses the custom window layout."
+          fi
+
+      # Tauri notarizes and staples the .app but not the DMG around it.
+      - name: Notarize and staple the DMG
+        if: steps.secrets.outputs.signed == 'true'
+        run: |
+          xcrun notarytool submit "$DMG" --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait
+          xcrun stapler staple "$DMG"
+          gh release upload "v$VERSION" "$DMG" --clobber
+
+      - name: Remove the API key
+        if: always()
+        run: rm -f "$RUNNER_TEMP"/AuthKey_*.p8
