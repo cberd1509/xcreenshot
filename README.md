@@ -42,7 +42,7 @@ Press a shortcut, drag, annotate, done. Nothing ever leaves your computer.
 
 **macOS** (14 Sonoma or later, Apple Silicon and Intel)
 
-Download the `.dmg` from the [latest release](https://github.com/cberd1509/xcreenshot/releases/latest), open it and drag xcreenshot to Applications. It's signed and notarized by Apple, and it updates itself.
+Download the `.dmg` from the [latest release](https://github.com/cberd1509/xcreenshot/releases/latest), open it and drag xcreenshot to Applications. It's signed and notarized by Apple. It checks for updates and asks before restarting to install one.
 
 **Windows** (10 or later)
 
