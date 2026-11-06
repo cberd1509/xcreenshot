@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest'
-import { vi } from 'vitest'
+import { afterEach, vi } from 'vitest'
 
 // jsdom has no canvas, so no ImageData either.
 class FakeImageData {
@@ -40,3 +40,6 @@ vi.stubGlobal(
     disconnect() {}
   },
 )
+
+// Every test starts with empty storage (scripts run in Node, without any).
+afterEach(() => globalThis.localStorage?.clear())

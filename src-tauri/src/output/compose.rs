@@ -97,7 +97,7 @@ pub fn pixelate(image: &mut RgbaImage, rect: PixelRect) {
     let Some(r) = clamp_rect(rect, w, h) else {
         return;
     };
-    let block = BLOCK.max(r.width.min(r.height) / 8) as usize;
+    let block = block_size(r.width, r.height) as usize;
     let stride = w as usize * 4;
     let pixels: &mut [u8] = image;
     for (by, ey) in spans(r.y as usize, r.height as usize, block) {
@@ -129,6 +129,14 @@ pub fn pixelate(image: &mut RgbaImage, rect: PixelRect) {
             }
         }
     }
+}
+
+/// The block size for a `width × height` px blur: [`BLOCK`], or larger for a large rect.
+///
+/// The overlay's blur preview mirrors this and [`spans`] in `src/overlay/annotate/blocks.ts`,
+/// so it shows the blocks painted here. Keep the two in step (their tests pin the same values).
+pub fn block_size(width: u32, height: u32) -> u32 {
+    BLOCK.max(width.min(height) / 8)
 }
 
 /// `len` px from `start` cut into `block`-sized spans, the last one taking any remainder: at
@@ -286,6 +294,22 @@ mod tests {
         // Even when nudging has to carry over into green.
         let blue = RgbaImage::from_pixel(4, 4, Rgba([0, 0, 255, 255]));
         assert_destroyed(&blue, px(0, 0, 4, 4));
+    }
+
+    // The same values as `src/overlay/annotate/blocks.test.ts`.
+    #[test]
+    fn block_size_grows_with_the_rect() {
+        let sizes = [
+            (1, 1, 16),
+            (10, 300, 16),
+            (200, 120, 16),
+            (256, 256, 32),
+            (800, 400, 50),
+            (3024, 1964, 245),
+        ];
+        for (w, h, block) in sizes {
+            assert_eq!(block_size(w, h), block, "{w}×{h}");
+        }
     }
 
     #[test]

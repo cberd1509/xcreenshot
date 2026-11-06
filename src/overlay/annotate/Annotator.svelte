@@ -5,12 +5,15 @@
   import { Board, exportShapes, loadKonva, type AnnotationExport } from './board'
   import { commit, empty, redo, replace, undo, without, type History, type Shapes } from './history'
   import { toolbarPosition } from './placement'
+  import { recall, remember } from './memory'
   import {
-    DEFAULT_STYLE,
+    FREEHAND,
+    MAX_BLURS,
     READY,
     bounds,
-    clampTo,
+    constrain,
     draw,
+    Freehand,
     keepInside,
     paintedBounds,
     toolForKey,
@@ -44,6 +47,7 @@
     scale,
     options,
     actions: given = {},
+    source = null,
   }: {
     selection: Rect | null
     display: Size
@@ -51,6 +55,8 @@
     scale: Scale
     options: Record<Option, boolean>
     actions?: Partial<ToolbarActions>
+    /** The frozen frame, for the blur preview. */
+    source?: HTMLCanvasElement | null
   } = $props()
 
   const noop = () => {}
@@ -65,10 +71,24 @@
   /** Konva could not load: the tools show as unavailable until a later selection retries. */
   let failed = $state(false)
   let history = $state.raw<History>(empty)
-  let tool = $state<Tool | null>(null)
-  let style = $state(DEFAULT_STYLE)
+  // The last tool, color and size come back on the next capture.
+  const recalled = recall()
+  let tool = $state<Tool | null>(recalled.tool)
+  let style = $state(recalled.style)
+
+  /** Takes up the last tool, color and size, as any overlay window saved them. */
+  function restore() {
+    const r = recall()
+    tool = r.tool
+    style = r.style
+  }
   let selected = $state<string | null>(null)
-  let start: Point | null = null
+  /**
+   * A drag drawing a shape: where it started, where the pointer is, where the shape ends, and
+   * a freehand stroke.
+   */
+  type Stroke = { tool: Tool; start: Point; pointer: Point; end: Point; path: Freehand }
+  let stroke: Stroke | null = null
   let ids = 0
   let bar = $state<Size>({ width: 0, height: 0 })
   let cursor = $state('')
@@ -117,14 +137,19 @@
     loadKonva()
       .then((K) => {
         failed = false
-        board = new Board(K, container, {
-          onchange: (shape) => set(replace(history.present, keepInside(shape, selection!))),
-          onselect: (id) => (selected = id),
-          onedit: (id) => {
-            const shape = history.present.find((s) => s.id === id)
-            if (shape?.kind === 'text') edit(shape)
+        board = new Board(
+          K,
+          container,
+          {
+            onchange: (shape) => set(replace(history.present, keepInside(shape, selection!))),
+            onselect: (id) => (selected = id),
+            onedit: (id) => {
+              const shape = history.present.find((s) => s.id === id)
+              if (shape?.kind === 'text') edit(shape)
+            },
           },
-        })
+          () => source,
+        )
       })
       .catch((e: unknown) => {
         failed = true
@@ -136,6 +161,13 @@
   $effect(() =>
     board?.render(hidden ? without(history.present, hidden) : history.present, selected),
   )
+
+  // Each is kept only when it changes, so this window never writes back another's newer choice.
+  const lastColor = $derived(style.color)
+  const lastSize = $derived(style.size)
+  $effect(() => void (tool && remember('tool', tool)))
+  $effect(() => remember('color', lastColor))
+  $effect(() => remember('size', lastSize))
 
   /** Moves history, dropping the shape selection if that shape is gone. */
   function move(next: History) {
@@ -150,16 +182,26 @@
   /** The box all the shapes paint, or `null` without shapes. */
   export const painted = () => paintedBounds(history.present)
 
-  /** Whether a toolbar menu is open: it owns the keyboard meanwhile. */
+  /** Whether a toolbar menu is open: it owns the plain keys meanwhile. */
   export const menuOpen = () => toolbar?.menuOpen() ?? false
 
-  /** Drops every annotation, the tool and the shape being drawn. Not undoable. */
-  export function reset() {
+  /** Closes an open toolbar menu, as a click outside it would. */
+  export const closeMenus = () => void toolbar?.closeMenus()
+
+  /** Whether text is being typed: every key is the text box's meanwhile, ⌘C and ⌘S included. */
+  export const typingText = () => editing !== null
+
+  /**
+   * Drops every annotation and the shape being drawn, and goes back to the last tool, color
+   * and size used (in any overlay window). Not undoable. `frame` says the frame changed too.
+   */
+  export function reset(frame = false) {
     history = empty
     selected = null
-    tool = null
     editing = null
+    restore()
     cancel()
+    if (frame) board?.newFrame()
   }
 
   /** Opens the editor for a new text with its caret at `p`. */
@@ -223,10 +265,18 @@
   /** The selected shape, if it is a text: the toolbar's options apply to it, not the tool's. */
   const selectedText = $derived(selectedShape?.kind === 'text' ? selectedShape : undefined)
 
-  /** The color and size the toolbar shows: the edited or selected text's color, or the tool's. */
-  const shownStyle = $derived(
-    editing ? editing.style : selectedText ? { ...style, color: selectedText.style.color } : style,
-  )
+  /** The selected shape the color and size apply to: any but a blur, which has neither. */
+  const styled = $derived(selectedShape?.kind === 'blur' ? undefined : selectedShape)
+
+  /**
+   * The color and size the toolbar shows: the edited text's, the selected shape's (only the
+   * color, for text), or the tool's.
+   */
+  const shownStyle = $derived.by((): Style => {
+    if (editing) return editing.style
+    if (styled?.kind === 'text') return { ...style, color: styled.style.color }
+    return styled ? styled.style : style
+  })
 
   /** The text options the toolbar shows: the edited or selected text's, or the tool's. */
   const shownText = $derived.by((): ShownTextOptions | null => {
@@ -254,15 +304,18 @@
     if (editing && fontSize) editing.fontSize = fontSize
   }
 
-  /** A new color or size: for a selected text, its color as one undo step; else the tool's. */
+  /**
+   * A new color or size. The selected shape takes it as one undo step (text only its color),
+   * or the text being typed does; the tool always does too, and remembers it.
+   */
   function setStyle(next: Style) {
-    if (selectedText && !editing) {
+    if (editing) editing.style = next
+    else if (styled) {
       // Only the color shows on text, so a size change leaves no undo step.
-      const color = { ...selectedText.style, color: next.color }
-      return set(replace(history.present, { ...selectedText, style: color }))
+      const restyled = styled.kind === 'text' ? { ...styled.style, color: next.color } : next
+      set(replace(history.present, { ...styled, style: restyled }))
     }
     style = next
-    if (editing) editing.style = next
   }
 
   /** The press that committed the text being edited: it does nothing more. */
@@ -277,8 +330,24 @@
   }
 
   function cancel() {
-    start = null
+    stroke = null
     board?.preview(null)
+  }
+
+  /** Takes the drag on to `e`. Returns whether what it draws changed. */
+  function follow(s: Stroke, e: PointerEvent, sel: Rect): boolean {
+    s.pointer = at(e)
+    const p = constrain(s.tool, s.start, s.pointer, sel, e.shiftKey)
+    if (FREEHAND.has(s.tool)) return s.path.add(p)
+    s.end = p
+    return true
+  }
+
+  /** What the drag draws, or `null`. The preview shares a stroke's points. */
+  function drawn(s: Stroke, id: string, preview = false) {
+    return FREEHAND.has(s.tool)
+      ? s.path.shape(s.tool, id, style, preview)
+      : draw(s.tool, id, s.start, s.end, style)
   }
 
   const at = (e: PointerEvent): Point => ({ x: e.clientX, y: e.clientY })
@@ -286,6 +355,9 @@
   function onpointerdown(e: PointerEvent) {
     // On the layer itself, the press that committed text reaches this handler too.
     if (e === committing) return e.stopPropagation()
+    // A press on the board dismisses an open menu, as a click outside it would: drawing,
+    // moving a shape and pressing the overlay all stop it reaching the menu's own listener.
+    closeMenus()
     if (e.button !== 0 || !selection || !board) return
     // On a shape or its handles: Konva moves or resizes it.
     if (board.hits(at(e))) return e.stopPropagation()
@@ -293,15 +365,17 @@
     // Without a drawing tool, or outside the selection, the press goes on to the overlay.
     if (!drawing || !contains(selection, at(e))) return
     e.stopPropagation()
-    start = at(e)
+    const p = at(e)
+    const path = new Freehand()
+    path.add(p)
+    stroke = { tool: tool!, start: p, pointer: p, end: p, path }
     container.setPointerCapture?.(e.pointerId)
   }
 
   function onpointermove(e: PointerEvent) {
     if (!selection) return
-    if (start && tool) {
-      board?.preview(draw(tool, 'draft', start, clampTo(at(e), selection), style))
-    }
+    // Only the top layer redraws, and a freehand stroke only once the pointer moved enough.
+    if (stroke && follow(stroke, e, selection)) board?.preview(drawn(stroke, 'draft', true))
     // Over the selection: crosshair to draw, else move it. Elsewhere, the overlay's cursor.
     cursor = !contains(selection, at(e))
       ? ''
@@ -313,15 +387,35 @@
   }
 
   function onpointerup(e: PointerEvent) {
-    if (!start || !tool || !selection) return
-    if (tool === 'text') {
-      const p = start
+    if (!stroke || !selection) return
+    if (stroke.tool === 'text') {
+      const p = stroke.start
       cancel()
       return place(p)
     }
-    const shape = draw(tool, `s${++ids}`, start, clampTo(at(e), selection), style)
+    follow(stroke, e, selection)
+    const shape = drawn(stroke, `s${++ids}`)
     cancel()
+    if (shape?.kind === 'blur' && blurs() >= MAX_BLURS) return say(`${MAX_BLURS} blurs at most`)
     if (shape) set([...history.present, shape])
+  }
+
+  const blurs = () => history.present.filter((s) => s.kind === 'blur').length
+
+  /** A short hint, shown for a few seconds. */
+  let hint = $state<string | null>(null)
+  let hintTimer: ReturnType<typeof setTimeout> | undefined
+  function say(message: string) {
+    clearTimeout(hintTimer)
+    hint = message
+    hintTimer = setTimeout(() => (hint = null), 3000)
+  }
+
+  /** Shift pressed or let go mid-drag: snaps or unsnaps the shape without a pointer move. */
+  function onshift(e: KeyboardEvent) {
+    if (e.key !== 'Shift' || !stroke || !selection || FREEHAND.has(stroke.tool)) return
+    stroke.end = constrain(stroke.tool, stroke.start, stroke.pointer, selection, e.shiftKey)
+    board?.preview(drawn(stroke, 'draft'))
   }
 
   const typing = (t: EventTarget | null) =>
@@ -371,11 +465,12 @@
    * overlay handles Esc.
    */
   export function escape(): boolean {
-    if (start) cancel()
+    if (stroke) cancel()
     else if (toolbar?.closeMenus()) return true
     else if (editing) finish()
     else if (selected) selected = null
-    else if (tool) tool = null
+    // Without a selection the tool does nothing, so Esc goes on to close the overlay.
+    else if (tool && selection) tool = null
     else return false
     return true
   }
@@ -393,6 +488,8 @@
   const toolbarAt = $derived(selection && toolbarPosition(selection, bar, display))
 </script>
 
+<svelte:window onkeydown={onshift} onkeyup={onshift} />
+
 <div
   class="layer"
   style:width="{selection ? display.width : 0}px"
@@ -407,6 +504,15 @@
   {onpointerup}
   onpointercancel={cancel}
 ></div>
+
+{#if hint}
+  <div
+    class="pointer-events-none fixed bottom-8 left-1/2 z-1 -translate-x-1/2 rounded-md bg-popover/90 px-3 py-2 text-sm text-popover-foreground shadow-md"
+    role="status"
+  >
+    {hint}
+  </div>
+{/if}
 
 {#if editing && board}
   <TextEditor

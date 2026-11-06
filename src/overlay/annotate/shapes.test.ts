@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_STYLE,
+  HIGHLIGHTER_WIDTH,
+  STEP,
+  constrain,
+  fitTo,
+  Freehand,
+  MAX_BLURS,
+  hueColor,
+  pointBounds,
+  smooth,
+  snapAngle,
+  squareFrom,
   MIN_VISIBLE,
   READY,
   TOOLS,
@@ -22,6 +33,9 @@ import {
 const style = DEFAULT_STYLE
 const rect: Shape = { id: 'r', kind: 'rect', style, x: 10, y: 20, width: 30, height: 40 }
 const arrow: Shape = { id: 'a', kind: 'arrow', style, points: [10, 20, 40, 60] }
+/** Points from flat coordinates. */
+const pts = (...xy: number[]) => xy.flatMap((v, i) => (i % 2 ? [] : [{ x: v, y: xy[i + 1] }]))
+const deg = (p: { x: number; y: number }) => (Math.atan2(p.y, p.x) * 180) / Math.PI
 const blur = (x: number, y: number, width: number, height: number): Shape => ({
   id: 'b',
   kind: 'blur',
@@ -56,8 +70,31 @@ describe('tools', () => {
     expect(toolForKey('Enter')).toBeNull()
   })
 
-  it('draws with rect, arrow and text for now', () => {
-    expect([...READY].toSorted()).toEqual(['arrow', 'rect', 'text'])
+  it('draws with every tool', () => {
+    expect([...READY].toSorted()).toEqual([
+      'arrow',
+      'blur',
+      'ellipse',
+      'highlighter',
+      'line',
+      'pen',
+      'rect',
+      'text',
+    ])
+  })
+})
+
+describe('hueColor', () => {
+  it('gives the fully saturated color at a hue', () => {
+    expect([0, 60, 120, 180, 240, 300, 30].map(hueColor)).toEqual([
+      '#FF0000',
+      '#FFFF00',
+      '#00FF00',
+      '#00FFFF',
+      '#0000FF',
+      '#FF00FF',
+      '#FF8000',
+    ])
   })
 })
 
@@ -97,8 +134,127 @@ describe('draw', () => {
     expect(draw('arrow', 'x', { x: 5, y: 5 }, { x: 5, y: 9 }, style)).not.toBeNull()
   })
 
-  it('draws nothing with a tool that is not ready', () => {
+  it('makes a line and an ellipse', () => {
+    expect(draw('line', 'x', { x: 5, y: 6 }, { x: 50, y: 60 }, style)).toEqual({
+      id: 'x',
+      kind: 'line',
+      style,
+      points: [5, 6, 50, 60],
+    })
+    expect(draw('ellipse', 'x', { x: 50, y: 60 }, { x: 10, y: 20 }, style)).toMatchObject({
+      kind: 'ellipse',
+      x: 10,
+      y: 20,
+      width: 40,
+      height: 40,
+    })
+  })
+
+  it('draws nothing by dragging with a freehand tool or text', () => {
     expect(draw('pen', 'x', { x: 0, y: 0 }, { x: 50, y: 50 }, style)).toBeNull()
+    expect(draw('text', 'x', { x: 0, y: 0 }, { x: 50, y: 50 }, style)).toBeNull()
+  })
+})
+
+/** A stroke through `points`, as drawn. */
+function stroke(points: { x: number; y: number }[]) {
+  const f = new Freehand()
+  for (const p of points) f.add(p)
+  return f
+}
+
+describe('freehand', () => {
+  it('keeps a point only once the pointer has moved far enough', () => {
+    const f = new Freehand()
+    expect(f.add({ x: 10, y: 10 })).toBe(true)
+    expect(f.add({ x: 11, y: 11 })).toBe(false)
+    expect(f.add({ x: 10, y: 10 + STEP })).toBe(true)
+    expect(f.points).toEqual([10, 10, 10, 12])
+  })
+
+  it('smooths as it goes, always matching a smoothing of the whole stroke', () => {
+    const f = new Freehand()
+    const kept: number[] = []
+    for (let i = 0; i < 60; i++) {
+      const p = { x: i * 3 + (i % 4) * 5, y: Math.round(Math.sin(i) * 40) }
+      if (f.add(p)) kept.push(p.x, p.y)
+      expect(f.points).toEqual(smooth(kept))
+    }
+  })
+
+  it('smooths corners and keeps both ends', () => {
+    expect(smooth([0, 0, 8, 0, 8, 8], 1)).toEqual([0, 0, 2, 0, 6, 0, 8, 2, 8, 6, 8, 8])
+    // Two passes by default: 3 points, then 6, then 12.
+    expect(smooth([0, 0, 8, 0, 8, 8])).toHaveLength(24)
+    // Too short to smooth, and never the same array.
+    const two = [0, 0, 5, 5]
+    expect(smooth(two)).toEqual(two)
+    expect(smooth(two)).not.toBe(two)
+  })
+
+  it('never leaves the box of the points drawn through', () => {
+    const raw = [0, 0, 40, 30, 5, 60, 90, 10, 50, 50]
+    const s = smooth(raw)
+    const [b, r] = [pointBounds(s), pointBounds(raw)]
+    expect(b.x).toBeGreaterThanOrEqual(r.x)
+    expect(b.y).toBeGreaterThanOrEqual(r.y)
+    expect(b.x + b.width).toBeLessThanOrEqual(r.x + r.width)
+    expect(b.y + b.height).toBeLessThanOrEqual(r.y + r.height)
+  })
+
+  it('makes a pen or highlighter stroke, smoothed, with its own points or the live ones', () => {
+    const f = stroke(pts(0, 0, 10, 0, 10, 10))
+    const p = f.shape('pen', 'x', style)
+    expect(p).toMatchObject({ id: 'x', kind: 'pen', style })
+    expect(p?.points).toEqual(smooth([0, 0, 10, 0, 10, 10]))
+    expect(p?.points).not.toBe(f.points)
+    expect(f.shape('pen', 'x', style, true)?.points).toBe(f.points)
+    expect(stroke(pts(0, 0, 10, 0)).shape('highlighter', 'x', style)?.kind).toBe('highlighter')
+  })
+
+  it('drops a dot, a single point, and other tools', () => {
+    expect(stroke(pts(0, 0, 2, 2)).shape('pen', 'x', style)).toBeNull()
+    expect(stroke(pts(0, 0)).shape('pen', 'x', style)).toBeNull()
+    expect(stroke([]).shape('pen', 'x', style)).toBeNull()
+    expect(stroke(pts(0, 0, 50, 50)).shape('rect', 'x', style)).toBeNull()
+  })
+})
+
+describe('constrain', () => {
+  const r = { x: 0, y: 0, width: 200, height: 100 }
+  const a = { x: 50, y: 50 }
+
+  it('snaps to 15° steps, keeping the length', () => {
+    expect(snapAngle(a, { x: 90, y: 52 })).toEqual({ x: expect.closeTo(90.05, 2), y: 50 })
+    expect(snapAngle(a, { x: 51, y: 10 })).toEqual({ x: 50, y: expect.closeTo(9.99, 1) })
+    const d = snapAngle({ x: 0, y: 0 }, { x: 10, y: 9 })
+    expect(d.x).toBeCloseTo(d.y)
+    expect(deg(snapAngle({ x: 0, y: 0 }, { x: 100, y: 30 }))).toBeCloseTo(15)
+  })
+
+  it('makes a square on the longer side, in the drag’s direction', () => {
+    expect(squareFrom(a, { x: 60, y: 90 })).toEqual({ x: 90, y: 90 })
+    expect(squareFrom(a, { x: 20, y: 45 })).toEqual({ x: 20, y: 20 })
+    // A flat drag still goes somewhere.
+    expect(squareFrom(a, { x: 50, y: 10 })).toEqual({ x: 90, y: 10 })
+  })
+
+  it('pulls a point back along the drag into the rect', () => {
+    expect(fitTo(a, { x: 150, y: 150 }, r)).toEqual({ x: 100, y: 100 })
+    expect(fitTo(a, { x: -50, y: 50 }, r)).toEqual({ x: 0, y: 50 })
+    expect(fitTo(a, { x: 60, y: 60 }, r)).toEqual({ x: 60, y: 60 })
+    expect(fitTo(a, a, r)).toEqual(a)
+  })
+
+  it('clamps without Shift, and snaps or squares with it', () => {
+    expect(constrain('line', a, { x: 300, y: 52 }, r, false)).toEqual({ x: 200, y: 52 })
+    expect(constrain('line', a, { x: 90, y: 52 }, r, true).y).toBe(50)
+    expect(constrain('arrow', a, { x: 300, y: 52 }, r, true)).toEqual({ x: 200, y: 50 })
+    // A square that would leave the rect shrinks, still square.
+    expect(constrain('rect', a, { x: 160, y: 70 }, r, true)).toEqual({ x: 100, y: 100 })
+    expect(constrain('ellipse', a, { x: 70, y: 60 }, r, true)).toEqual({ x: 70, y: 70 })
+    expect(constrain('blur', a, { x: 70, y: 60 }, r, true)).toEqual({ x: 70, y: 70 })
+    expect(constrain('pen', a, { x: 300, y: 60 }, r, true)).toEqual({ x: 200, y: 60 })
   })
 })
 
@@ -137,6 +293,31 @@ describe('geometry', () => {
   it('keeps the id and style', () => {
     const t = { x: 0, y: 0, scaleX: 1, scaleY: 1 }
     expect(transform(rect, t)).toMatchObject({ id: 'r', style })
+  })
+
+  it('moves and resizes every point of a path', () => {
+    const pen: Shape = { id: 'p', kind: 'pen', style, points: [10, 20, 20, 30, 40, 10] }
+    expect(origin(pen)).toEqual({ x: 10, y: 20 })
+    expect(translate(pen, 5, -5)).toMatchObject({ points: [15, 15, 25, 25, 45, 5] })
+    expect(transform(pen, { x: 0, y: 0, scaleX: 2, scaleY: -1 })).toMatchObject({
+      points: [0, 0, 20, -10, 60, 10],
+    })
+    expect(bounds(pen)).toEqual({ x: 10, y: 10, width: 30, height: 20 })
+  })
+
+  it('boxes what an ellipse, a line and a highlighter paint', () => {
+    expect(paintBounds({ ...rect, kind: 'ellipse' })).toEqual(paintBounds(rect))
+    const line: Shape = { id: 'l', kind: 'line', style, points: [10, 20, 40, 20] }
+    expect(paintBounds(line)).toEqual({ x: 6, y: 16, width: 38, height: 8 })
+    // A highlighter is wider: half its width on each side.
+    const hl: Shape = { ...line, kind: 'highlighter', points: [10, 20, 40, 20] }
+    const half = (style.size * HIGHLIGHTER_WIDTH) / 2
+    expect(paintBounds(hl)).toEqual({
+      x: 10 - half,
+      y: 20 - half,
+      width: 30 + 2 * half,
+      height: 2 * half,
+    })
   })
 
   it('boxes a shape, with and without its stroke', () => {
@@ -211,6 +392,16 @@ describe('keepInside', () => {
 describe('blurRects', () => {
   const crop = { x: 0, y: 0, width: 100, height: 100 }
   const one = { x: 1, y: 1 }
+
+  it('never sends Rust more than it takes: the last rect covers the rest', () => {
+    const many = Array.from({ length: MAX_BLURS + 2 }, (_, i) => blur(i % 90, 0, 2, 2 + (i % 5)))
+    const out = blurRects(many, crop, one)
+    expect(out).toHaveLength(MAX_BLURS)
+    expect(out.slice(0, -1)).toEqual(blurRects(many.slice(0, MAX_BLURS - 1), crop, one))
+    // The last three, at x 75, 76 and 77, in one.
+    expect(out.at(-1)).toEqual({ x: 75, y: 0, width: 4, height: 4 })
+    expect(blurRects(many.slice(0, MAX_BLURS), crop, one)).toHaveLength(MAX_BLURS)
+  })
 
   it('uses each axis’s own scale', () => {
     expect(blurRects([blur(10, 10, 10, 10)], crop, { x: 2, y: 1.5 })).toEqual([

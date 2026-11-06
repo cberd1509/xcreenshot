@@ -2,8 +2,9 @@ import type Konva from 'konva'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fakeContext } from '../../test/canvas'
 import { FakeKonva, stages, type FakeNode } from '../../test/konva'
-import { Board, attrs, exportShapes, loadKonva, once, textAttrs } from './board'
-import { DEFAULT_STYLE, type Shape } from './shapes'
+import type { Rect } from '../geometry'
+import { Board, attrs, exportShapes, loadKonva, once, shrink, textAttrs } from './board'
+import { DEFAULT_STYLE, HIGHLIGHTER_WIDTH, type Shape } from './shapes'
 
 const style = DEFAULT_STYLE
 const rect: Shape = { id: 'r', kind: 'rect', style, x: 110, y: 120, width: 30, height: 40 }
@@ -22,15 +23,26 @@ const text = {
   background: false,
 } satisfies Shape
 
-function setup() {
+/** A frame canvas of `width × height` px. */
+function canvas(width: number, height: number) {
+  const c = document.createElement('canvas')
+  c.width = width
+  c.height = height
+  return c
+}
+
+const blocksOf = (n: FakeNode) => n.attrs.blocks as (Rect & { color: string })[]
+
+function setup(source?: HTMLCanvasElement | null) {
   const onchange = vi.fn<(s: Shape) => void>()
   const onselect = vi.fn<(id: string) => void>()
   const onedit = vi.fn<(id: string) => void>()
-  const board = new Board(FakeKonva as unknown as typeof Konva, document.createElement('div'), {
-    onchange,
-    onselect,
-    onedit,
-  })
+  const board = new Board(
+    FakeKonva as unknown as typeof Konva,
+    document.createElement('div'),
+    { onchange, onselect, onedit },
+    source === undefined ? undefined : () => source,
+  )
   const stage = stages.at(-1)! as FakeNode & { hit: FakeNode | null; asked: unknown }
   const [layer, top] = stage.children as [
     FakeNode & { draws: number },
@@ -83,6 +95,97 @@ describe('text attrs', () => {
     expect(
       textAttrs({ ...text, style: { ...style, color: '#000000' }, background: true }).label.fill,
     ).toBe('#FFFFFF')
+  })
+})
+
+describe('attrs for the other tools', () => {
+  const line: Shape = { id: 'l', kind: 'line', style, points: [10, 20, 40, 60] }
+
+  it('draws a line and a pen stroke from their first point', () => {
+    expect(attrs(line)).toMatchObject({ x: 10, y: 20, points: [0, 0, 30, 40], lineCap: 'round' })
+    const pen: Shape = { ...line, kind: 'pen', points: [10, 20, 15, 22, 30, 10] }
+    expect(attrs(pen)).toMatchObject({ points: [0, 0, 5, 2, 20, -10], strokeWidth: style.size })
+    expect(attrs(pen).opacity).toBeUndefined()
+  })
+
+  it('draws a highlighter wide, see-through and with flat ends', () => {
+    const hl: Shape = { ...line, kind: 'highlighter', points: [10, 20, 40, 20] }
+    expect(attrs(hl)).toMatchObject({
+      strokeWidth: style.size * HIGHLIGHTER_WIDTH,
+      lineCap: 'butt',
+      opacity: 0.4,
+    })
+  })
+
+  it('draws an ellipse in its box, its node at the corner', () => {
+    const e: Shape = { ...rect, kind: 'ellipse' }
+    expect(attrs(e)).toMatchObject({
+      x: 110,
+      y: 120,
+      radiusX: 15,
+      radiusY: 20,
+      offsetX: -15,
+      offsetY: -20,
+    })
+  })
+})
+
+describe('shrink', () => {
+  it('shrinks the frame by a block on each side, halving step by step', () => {
+    const context = fakeContext()
+    const small = shrink(canvas(3024, 1964))!
+    expect(small).toMatchObject({ width: 189, height: 123 })
+    expect(small.factor).toEqual({ x: 3024 / 189, y: 1964 / 123 })
+    expect(small.data).toHaveLength(189 * 123 * 4)
+    // 16 is four halvings.
+    expect(context.drawImage).toHaveBeenCalledTimes(4)
+    expect(context.drawImage).toHaveBeenLastCalledWith(expect.anything(), 0, 0, 189, 123)
+  })
+
+  it('gives nothing without a frame or a 2D context', () => {
+    fakeContext()
+    expect(shrink(canvas(0, 0))).toBeNull()
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null)
+    expect(shrink(canvas(64, 64))).toBeNull()
+  })
+})
+
+describe('drawing a blur', () => {
+  it('fills its blocks, then outlines the box', () => {
+    const calls: unknown[][] = []
+    const spy =
+      (name: string) =>
+      (...args: unknown[]) =>
+        void calls.push([name, ...args])
+    const context = Object.fromEntries(
+      ['setAttr', 'fillRect', 'beginPath', 'rect', 'closePath', 'fillStrokeShape'].map((n) => [
+        n,
+        spy(n),
+      ]),
+    )
+    const shape = {
+      getAttr: () => [{ x: 0, y: 0, width: 8, height: 8, color: 'rgb(1, 2, 3)' }],
+      width: () => 10,
+      height: () => 5,
+    }
+    const a = attrs(blur) as {
+      sceneFunc: (c: unknown, s: unknown) => void
+      hitFunc: (c: unknown, s: unknown) => void
+    }
+    a.sceneFunc(context, shape)
+    expect(calls.map((c) => c[0])).toEqual([
+      'setAttr',
+      'fillRect',
+      'beginPath',
+      'rect',
+      'closePath',
+      'fillStrokeShape',
+    ])
+    expect(calls[0]).toEqual(['setAttr', 'fillStyle', 'rgb(1, 2, 3)'])
+    expect(calls[3]).toEqual(['rect', 0, 0, 10, 5])
+    calls.length = 0
+    a.hitFunc(context, shape)
+    expect(calls.map((c) => c[0])).toEqual(['beginPath', 'rect', 'closePath', 'fillStrokeShape'])
   })
 })
 
@@ -179,6 +282,182 @@ describe('Board', () => {
     // Only the top layer redraws while drawing.
     expect(layer.draws).toBe(0)
     expect(top.draws).toBe(5)
+  })
+
+  it('makes a node of the right kind for each shape', () => {
+    const { board, shapes } = setup()
+    const line: Shape = { id: 'l', kind: 'line', style, points: [1, 2, 30, 40] }
+    board.render(
+      [
+        line,
+        { ...line, id: 'p', kind: 'pen' },
+        { ...line, id: 'h', kind: 'highlighter' },
+        { ...rect, id: 'e', kind: 'ellipse' },
+      ],
+      null,
+    )
+    expect(shapes().map((n) => n.className)).toEqual(['Line', 'Line', 'Line', 'Ellipse'])
+  })
+
+  describe('blur', () => {
+    // 2x: the selection is (200, 200) to (1000, 800) on a 2000 × 1400 frame.
+    const display = { width: 1000, height: 700 }
+    const sel = { x: 100, y: 100, width: 400, height: 300 }
+    const wide: Shape = { ...blur, x: 150, y: 150, width: 100, height: 60 }
+
+    function placed() {
+      const context = fakeContext([10, 20, 30, 255])
+      const s = setup(canvas(2000, 1400))
+      s.board.place(sel, display)
+      return { ...s, context }
+    }
+
+    it('shows the blocks Rust will paint, from the blur’s corner, under the other shapes', () => {
+      const { board, shapes } = placed()
+      board.render([rect, wide], null)
+      expect(shapes().map((n) => n.className)).toEqual(['Shape', 'Rect'])
+      const node = shapes()[0]
+      expect(node.attrs).toMatchObject({
+        x: 150,
+        y: 150,
+        width: 100,
+        height: 60,
+        fill: 'transparent',
+      })
+      // 200 × 120 frame px: 16 px blocks, 12 across and 7 down, the last row 24 px tall.
+      const b = blocksOf(node)
+      expect(b).toHaveLength(12 * 7)
+      expect(b[0]).toEqual({ x: 0, y: 0, width: 8, height: 8, color: 'rgb(10, 20, 30)' })
+      expect(b.at(-1)).toMatchObject({ x: 88, y: 48, width: 12, height: 12 })
+    })
+
+    it('grows the blocks with the blur and clips it to the selection, as Rust does', () => {
+      const { board, shapes } = placed()
+      board.render([{ ...wide, x: 150, y: 100, width: 200, height: 200 }], null)
+      // 400 × 400 frame px: 50 px blocks.
+      expect(blocksOf(shapes()[0])[0]).toMatchObject({ width: 25, height: 25 })
+      // Half out of the selection: blocks start where it does, at x = 1000 - 100 frame px.
+      board.render([{ ...wide, x: 450 }], null)
+      const b = blocksOf(shapes()[0])
+      expect(b[0]).toMatchObject({ x: 0, width: 8 })
+      expect(b.filter((k) => k.y === 0).map((k) => k.width)).toEqual([8, 8, 8, 8, 8, 10])
+      // All out: no blocks.
+      board.render([{ ...wide, x: 600 }], null)
+      expect(blocksOf(shapes()[0])).toEqual([])
+    })
+
+    it('lines the blocks up again when the selection moves', () => {
+      const { board, shapes } = placed()
+      board.render([{ ...wide, x: 450 }], null)
+      board.place({ ...sel, width: 450 }, display)
+      expect(blocksOf(shapes()[0]).filter((k) => k.y === 0)).toHaveLength(12)
+      // No selection keeps the last one.
+      board.place(null, display)
+      expect(blocksOf(shapes()[0]).filter((k) => k.y === 0)).toHaveLength(12)
+    })
+
+    it('follows what is under it while it is dragged or resized', () => {
+      const { board, shapes, onchange } = placed()
+      board.render([wide], null)
+      const node = shapes()[0]
+      node.setAttrs({ x: 160 })
+      node.fire('dragmove')
+      expect(blocksOf(node)[0]).toMatchObject({ x: 0, width: 8 })
+      // Resized 2x on x: 400 frame px across, still 16 px blocks, in the node's own px.
+      node.setAttrs({ scaleX: 2 })
+      node.fire('transform')
+      expect(blocksOf(node)).toHaveLength(25 * 7)
+      expect(blocksOf(node)[0]).toMatchObject({ x: 0, width: 4 })
+      expect(onchange).not.toHaveBeenCalled()
+      node.fire('transformend')
+      expect(onchange).toHaveBeenCalledWith({ ...wide, x: 160, width: 200 })
+      // A removed node has nothing to follow.
+      board.render([], null)
+      node.fire('dragmove')
+    })
+
+    it('previews the blur being drawn the same way', () => {
+      const { board, drafts } = placed()
+      board.preview(wide)
+      expect(blocksOf(drafts()[0])).toHaveLength(12 * 7)
+    })
+
+    /** A frame whose shrunk px (x, y) is (x, 0, 0), so colors tell where they came from. */
+    function gradient() {
+      const context = fakeContext()
+      context.getImageData.mockImplementation((_x, _y, w = 1, h = 1) => {
+        const data = new Uint8ClampedArray(w * h * 4)
+        for (let i = 0; i < w * h; i++) data.set([i % w, 0, 0, 255], i * 4)
+        return { data }
+      })
+      const s = setup(canvas(2000, 1400))
+      s.board.place(sel, display)
+      return s
+    }
+
+    it('averages a blur over an earlier one from its blocks, in model order, as Rust does', () => {
+      const { board, shapes, drafts } = gradient()
+      // One 31 px block over frame px 400 to 431, shrunk px 25 and 26: their average, 26.
+      const first: Shape = { ...blur, id: 'b1', x: 200, y: 200, width: 15.5, height: 8 }
+      const later: Shape = { ...blur, id: 'b2', x: 200, y: 200, width: 8, height: 8 }
+      board.render([first], null)
+      expect(blocksOf(shapes()[0])[0].color).toBe('rgb(26, 0, 0)')
+      board.render([first, later], null)
+      // Over the first, the later one's px 25 is the first's color, not 25.
+      expect(blocksOf(shapes()[1])[0].color).toBe('rgb(26, 0, 0)')
+      // The other way round, the later one is over nothing.
+      board.render([later, first], null)
+      expect(blocksOf(shapes()[0])[0].color).toBe('rgb(25, 0, 0)')
+      // The blur being drawn comes after all of them.
+      board.preview({ ...later, id: 'draft' })
+      expect(blocksOf(drafts()[0])[0].color).toBe('rgb(26, 0, 0)')
+    })
+
+    it('starts blocks where the crop cuts a blur, off any 16 px grid', () => {
+      const { board, shapes } = gradient()
+      // The crop starts at frame px 201; the blur at 180 is cut there.
+      board.place({ ...sel, x: 100.5 }, display)
+      board.render([{ ...wide, x: 90 }], null)
+      expect(blocksOf(shapes()[0])[0]).toMatchObject({ x: 10.5, width: 8 })
+    })
+
+    it('shows grey boxes with no frame, and keeps the blocks when a change is not kept', () => {
+      const { board, shapes } = placed()
+      board.render([wide], null)
+      const node = shapes()[0]
+      node.fire('dragend')
+      expect(blocksOf(node)).toHaveLength(12 * 7)
+    })
+
+    it('makes the shrunk frame once per frame', () => {
+      const { board, context } = placed()
+      board.render([wide], null)
+      const made = context.getImageData.mock.calls.length
+      board.render([{ ...wide, x: 160 }], null)
+      expect(context.getImageData).toHaveBeenCalledTimes(made)
+      board.newFrame()
+      board.render([{ ...wide, x: 170 }], null)
+      expect(context.getImageData.mock.calls.length).toBeGreaterThan(made)
+    })
+
+    it('is a grey box until there is a frame', () => {
+      fakeContext()
+      const frame = canvas(0, 0)
+      const { board, shapes } = setup(frame)
+      board.place(sel, display)
+      board.render([wide], null)
+      expect(shapes()[0].attrs).toMatchObject({ blocks: [], fill: expect.stringMatching(/^rgba/) })
+      // Nor before the display is known, or without a source.
+      frame.width = 2000
+      frame.height = 1400
+      const early = setup(frame)
+      early.board.render([wide], null)
+      expect(early.shapes()[0].attrs.blocks).toEqual([])
+      const none = setup()
+      none.board.place(sel, display)
+      none.board.render([wide], null)
+      expect(none.shapes()[0].attrs.blocks).toEqual([])
+    })
   })
 
   it('attaches the resize handles to the selected shape', () => {

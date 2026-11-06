@@ -8,6 +8,8 @@ logic.
 | `shapes.ts`        | Shape model, tools and their shortcuts, drawing and transform math  |
 | `text.ts`          | Text sizes, font, padding and colors                                |
 | `history.ts`       | Undo and redo as snapshots of the shape list (last 200)             |
+| `memory.ts`        | The last tool, color and size, in localStorage                      |
+| `blocks.ts`        | The blur preview's blocks, as Rust paints them                      |
 | `placement.ts`     | Where the toolbar goes                                              |
 | `board.ts`         | The Konva stage, and `exportShapes`                                 |
 | `Annotator.svelte` | Pointer input, history, the toolbar, and the API the overlay calls |
@@ -22,13 +24,47 @@ relative to the display**, the same space as the selection. Shapes stay on the s
 the frozen frame when the selection moves or resizes; the selection only clips what is shown and
 exported. A shape dragged out of the selection is pulled back until 8 px of it shows.
 
-- `rect` and `blur`: `x`, `y`, `width`, `height`
-- `arrow`: `points: [x1, y1, x2, y2]`, head at the end
+- `rect`, `ellipse` (inside the box) and `blur`: `x`, `y`, `width`, `height`
+- `line` and `arrow`: `points: [x1, y1, x2, y2]`, an arrow's head at the end
+- `pen` and `highlighter`: `points: [x1, y1, x2, y2, …]`, freehand
 - `text`: `x`, `y`, `width`, `height` (its box, measured by Konva), `text`, `fontSize` and
   `background`. Font sizes are logical px (S 16, M 24, L 36), so they look the same on any
   display. Resizing scales the font; the box is measured again.
 
-The other tools (#14–#16) add kinds here.
+## Tools
+
+- **Pen** keeps a point once the pointer has moved 2 px, and smooths the stroke with two passes
+  of Chaikin corner cutting (`smooth`). `Freehand` smooths as points come, redoing only the
+  segments a new point touches. Smoothing never leaves the box of the points, so the painted
+  box stays exact.
+- **Highlighter** is a pen 4× as wide, at 40% opacity, with flat ends. It draws the same way on
+  screen and in the export (straight-alpha source-over), so text under it stays readable.
+- **Shift** (`constrain`): lines and arrows snap to 15° steps; rects, ellipses and blurs become
+  squares and circles. The end is pulled back along the drag to stay in the selection, so the
+  shape keeps its angle or stays square. Pressing or letting go of Shift mid-drag updates the
+  shape without a pointer move.
+- **Blur** shows the blocks Rust will paint: the same block size, from the corner of the part
+  of the blur inside the selection (`blocks.ts` mirrors `block_size` and `spans` in
+  `output/compose.rs`; their tests pin the same values). Each block is the average color of
+  the frame under it, read from a copy shrunk 16× per side (halved step by step, so every
+  pixel counts), made on the first blur after each new frame. Blurs are worked out in model
+  order over one copy of it, each painting its blocks, so a blur over another averages its
+  blocks as in Rust; the blur being drawn comes last. The preview is only for the screen: the
+  export is Rust's pixelation (below). Blurs always sit under the other shapes, because Rust
+  pixelates the frame before it draws them. There can be at most 256 (Rust's `MAX_BLURS`): the
+  tool says so and adds no more, and `blurRects` never sends more.
+
+The color popover has preset colors, a hue slider for a custom color (in the page: the system
+color panel would open under the overlay) and three sizes. With a shape selected, a new color
+or size restyles it as one undo step (text takes only the color; a blur has neither); the tool
+takes it too. The last tool (Text included), color and size are kept in localStorage
+(`memory.ts`), each on its own, so a window that changes one never overwrites another window's
+newer choice of the others. They come back on the next capture, and are overlay state, not
+settings.
+
+Only the top layer redraws while drawing, and a pen stroke only when it gains a point. Drawing
+a 5000-point stroke smooths it in about 3 ms in all (smoothing it whole on every point took
+about 630 ms).
 
 ## Layers and input
 
@@ -41,14 +77,18 @@ layer, unclipped, so handles at the selection's edge stay reachable, and drawing
 that layer. Presses the annotations don't use (outside the selection, or with no tool) go on to
 the overlay. The overlay focuses its window on every press, in the capture phase.
 
-The overlay owns the keyboard. An open toolbar menu owns it in turn (`menuOpen()`); otherwise
-the overlay asks the annotator first:
+The overlay owns the keyboard. Copy and Save (⌘C / ⌘S, Ctrl elsewhere) always work: they close
+an open toolbar menu (`closeMenus()`) first, unless text is being typed (`typingText()`), when
+they are the text box's. An open toolbar menu owns the other keys (`menuOpen()`); otherwise the
+overlay asks the annotator first. A press on the board closes an open menu too, so drawing
+dismisses it like a click outside:
 
 - `key(e)` handles undo and redo (⌘Z / ⇧⌘Z on macOS, Ctrl elsewhere), Delete/Backspace and arrow
   keys on the selected shape, and the tool letters. It returns whether it handled the key.
 - Esc undoes one thing per press: the size edit, then `escape()` (the shape being drawn, an open
   menu, the text being edited, the selected shape, the tool), then the selection, then the
-  overlay closes.
+  overlay closes. The tool counts only while there is a selection: each capture starts with the
+  last tool, and Esc with no selection closes the overlay.
 
 While there are annotations (`annotated()`), a press outside the selection is ignored rather than
 starting a new selection, and a resize cannot shrink the selection past what the shapes paint
