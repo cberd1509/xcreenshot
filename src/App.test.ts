@@ -154,14 +154,18 @@ const line = () => screen.queryByText('Allow xcreenshot in System Settings › L
 describe('Login item approval', () => {
   let needs: boolean | Error
   let opened: number
+  /** Calls to login_item_needs_approval. */
+  let checks: number
 
   beforeEach(() => {
     needs = true
     opened = 0
+    checks = 0
     resetSettings()
     Object.assign(settings, { ...fallbackSettings(), shortcut: SHORTCUT })
     mockIPC((cmd, args) => {
       if (cmd === 'login_item_needs_approval') {
+        checks++
         if (needs instanceof Error) throw needs
         return needs
       }
@@ -199,6 +203,9 @@ describe('Login item approval', () => {
     await tick()
     expect(settings.openAtLogin).toBe(false)
     expect(line()).toBeNull()
+    const before = checks
+    await fireEvent.focus(window)
+    expect(checks).toBe(before)
     await userEvent.click(screen.getByRole('switch', { name: 'Open at login' }))
     await tick()
     expect(line()).toBeInTheDocument()
@@ -224,5 +231,22 @@ describe('Login item approval', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Open System Settings' }))
     await tick()
     expect(error).toHaveBeenCalledWith('open_login_items failed', expect.any(Error))
+  })
+
+  it('ignores an older check that answers last', async () => {
+    const answers: ((needs: boolean) => void)[] = []
+    mockIPC((cmd) => {
+      if (cmd === 'login_item_needs_approval')
+        return new Promise<boolean>((resolve) => answers.push(resolve))
+    })
+    render(App)
+    await tick()
+    await fireEvent.focus(window)
+    expect(answers).toHaveLength(2)
+    answers[1](false)
+    await tick()
+    answers[0](true)
+    await tick()
+    expect(line()).toBeNull()
   })
 })

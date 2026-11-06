@@ -1,7 +1,6 @@
 <script lang="ts">
   import { getVersion } from '@tauri-apps/api/app'
   import { invoke } from '@tauri-apps/api/core'
-  import { onMount } from 'svelte'
   import { Button } from '$lib/components/ui/button'
   import { Separator } from '$lib/components/ui/separator'
   import { Switch } from '$lib/components/ui/switch'
@@ -62,19 +61,24 @@
       .catch((e: unknown) => {
         failed = { key, message: typeof e === 'string' ? e : "Couldn't save the settings." }
       })
-      .finally(() => {
-        saving[key] = false
-        if (key === 'openAtLogin') checkLoginItem()
-      })
+      .finally(() => (saving[key] = false))
   }
 
   /** The login item waits for the user to allow it in System Settings (macOS). */
   let needsApproval = $state(false)
 
-  /** Checks on load, after the switch changes and when the window comes back into focus. */
+  /** Checks started; only the latest one's answer counts. */
+  let checks = 0
+
+  /** Checks while Open at login is on: when it turns on and when the window gets focus. */
   function checkLoginItem() {
+    if (!settings.openAtLogin) return
+    // A focus check can overlap the effect's; only the latest one counts.
+    const check = ++checks
     invoke<boolean>('login_item_needs_approval')
-      .then((needs) => (needsApproval = needs === true))
+      .then((needs) => {
+        if (check === checks) needsApproval = needs
+      })
       .catch((e: unknown) => console.error('login_item_needs_approval failed', e))
   }
 
@@ -82,7 +86,7 @@
     invoke('open_login_items').catch((e: unknown) => console.error('open_login_items failed', e))
   }
 
-  onMount(checkLoginItem)
+  $effect(checkLoginItem)
 
   let active = $state('shortcuts')
   const version = getVersion().catch(() => '')

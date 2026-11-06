@@ -11,8 +11,6 @@
 mod macos;
 
 use crate::prefs::Prefs;
-use std::io;
-use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager, Runtime};
 
 pub const FAILED: &str = "Couldn't change the login item.";
@@ -24,6 +22,7 @@ pub use macos::MainApp as System;
 pub use tauri_plugin_autostart::AutoLaunchManager as System;
 
 /// The state of the login item, as `SMAppService.Status` reports it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     Enabled,
@@ -34,17 +33,6 @@ pub enum Status {
 }
 
 impl Status {
-    /// From `SMAppServiceStatus`. An unknown value counts as [`Status::NotFound`].
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    pub fn from_raw(raw: isize) -> Self {
-        match raw {
-            0 => Self::NotRegistered,
-            1 => Self::Enabled,
-            2 => Self::RequiresApproval,
-            _ => Self::NotFound,
-        }
-    }
-
     /// Registered, whether or not the user has allowed it yet.
     fn is_on(self) -> bool {
         matches!(self, Self::Enabled | Self::RequiresApproval)
@@ -84,51 +72,23 @@ pub fn item<R: Runtime>(app: &AppHandle<R>) -> Option<tauri::State<'_, System>> 
     app.try_state::<System>()
 }
 
-/// The LaunchAgent tauri-plugin-autostart wrote, under `home`.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn launch_agent(home: &Path) -> PathBuf {
-    home.join("Library/LaunchAgents/xcreenshot.plist")
-}
-
-/// Deletes `path` if it is there, as the plugin's own `disable` did. It isn't unloaded with
-/// `launchctl bootout`: when launched at login, xcreenshot runs as that job, so unloading it
-/// would quit the app. Without its file, launchd doesn't load it at the next login.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn remove_file(path: &Path) -> Result<bool, String> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(true),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(format!("{}: {e}", path.display())),
-    }
-}
-
 /// Turns the login item on or off for the user's choice and remembers that it was added. A
 /// failure where the item already is as asked (unregistering one that isn't registered, or
 /// registering one that waits for approval) still counts as done.
 pub fn set(item: Option<&impl LoginItem>, prefs: &mut Prefs, on: bool) -> Result<(), &'static str> {
     if let Some(item) = item {
         if let Err(e) = item.set_enabled(on) {
+            let state = if on { "on" } else { "off" };
             if item.status().map(Status::is_on) != Ok(on) {
-                log::error!(
-                    "could not turn {} the login item: {e}",
-                    if on { "on" } else { "off" }
-                );
+                log::error!("could not turn {state} the login item: {e}");
                 return Err(FAILED);
             }
-            log::info!(
-                "the login item is already {}: {e}",
-                if on { "on" } else { "off" }
-            );
+            log::info!("the login item is already {state}: {e}");
         }
         prefs.login_item_added |= on;
     }
     prefs.open_at_login = on;
     Ok(())
-}
-
-/// Whether the login item waits for the user to allow it in System Settings.
-pub fn needs_approval(item: &impl LoginItem) -> bool {
-    item.status() == Ok(Status::RequiresApproval)
 }
 
 /// Removes the old LaunchAgent, once. If it was there, it was the login item the app added, so
@@ -187,7 +147,9 @@ pub fn sync(item: &impl LoginItem, prefs: &mut Prefs) -> Option<bool> {
 /// Whether Settings should ask the user to allow the login item in System Settings.
 #[tauri::command]
 pub async fn login_item_needs_approval<R: Runtime>(app: AppHandle<R>) -> bool {
-    item(&app).is_some_and(|item| needs_approval(&*item))
+    // Only SMAppService asks for approval: on Windows this would just read the registry.
+    cfg!(target_os = "macos")
+        && item(&app).is_some_and(|item| item.status() == Ok(Status::RequiresApproval))
 }
 
 /// Opens System Settings › General › Login Items.
@@ -274,16 +236,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn status_follows_smappservice() {
-        let all = [NotRegistered, Enabled, RequiresApproval, NotFound];
-        for (raw, status) in (0..).zip(all) {
-            assert_eq!(Status::from_raw(raw), status);
-        }
-        assert_eq!(Status::from_raw(7), NotFound);
-        assert_eq!(Status::from_raw(-1), NotFound);
-    }
-
-    #[test]
     fn first_run_adds_the_login_item() {
         let (item, mut p) = (item(NotRegistered), prefs(true, false));
         assert_eq!(sync(&item, &mut p), Some(true));
@@ -319,13 +271,6 @@ pub(crate) mod tests {
             "left for the user"
         );
         assert_eq!(p, prefs(true, true));
-        assert!(needs_approval(&item));
-        assert!(!needs_approval(&self::item(Enabled)));
-        let broken = FakeItem {
-            broken: true,
-            ..FakeItem::default()
-        };
-        assert!(!needs_approval(&broken));
     }
 
     #[test]
@@ -479,21 +424,6 @@ pub(crate) mod tests {
         let mut p = prefs(false, false);
         set(None::<&FakeItem>, &mut p, true).unwrap();
         assert_eq!(p, prefs(true, false));
-    }
-
-    #[test]
-    fn the_old_launch_agent_file_is_deleted_if_there() {
-        let home = tempfile::tempdir().unwrap();
-        let path = launch_agent(home.path());
-        assert!(path.ends_with("Library/LaunchAgents/xcreenshot.plist"));
-        assert_eq!(remove_file(&path), Ok(false));
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "<plist/>").unwrap();
-        assert_eq!(remove_file(&path), Ok(true));
-        assert!(!path.exists());
-        // A folder in its place can't be removed as a file.
-        std::fs::create_dir(&path).unwrap();
-        assert!(remove_file(&path).unwrap_err().contains("xcreenshot.plist"));
     }
 
     fn app_with_login_item() -> tauri::App<tauri::test::MockRuntime> {
