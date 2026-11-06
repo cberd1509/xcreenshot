@@ -3,8 +3,8 @@
 // Usage: pnpm readme-media
 // Needs ffmpeg on PATH and Playwright's Chromium (`pnpm exec playwright install chromium`).
 // Writes docs/media/overlay.png, docs/media/settings.png and docs/media/demo.gif, plus the
-// landing page's site/public/demo.mp4, demo-poster.jpg and og.jpg, all at once when every step
-// worked. One run at a time.
+// landing page's site/public/demo.mp4, demo-poster.jpg, og.jpg and settings-window.png, all at
+// once when every step worked. One run at a time.
 /// <reference lib="dom" />
 import { execFileSync } from 'node:child_process'
 import {
@@ -32,6 +32,7 @@ const MEDIA = [
   ['overlay.png', out],
   ['settings.png', out],
   ['demo.gif', out],
+  ['settings-window.png', site],
   ['demo.mp4', site],
   ['demo-poster.jpg', site],
   ['og.jpg', site],
@@ -217,10 +218,10 @@ async function still(browser: Browser, base: string, frame: Buffer, spots: Spots
   await context.close()
 }
 
-async function settings(browser: Browser, base: string, dir: string) {
+/** Settings at its window size (src-tauri/src/lib.rs), or taller to show every section. */
+async function settings(browser: Browser, base: string, file: string, height = 640) {
   const page = await browser.newPage({
-    // The Settings window's size (src-tauri/src/lib.rs).
-    viewport: { width: 880, height: 640 },
+    viewport: { width: 880, height },
     ...mac,
     colorScheme: 'light',
   })
@@ -232,7 +233,7 @@ async function settings(browser: Browser, base: string, dir: string) {
     .first()
     .waitFor()
   await page.evaluate(() => document.fonts.ready)
-  await page.screenshot({ path: join(dir, 'settings.png') })
+  await page.screenshot({ path: file })
   await page.close()
 }
 
@@ -305,7 +306,9 @@ try {
     try {
       const { frame, spots } = await desktop(browser, base)
       await still(browser, base, frame, spots, dir)
-      await settings(browser, base, dir)
+      await settings(browser, base, join(dir, 'settings.png'))
+      // The landing page's frame is 880 × 800, as on the design canvas.
+      await settings(browser, base, join(dir, 'settings-window.png'), 800)
       const { list, duration, marked } = await recording(browser, base, frame, spots, dir)
       execFileSync('ffmpeg', gifArgs({ input: list, output: join(dir, 'demo.gif'), ...GIF }))
       console.log(`demo.gif: ${duration.toFixed(1)} s at ${GIF.fps} fps`)
