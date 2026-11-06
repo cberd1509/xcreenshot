@@ -46,13 +46,26 @@
     if (color && color !== style.color) style = { ...style, color }
   }
 
-  /** Enter takes the color and gives focus back to the text being typed, if any. */
+  /** Gives focus back to the text being typed, if any, caret and all. */
+  function giveBack() {
+    const to = refocus
+    refocus = null
+    to?.focus()
+  }
+
+  /** Enter takes the color and gives focus back. */
   function onkeydown(e: KeyboardEvent) {
     if (e.key !== 'Enter') return
     e.preventDefault()
     commit()
-    refocus?.focus()
-    refocus = null
+    giveBack()
+  }
+
+  /** Leaving takes the color; focus that goes nowhere (the menu closed) goes back too. */
+  function onblur(e: FocusEvent) {
+    commit()
+    if (e.relatedTarget === null) giveBack()
+    else refocus = null
   }
 </script>
 
@@ -125,7 +138,7 @@
         {onfocus}
         oninput={(e) => (draft = e.currentTarget.value)}
         {onkeydown}
-        onblur={commit}
+        {onblur}
       />
     </div>
     <div class="text-xs font-medium text-zinc-400">Size</div>

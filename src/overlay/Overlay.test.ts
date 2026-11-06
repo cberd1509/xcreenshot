@@ -761,8 +761,8 @@ describe('Overlay', () => {
       fireEvent.pointerMove(overlay(), point({ x: 20, y: 30 }))
       expect(screen.getByTestId('magnifier')).toHaveTextContent('40, 60 · #FF8000')
       const [down, across] = screen.getAllByTestId('guide')
-      expect(down.style.left).toBe('20px')
-      expect(across.style.top).toBe('30px')
+      expect(down.style.transform).toBe('translateX(20px)')
+      expect(across.style.transform).toBe('translateY(30px)')
       // Neither once there is a selection.
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       expect(screen.queryByTestId('magnifier')).toBeNull()
@@ -808,6 +808,15 @@ describe('Overlay', () => {
       fireEvent.pointerMove(overlay(), point({ x: 80, y: 55 }))
       expect(rect()).toEqual([20, 15, 60, 40])
       fireEvent.pointerUp(overlay(), point({ x: 80, y: 55 }))
+      // Moved into an edge, it stops there whole.
+      fireEvent.pointerDown(handle('se'), point({ x: 80, y: 55 }))
+      await fireEvent.keyDown(window, { key: ' ' })
+      fireEvent.pointerMove(overlay(), point({ x: -500, y: 55 }))
+      expect(rect()).toEqual([0, 15, 60, 40])
+      await fireEvent.keyUp(window, { key: ' ' })
+      fireEvent.pointerMove(overlay(), point({ x: -490, y: 65 }))
+      expect(rect()).toEqual([0, 15, 70, 50])
+      fireEvent.pointerUp(overlay(), point({ x: -490, y: 65 }))
       // Space without a drag does nothing; a new drag draws as usual.
       await fireEvent.keyDown(window, { key: ' ' })
       drag({ x: 200, y: 200 }, { x: 250, y: 230 })

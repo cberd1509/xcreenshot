@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte'
   import { contains, nudge, type Point, type Rect, type Scale, type Size } from '../geometry'
-  import { shortcut } from '../keys'
+  import { shortcut, typing } from '../keys'
   import { TOAST } from '../panel'
   import { Board, exportShapes, loadKonva, type AnnotationExport } from './board'
   import { commit, empty, redo, replace, undo, without, type History, type Shapes } from './history'
@@ -209,6 +209,12 @@
     restore()
     cancel()
     if (frame) board?.newFrame()
+  }
+
+  /** Picks a tool (`null`: Select), committing any text being typed. */
+  function pick(next: Tool | null) {
+    finish()
+    tool = next
   }
 
   /** Opens the editor for a new text with its caret at `p`. */
@@ -425,9 +431,6 @@
     board?.preview(drawn(stroke, 'draft'))
   }
 
-  const typing = (t: EventTarget | null) =>
-    t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))
-
   /** Handles an annotation key. Returns whether it did, so the overlay skips it. */
   export function key(e: KeyboardEvent): boolean {
     // While text is edited, every key is the textarea's: no shortcuts, copy or nudges.
@@ -461,7 +464,7 @@
     }
     if (e.key.toUpperCase() === SELECT_KEY) {
       e.preventDefault()
-      tool = null
+      pick(null)
       return true
     }
     const next = toolForKey(e.key)
@@ -539,10 +542,7 @@
     {selection}
     {display}
     {tool}
-    ontool={(t) => {
-      finish()
-      tool = t
-    }}
+    ontool={pick}
     bind:style={() => shownStyle, setStyle}
     text={shownText}
     ontext={setText}

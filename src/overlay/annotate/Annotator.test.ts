@@ -933,6 +933,10 @@ describe('Annotator', () => {
       expect(field.style.color).toBe('rgb(0, 0, 255)')
       expect(field).toHaveFocus()
       expect(field.selectionStart).toBe(1)
+      // Focus that goes nowhere from the field (the menu closed) comes back too.
+      hex.focus()
+      hex.blur()
+      expect(field).toHaveFocus()
       // Focus going anywhere else still commits.
       field.blur()
       await waitFor(() => expect(texts()).toEqual(['Hi']))

@@ -34,7 +34,7 @@
 
   /**
    * Losing focus commits, unless it went to a control that gives it back (`data-keeps-text`,
-   * the hue slider).
+   * the hex color field).
    */
   function onblur(e: FocusEvent) {
     const to = e.relatedTarget
