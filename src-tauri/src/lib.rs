@@ -1,6 +1,8 @@
 //! App wiring only: menu bar, global shortcut and windows. Logic lives in the modules below.
 
 mod actions;
+/// Public so the overlay (#8) can use it; nothing in the app calls it yet.
+pub mod capture;
 mod shortcut;
 
 use actions::Action;
