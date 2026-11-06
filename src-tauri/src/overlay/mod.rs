@@ -10,7 +10,7 @@ pub(crate) mod window;
 
 pub use window::{Overlay, prewarm, start_capture};
 
-use crate::capture::{Bounds, DisplayFrame};
+use crate::capture::{Display, DisplayFrame};
 use image::RgbaImage;
 use std::time::Instant;
 
@@ -53,25 +53,19 @@ pub fn diff<'a>(labels: impl IntoIterator<Item = &'a str>, displays: &[u32]) -> 
     WindowDiff { create, destroy }
 }
 
-/// The display containing a point, in the displays' own units.
-pub fn display_at(displays: &[(u32, Bounds)], x: f64, y: f64) -> Option<u32> {
+/// The display containing a point, in the displays' OS units.
+pub fn display_at(displays: &[Display], x: f64, y: f64) -> Option<u32> {
     let inside = |start: i32, len: u32, v: f64| {
         let start = f64::from(start);
         v >= start && v < start + f64::from(len)
     };
     displays
         .iter()
-        .find(|(_, b)| inside(b.x, b.width, x) && inside(b.y, b.height, y))
-        .map(|&(id, _)| id)
-}
-
-/// The bounds windows are placed with: points on macOS, pixels on Windows (see `capture`).
-pub fn os_bounds(frame: &DisplayFrame) -> Bounds {
-    if cfg!(target_os = "windows") {
-        frame.physical
-    } else {
-        frame.logical
-    }
+        .find(|d| {
+            let b = d.bounds;
+            inside(b.x, b.width, x) && inside(b.y, b.height, y)
+        })
+        .map(|d| d.id)
 }
 
 /// What the overlay window needs to draw a frame; sent with `overlay:show`.
@@ -137,12 +131,13 @@ impl Phase {
     }
 
     /// The capture finished. Opens the session if this capture is still current (Esc may have
-    /// closed it) and returns each display's frame info to send. `cursor` is in OS units.
+    /// closed it) and returns each display's frame info to send. `focus` is the display under
+    /// the cursor; it gets keyboard focus if it was captured.
     pub fn open(
         &mut self,
         session: u64,
         frames: Vec<DisplayFrame>,
-        cursor: Option<(f64, f64)>,
+        focus: Option<u32>,
     ) -> Option<Vec<(u32, FrameInfo)>> {
         let Phase::Capturing {
             session: id,
@@ -154,8 +149,7 @@ impl Phase {
         if id != session {
             return None;
         }
-        let bounds: Vec<_> = frames.iter().map(|f| (f.id, os_bounds(f))).collect();
-        let focus = cursor.and_then(|(x, y)| display_at(&bounds, x, y));
+        let focus = focus.filter(|&d| frames.iter().any(|f| f.id == d));
         let slots: Vec<Slot> = frames
             .into_iter()
             .map(|f| {
@@ -245,6 +239,7 @@ impl Phase {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::capture::Bounds;
 
     /// A display frame of `width` x `height` pixels at 2x, placed at x = id * 1000 points.
     pub(crate) fn frame(id: u32, width: u32, height: u32) -> DisplayFrame {
@@ -280,19 +275,13 @@ pub(crate) mod tests {
         }
     }
 
-    /// An open session on displays 1 and 2 (4x2 px frames), cursor at `cursor`.
-    fn open(cursor: Option<(f64, f64)>) -> Phase {
+    /// An open session on displays 1 and 2 (4x2 px frames), `focus` under the cursor.
+    fn open(focus: Option<u32>) -> Phase {
         let mut p = Phase::default();
         assert!(p.begin(7, Instant::now()));
-        p.open(7, vec![frame(1, 4, 2), frame(2, 4, 2)], cursor)
+        p.open(7, vec![frame(1, 4, 2), frame(2, 4, 2)], focus)
             .unwrap();
         p
-    }
-
-    /// A point inside display `id` of [`frame`], in this platform's OS units.
-    fn on(id: u32) -> Option<(f64, f64)> {
-        let b = os_bounds(&frame(id, 4, 2));
-        Some((f64::from(b.x) + 0.5, f64::from(b.y) + 0.5))
     }
 
     #[test]
@@ -318,7 +307,11 @@ pub(crate) mod tests {
 
     #[test]
     fn finds_the_display_under_a_point() {
-        let displays = [(1, bounds(0, 0, 100, 50)), (2, bounds(-80, -40, 80, 40))];
+        let display = |id, bounds| Display { id, bounds };
+        let displays = [
+            display(1, bounds(0, 0, 100, 50)),
+            display(2, bounds(-80, -40, 80, 40)),
+        ];
         assert_eq!(display_at(&displays, 0.0, 0.0), Some(1));
         assert_eq!(display_at(&displays, 99.9, 49.9), Some(1));
         assert_eq!(display_at(&displays, -1.0, -1.0), Some(2));
@@ -390,7 +383,7 @@ pub(crate) mod tests {
 
     #[test]
     fn focus_goes_to_the_display_under_the_cursor() {
-        let mut p = open(on(2));
+        let mut p = open(Some(2));
         assert_eq!(
             p.painted(7, 1).unwrap().focus,
             None,
@@ -401,8 +394,9 @@ pub(crate) mod tests {
 
     #[test]
     fn focus_goes_to_the_first_painted_without_a_cursor_display() {
-        for cursor in [None, Some((-1e6, -1e6))] {
-            let mut p = open(cursor);
+        // No display under the cursor, or one that was not captured.
+        for focus in [None, Some(9)] {
+            let mut p = open(focus);
             assert_eq!(p.painted(7, 2).unwrap().focus, Some(2));
             assert_eq!(p.painted(7, 1).unwrap().focus, Some(2));
         }

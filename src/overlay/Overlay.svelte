@@ -40,6 +40,14 @@
     }
   }
 
+  // Frees the frame's bitmap once the window is hidden after a capture. The next frame is
+  // drawn before the window shows again, so nothing stale or empty is ever seen.
+  function onvisibilitychange() {
+    if (!document.hidden) return
+    canvas.width = 0
+    canvas.height = 0
+  }
+
   function onkeydown(e: KeyboardEvent) {
     // Rust owns Esc while the overlay is open; this is the fallback.
     if (e.key === 'Escape') void invoke('close_overlay')
@@ -59,6 +67,7 @@
 </script>
 
 <svelte:window {onkeydown} />
+<svelte:document {onvisibilitychange} />
 
 <canvas bind:this={canvas} width="0" height="0"></canvas>
 <div class="dim"></div>

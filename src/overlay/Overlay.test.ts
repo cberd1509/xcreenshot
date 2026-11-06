@@ -115,6 +115,20 @@ describe('Overlay', () => {
     expect(called('overlay_painted')).toHaveLength(0)
   })
 
+  it('frees the frame when the window is hidden', async () => {
+    const { container } = await mount()
+    await emit('overlay:show', { session: 1, width: 4, height: 2 })
+    await waitFor(() => expect(called('overlay_painted')).toHaveLength(1))
+    const canvas = container.querySelector('canvas')!
+    const hidden = vi.spyOn(document, 'hidden', 'get')
+    hidden.mockReturnValue(false)
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(canvas.width).toBe(4)
+    hidden.mockReturnValue(true)
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect([canvas.width, canvas.height]).toEqual([0, 0])
+  })
+
   it('closes on Esc only', async () => {
     await mount()
     await userEvent.keyboard('a')

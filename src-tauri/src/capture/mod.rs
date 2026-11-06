@@ -12,7 +12,7 @@ use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::{ExtendedColorType, ImageEncoder, RgbaImage};
 use std::fmt;
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 /// A connected display, before capture.
@@ -130,33 +130,47 @@ fn to_frame(
 /// capture (its thread is left to finish on its own).
 const DISPLAY_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// Displays whose capture thread is still running (stalled past the timeout).
+static IN_FLIGHT: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
 /// Runs `capture` for every display at once, so total time is the slowest display. A display
-/// that panics or takes longer than `timeout` gets an error instead.
+/// that panics or takes longer than `timeout` gets an error instead. A display whose previous
+/// capture is still stuck is skipped, so a hung driver costs at most one thread per display.
 fn capture_each<F>(
     ids: &[u32],
     capture: F,
     timeout: Duration,
+    in_flight: &'static Mutex<Vec<u32>>,
 ) -> Vec<Result<DisplayFrame, CaptureError>>
 where
     F: Fn(u32) -> Result<DisplayFrame, CaptureError> + Send + Sync + 'static,
 {
+    let lock = || in_flight.lock().unwrap_or_else(PoisonError::into_inner);
     let capture = Arc::new(capture);
     let (tx, rx) = mpsc::channel();
-    for (i, &id) in ids.iter().enumerate() {
-        let (capture, tx) = (Arc::clone(&capture), tx.clone());
-        std::thread::spawn(move || {
-            let result = panic::catch_unwind(AssertUnwindSafe(|| capture(id)))
-                .unwrap_or_else(|_| Err(CaptureError::Backend("capture panicked".into())));
-            let _ = tx.send((i, result));
-        });
-    }
-    drop(tx);
     let mut results: Vec<_> = ids
         .iter()
         .map(|id| Err(CaptureError::Backend(format!("display {id} timed out"))))
         .collect();
+    for (i, &id) in ids.iter().enumerate() {
+        if lock().contains(&id) {
+            results[i] = Err(CaptureError::Backend(format!(
+                "display {id} is still stuck"
+            )));
+            continue;
+        }
+        lock().push(id);
+        let (capture, tx) = (Arc::clone(&capture), tx.clone());
+        std::thread::spawn(move || {
+            let result = panic::catch_unwind(AssertUnwindSafe(|| capture(id)))
+                .unwrap_or_else(|_| Err(CaptureError::Backend("capture panicked".into())));
+            lock().retain(|&d| d != id);
+            let _ = tx.send((i, result));
+        });
+    }
+    drop(tx);
     let deadline = Instant::now() + timeout;
-    for _ in ids {
+    for _ in 0..ids.len() {
         let left = deadline.saturating_duration_since(Instant::now());
         let Ok((i, result)) = rx.recv_timeout(left) else {
             break;
@@ -218,7 +232,12 @@ pub fn capture_all() -> Result<Vec<DisplayFrame>, CaptureError> {
 
 /// Like [`capture_all`], for displays already listed with [`displays`].
 pub fn capture_displays(ids: &[u32]) -> Result<Vec<DisplayFrame>, CaptureError> {
-    keep_captured(capture_each(ids, capture_display, DISPLAY_TIMEOUT))
+    keep_captured(capture_each(
+        ids,
+        capture_display,
+        DISPLAY_TIMEOUT,
+        &IN_FLIGHT,
+    ))
 }
 
 /// The displays [`capture_all`] captures (mirrors excluded), with their OS bounds: points on
@@ -232,10 +251,11 @@ pub fn displays() -> Result<Vec<Display>, CaptureError> {
         if is_mirror(id) || out.iter().any(|d| d.id == id) {
             continue;
         }
-        out.push(Display {
-            id,
-            bounds: os_bounds(m)?,
-        });
+        // A display that cannot report its bounds (asleep, unplugged) is skipped, not fatal.
+        match os_bounds(m) {
+            Ok(bounds) => out.push(Display { id, bounds }),
+            Err(e) => log::warn!("skipping display {id}: {e}"),
+        }
     }
     Ok(out)
 }
@@ -396,6 +416,7 @@ mod tests {
                 ok_frame(id, id as i32 * 2)
             },
             Duration::from_secs(10),
+            fresh(),
         );
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].as_ref().unwrap().id, 1);
@@ -405,6 +426,7 @@ mod tests {
 
     #[test]
     fn a_stalled_display_is_skipped_after_the_timeout() {
+        let in_flight = fresh();
         let started = Instant::now();
         let results = capture_each(
             &[1, 2],
@@ -415,6 +437,7 @@ mod tests {
                 ok_frame(id, 0)
             },
             Duration::from_millis(100),
+            in_flight,
         );
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(results[0].as_ref().unwrap().id, 1);
@@ -422,6 +445,22 @@ mod tests {
             results[1],
             Err(CaptureError::Backend("display 2 timed out".into()))
         );
+        // While display 2 is still stuck, the next capture skips it instead of piling up threads.
+        let again = capture_each(
+            &[1, 2],
+            |id| ok_frame(id, 0),
+            Duration::from_secs(1),
+            in_flight,
+        );
+        assert_eq!(again[0].as_ref().unwrap().id, 1);
+        assert_eq!(
+            again[1],
+            Err(CaptureError::Backend("display 2 is still stuck".into()))
+        );
+    }
+
+    fn fresh() -> &'static Mutex<Vec<u32>> {
+        Box::leak(Box::default())
     }
 
     #[test]

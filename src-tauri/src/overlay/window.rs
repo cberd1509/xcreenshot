@@ -7,7 +7,7 @@
 //! shows that window. Esc, `close_overlay`, closing a window or the watchdog hide everything.
 //! Window and shortcut calls stay on the main thread.
 
-use super::{FrameInfo, Phase, diff, display_id, label};
+use super::{FrameInfo, Phase, diff, display_at, display_id, label};
 use crate::capture::{self, Bounds, CaptureError, Display, DisplayFrame};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -40,7 +40,7 @@ impl Overlay {
     }
 }
 
-fn phase<R: Runtime>(app: &AppHandle<R>) -> MutexGuard<'_, Phase> {
+pub(super) fn phase<R: Runtime>(app: &AppHandle<R>) -> MutexGuard<'_, Phase> {
     app.state::<Overlay>().inner().phase()
 }
 
@@ -115,24 +115,22 @@ fn start_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) -> Option<u64
         log::info!("capture ignored: the overlay is already open");
         return None;
     }
-    let displays = match screen.permitted().then(|| screen.displays()) {
-        Some(Ok(d)) => d,
-        Some(Err(e)) => {
+    let listed = screen.permitted().then(|| screen.displays());
+    let Some(Ok(displays)) = listed else {
+        if let Some(Err(e)) = listed {
             log::error!("could not list displays: {e}");
-            *phase(app) = Phase::Idle;
-            return None;
         }
-        None => {
-            *phase(app) = Phase::Idle;
-            return None;
-        }
+        *phase(app) = Phase::Idle;
+        return None;
     };
     let worker = app.clone();
-    let ids = ids(&displays);
+    let listed = displays.clone();
     std::thread::spawn(move || {
-        let frames = screen.capture(&ids);
-        let cursor = screen.cursor(&worker);
-        finish(&worker, session, frames, cursor, WATCHDOG);
+        let frames = screen.capture(&ids(&listed));
+        let focus = screen
+            .cursor(&worker)
+            .and_then(|(x, y)| display_at(&listed, x, y));
+        finish(&worker, session, frames, focus, WATCHDOG);
     });
     set_escape(app, true);
     if let Err(e) = place(app, &displays) {
@@ -148,7 +146,7 @@ fn finish<R: Runtime>(
     app: &AppHandle<R>,
     session: u64,
     frames: Result<Vec<DisplayFrame>, CaptureError>,
-    cursor: Option<(f64, f64)>,
+    focus: Option<u32>,
     watchdog: Duration,
 ) {
     let frames = match frames {
@@ -159,7 +157,7 @@ fn finish<R: Runtime>(
         }
     };
     // `None`: Esc closed the overlay during the capture.
-    let Some(shows) = phase(app).open(session, frames, cursor) else {
+    let Some(shows) = phase(app).open(session, frames, focus) else {
         return;
     };
     for (display, info) in shows {
@@ -403,7 +401,6 @@ pub(crate) fn close_overlay<R: Runtime>(app: AppHandle<R>) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::os_bounds;
     use super::super::tests::frame;
     use super::*;
     use std::sync::mpsc;
@@ -433,7 +430,7 @@ mod tests {
                 .iter()
                 .map(|&id| Display {
                     id,
-                    bounds: os_bounds(&frame(id, 4, 2)),
+                    bounds: frame(id, 4, 2).logical,
                 })
                 .collect())
         }
@@ -693,6 +690,8 @@ mod tests {
         let session = open(h, &[1]);
         assert!(shortcuts.is_registered(ESCAPE));
         close_session(h, session);
+        assert!(!shortcuts.is_registered(ESCAPE));
+        close(h);
         assert!(!shortcuts.is_registered(ESCAPE));
     }
 

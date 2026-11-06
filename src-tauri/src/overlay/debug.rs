@@ -61,10 +61,11 @@ mod tests {
 
     static STARTS: AtomicU32 = AtomicU32::new(0);
 
-    /// Starts nothing on odd calls; on even calls reports a session that is not open.
+    /// Starts nothing on the first call (the overlay was already open); later calls report a
+    /// session id that is not the open one.
     fn start(_: &AppHandle<MockRuntime>) -> Option<u64> {
         let n = STARTS.fetch_add(1, Ordering::Relaxed);
-        (n % 2 == 1).then_some(u64::MAX)
+        (n > 0).then_some(u64::MAX)
     }
 
     #[test]
@@ -73,9 +74,17 @@ mod tests {
             .manage(super::super::Overlay::default())
             .build(mock_context(noop_assets()))
             .unwrap();
-        repeat(app.handle(), 3, Duration::ZERO, start)
-            .join()
-            .unwrap();
+        let h = app.handle();
+        // Without XCREENSHOT_DEBUG_CAPTURE, nothing is scheduled.
+        schedule(h);
+        // The user's own capture is open.
+        assert!(super::super::window::phase(h).begin(42, std::time::Instant::now()));
+        repeat(h, 3, Duration::ZERO, start).join().unwrap();
         assert_eq!(STARTS.load(Ordering::Relaxed), 3);
+        assert_eq!(
+            super::super::window::phase(h).session(),
+            Some(42),
+            "left alone"
+        );
     }
 }
