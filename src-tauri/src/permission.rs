@@ -10,6 +10,17 @@ use tauri::{AppHandle, Runtime, WebviewUrl};
 
 pub const WINDOW: &str = "permission";
 
+/// First launch (or permission removed): show how to allow Screen Recording.
+pub fn on_startup<R: Runtime>(app: &AppHandle<R>) {
+    show_unless(app, capture::has_permission());
+}
+
+fn show_unless<R: Runtime>(app: &AppHandle<R>, granted: bool) {
+    if !granted {
+        show(app);
+    }
+}
+
 /// Opens (or focuses) the steps window.
 pub fn show<R: Runtime>(app: &AppHandle<R>) {
     let url = WebviewUrl::App("permission.html".into());
@@ -56,6 +67,18 @@ mod tests {
     use super::*;
     use tauri::Manager;
     use tauri::test::{mock_builder, mock_context, noop_assets};
+
+    #[test]
+    fn startup_shows_the_window_only_without_permission() {
+        let app = mock_builder().build(mock_context(noop_assets())).unwrap();
+        show_unless(app.handle(), true);
+        assert!(app.get_webview_window(WINDOW).is_none());
+        show_unless(app.handle(), false);
+        assert!(app.get_webview_window(WINDOW).is_some());
+        // Runs the real check; either way at most one window.
+        on_startup(app.handle());
+        assert_eq!(app.webview_windows().len(), 1);
+    }
 
     #[test]
     fn show_opens_one_window() {

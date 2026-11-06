@@ -72,10 +72,7 @@ pub fn run() {
                 ),
             }
             overlay::prewarm(app.handle());
-            // First launch (or permission removed): show how to allow Screen Recording.
-            if !capture::has_permission() {
-                permission::show(app.handle());
-            }
+            permission::on_startup(app.handle());
             #[cfg(debug_assertions)]
             overlay::debug::schedule(app.handle());
             Ok(())

@@ -4,33 +4,47 @@
   import { onMount } from 'svelte'
   import ShortcutKbd from '$lib/components/ShortcutKbd.svelte'
   import { Button } from '$lib/components/ui/button'
+  import { settings } from '$lib/settings.svelte'
+  import { FAILURES_SHOWN, nextDelay } from './poll'
 
-  /** How often the page re-checks while it is open. */
-  const RECHECK_MS = 1000
+  /** The capture shortcut until it can be changed (#21). */
+  const DEFAULT_SHORTCUT = settings.shortcut
 
   let granted = $state(false)
   /** Back from System Settings and still not allowed: macOS needs a restart. */
   let needsRestart = $state(false)
   /** The registered capture shortcut; null if none, undefined until known. */
   let shortcut = $state<string | null>()
+  /** Failed checks in a row. */
+  let failures = $state(0)
   let openedSettings = false
-  let timer: ReturnType<typeof setInterval> | undefined
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let stopped = false
 
   const failed = (command: string) => (e: unknown) => console.error(`${command} failed`, e)
 
-  async function check() {
-    if (await invoke<boolean>('permission_granted')) {
-      granted = true
-      clearInterval(timer)
+  /** Checks now and plans the next check. Resolves to the permission, or null if it failed. */
+  async function check(): Promise<boolean | null> {
+    clearTimeout(timer)
+    let now: boolean | null = null
+    try {
+      now = await invoke<boolean>('permission_granted')
+      granted = now
+      failures = 0
+    } catch (e) {
+      failures++
+      failed('permission_granted')(e)
     }
-    return granted
+    // A focus check can overlap the timer's; only the last one plans the next.
+    clearTimeout(timer)
+    if (!stopped) timer = setTimeout(check, nextDelay(granted, failures))
+    return now
   }
 
-  const recheck = () => void check().catch(failed('permission_granted'))
-
   function openSettings() {
-    openedSettings = true
-    invoke('open_permission_settings').catch(failed('open_permission_settings'))
+    invoke('open_permission_settings')
+      .then(() => (openedSettings = true))
+      .catch(failed('open_permission_settings'))
   }
 
   function restart() {
@@ -39,21 +53,23 @@
 
   function onfocus() {
     if (!openedSettings || granted) return
-    check()
-      .then((now) => (needsRestart = !now))
-      .catch(failed('permission_granted'))
+    void check().then((now) => {
+      if (now === false) needsRestart = true
+    })
   }
 
   onMount(() => {
-    timer = setInterval(recheck, RECHECK_MS)
-    recheck()
+    void check()
     invoke<string | null>('capture_shortcut')
       .then((s) => (shortcut = s))
       .catch((e: unknown) => {
         shortcut = null
         failed('capture_shortcut')(e)
       })
-    return () => clearInterval(timer)
+    return () => {
+      stopped = true
+      clearTimeout(timer)
+    }
   })
 </script>
 
@@ -76,21 +92,32 @@
           Press <ShortcutKbd accelerator={shortcut} /> to take a screenshot.
         </p>
       {:else if shortcut === null}
-        <p class="text-sm text-muted-foreground">Set a shortcut in Settings.</p>
+        <p class="text-sm text-muted-foreground">
+          Another app is using <ShortcutKbd accelerator={DEFAULT_SHORTCUT} />. Close it and restart
+          xcreenshot.
+        </p>
+        <Button size="sm" onclick={restart}>Restart xcreenshot</Button>
       {/if}
     </div>
-    <p class="flex items-center justify-center gap-1 text-[13px] text-muted-foreground">
-      Screenshots look empty?
-      <Button size="sm" variant="link" class="h-auto px-0" onclick={restart}>
-        Restart xcreenshot
-      </Button>
-    </p>
+    {#if shortcut}
+      <p class="flex items-center justify-center gap-1 text-[13px] text-muted-foreground">
+        Screenshots look empty?
+        <Button size="sm" variant="link" class="h-auto px-0" onclick={restart}>
+          Restart xcreenshot
+        </Button>
+      </p>
+    {/if}
   {:else}
     <header class="flex flex-col gap-1">
       <h1 class="text-base font-semibold">Allow Screen Recording</h1>
       <p class="text-[13px] text-muted-foreground">
         macOS asks for this before xcreenshot can take screenshots.
       </p>
+      {#if failures >= FAILURES_SHOWN}
+        <p role="alert" class="text-[13px] text-destructive">
+          Can't check the permission right now. Trying again.
+        </p>
+      {/if}
     </header>
 
     <ol class="flex flex-col gap-5">
