@@ -1,14 +1,19 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "overlay",
-  "description": "Capture overlay windows: show event, frame fetch, paint report, close",
+  "description": "Capture overlay windows: show event, frame fetch, paint report, Esc ack, confirm, close",
   "windows": ["overlay-*"],
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
+    "core:event:allow-emit",
+    "core:window:allow-set-focus",
     "allow-overlay-ready",
     "allow-overlay-frame",
     "allow-overlay-painted",
+    "allow-overlay-escaped",
+    "allow-overlay-escape",
+    "allow-overlay-confirm",
     "allow-close-overlay"
   ]
 }

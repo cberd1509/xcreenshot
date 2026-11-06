@@ -4,6 +4,9 @@ fn main() {
         "overlay_ready",
         "overlay_frame",
         "overlay_painted",
+        "overlay_escaped",
+        "overlay_escape",
+        "overlay_confirm",
         "close_overlay",
     ];
     let mut attributes = tauri_build::Attributes::new()

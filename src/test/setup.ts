@@ -17,3 +17,21 @@ vi.stubGlobal('ImageData', FakeImageData)
 vi.mock('@tauri-apps/api/app', () => ({
   getVersion: vi.fn<() => Promise<string>>(() => Promise.resolve('0.1.0')),
 }))
+
+// jsdom has no pointer events or ResizeObserver.
+class FakePointerEvent extends MouseEvent {
+  readonly pointerId: number
+  constructor(type: string, init: PointerEventInit = {}) {
+    super(type, init)
+    this.pointerId = init.pointerId ?? 0
+  }
+}
+vi.stubGlobal('PointerEvent', FakePointerEvent)
+vi.stubGlobal(
+  'ResizeObserver',
+  class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  },
+)

@@ -18,6 +18,12 @@ fn main() -> Result<(), CaptureError> {
             frames.len(),
             start.elapsed()
         );
+        // The overlay gets a copy of each frame; Rust keeps the original for the crop.
+        for f in &frames {
+            let t = Instant::now();
+            let copy = f.image.as_raw().to_vec();
+            println!("  copy {} MB in {:?}", copy.len() >> 20, t.elapsed());
+        }
         if run == 1 {
             for f in &frames {
                 println!(

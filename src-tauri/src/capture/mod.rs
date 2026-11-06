@@ -6,7 +6,7 @@
 
 mod geometry;
 
-pub use geometry::{Bounds, Rect, crop};
+pub use geometry::{Bounds, PixelRect, Rect, crop, crop_pixels};
 
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::{ExtendedColorType, ImageEncoder, RgbaImage};
