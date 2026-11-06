@@ -3,6 +3,7 @@ updates:
   - package-ecosystem: npm
     directory: /
     schedule: { interval: weekly }
+    open-pull-requests-limit: 5
     groups:
       npm-minor-patch:
         update-types: [minor, patch]
@@ -10,6 +11,7 @@ updates:
   - package-ecosystem: cargo
     directory: /src-tauri
     schedule: { interval: weekly }
+    open-pull-requests-limit: 5
     groups:
       cargo-minor-patch:
         update-types: [minor, patch]
@@ -17,6 +19,7 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
+    open-pull-requests-limit: 5
     groups:
       actions:
         patterns: ['*']

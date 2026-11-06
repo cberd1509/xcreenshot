@@ -15,9 +15,7 @@
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
     "icons": "tauri icon assets/icon.svg && rm -rf src-tauri/icons/android src-tauri/icons/ios && rsvg-convert -w 22 -h 22 assets/tray.svg -o src-tauri/icons/tray-template.png && rsvg-convert -w 44 -h 44 assets/tray.svg -o src-tauri/icons/tray-template@2x.png",
-    "prepare": "husky",
-    "changeset": "changeset",
-    "release:version": "changeset version && node scripts/sync-version.mjs"
+    "prepare": "husky"
   },
   "devDependencies": {
     "@changesets/changelog-github": "^1.0.1",

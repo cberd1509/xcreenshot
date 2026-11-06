@@ -13,20 +13,43 @@ permissions:
   contents: read
 
 jobs:
+  # Skip the slow macOS/Windows builds when only docs or repo config changed.
+  # Skipped jobs still satisfy required checks.
+  changes:
+    name: Changed files
+    runs-on: ubuntu-latest
+    outputs:
+      app: ${{ steps.filter.outputs.app }}
+    permissions:
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            app:
+              - 'src/**'
+              - 'src-tauri/**'
+              - 'assets/**'
+              - 'scripts/**'
+              - 'index.html'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'vite.config.ts'
+              - 'tsconfig*.json'
+              - '.github/workflows/ci.yml'
+              - '.github/actions/**'
+
   lint:
     name: Lint and type-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
+      - uses: ./.github/actions/setup
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm check
       - name: Tests with coverage (90% minimum)
@@ -37,6 +60,8 @@ jobs:
 
   app:
     name: App (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -44,18 +69,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
+      - uses: ./.github/actions/setup
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-      - run: pnpm install --frozen-lockfile
+          # Only main saves the cache, so PRs restore one warm cache instead of filling the quota.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Builds the frontend (beforeBuildCommand) and the app with the debug profile,
       # so the test step below reuses the same compiled dependencies.
       - name: Build app (debug, no installer)

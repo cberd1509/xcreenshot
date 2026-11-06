@@ -31,14 +31,15 @@ CI runs the same checks on macOS and Windows.
 
 ## Commits and PRs
 
-- Commit messages and PR titles follow [Conventional Commits](https://www.conventionalcommits.org): `feat: …`, `fix: …`, `chore: …`, `docs: …`. A Git hook checks commit messages, and CI checks PR titles (PRs are squash-merged, so the title becomes the commit).
+- Commit messages and PR titles follow [Conventional Commits](https://www.conventionalcommits.org): `feat: …`, `fix: …`, `chore: …`, `docs: …`. A Git hook checks commit messages, and CI checks PR titles with the same rules (PRs are squash-merged, so the title becomes the commit).
 - `pnpm install` sets up the Git hooks (Husky): staged files are linted and formatted (Oxlint, Prettier, rustfmt) before each commit.
 
 ## Versioning and releases
 
 - xcreenshot uses [Semantic Versioning](https://semver.org). Until 1.0, `minor` is for new features and `patch` for fixes; breaking changes to settings also bump `minor`.
-- Every PR adds a **changeset** (`pnpm changeset`) with a one-line, user-facing description. Internal changes use `pnpm changeset --empty`. CI checks for it.
-- After merging to `main`, a bot keeps a **"chore(release): version packages"** PR open with the next version and the updated `CHANGELOG.md`. Merging it bumps the version everywhere (package.json, Cargo.toml; tauri.conf.json reads package.json) and tags `vX.Y.Z`, which builds the release.
+- `package.json` is the only version source; `tauri.conf.json` reads it.
+- PRs with user-facing changes (`feat`, `fix`, `perf`, or breaking `!`) add a **changeset**: run `pnpm changeset` and write one plain sentence for the changelog. CI checks for it. Internal changes (`chore`, `ci`, `docs`, `test`, `refactor`) don't need one.
+- After merges to `main`, a bot keeps a **"chore(release): version packages"** PR open with the next version and the updated `CHANGELOG.md`. Merging it bumps the version. Tagging and building releases come with M4.
 
 ## App icon
 
