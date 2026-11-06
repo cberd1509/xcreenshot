@@ -12,6 +12,7 @@ type Props = Partial<{
   drawable: boolean
   text: ShownTextOptions | null
   ontext: (t: Partial<TextOptions>) => void
+  keepFocus: boolean
 }>
 
 function setup(props: Props = {}) {
@@ -56,6 +57,13 @@ const item = async (name: string) =>
   (await screen.findByText(name)).closest('[role=menuitemcheckbox]')!
 const tooltip = (name: string) =>
   screen.findByText(name, { selector: '[data-slot=tooltip-content]' })
+
+/** Presses `target`; returns whether the press's default (focusing) was prevented. */
+function mousedown(target: Element) {
+  const e = new MouseEvent('mousedown', { bubbles: true, cancelable: true })
+  target.dispatchEvent(e)
+  return e.defaultPrevented
+}
 
 describe('Toolbar', () => {
   it('shows the tools in order', () => {
@@ -195,11 +203,24 @@ describe('Toolbar', () => {
     expect(choice('Large text')).toHaveAttribute('data-state', 'off')
   })
 
-  it('keeps focus where it was when a text option is pressed', async () => {
-    setup({ text: { size: 'M', background: false } })
-    const pressed = new MouseEvent('mousedown', { bubbles: true, cancelable: true })
-    button('Background').dispatchEvent(pressed)
-    expect(pressed.defaultPrevented).toBe(true)
+  it('keeps focus where it was while asked to, also in the color menu', async () => {
+    const field = document.createElement('textarea')
+    document.body.append(field)
+    const { user, view } = setup({ text: { size: 'M', background: false } })
+    expect(mousedown(button('Background'))).toBe(false)
+    await view.rerender({ keepFocus: true })
+    expect(mousedown(button('Background'))).toBe(true)
+    expect(mousedown(button('Undo'))).toBe(true)
+    field.focus()
+    await user.click(button('Color and size'))
+    const swatch = await screen.findByLabelText(`Color ${COLORS[4]}`)
+    expect(field).toHaveFocus()
+    expect(mousedown(swatch)).toBe(true)
+    const bar = view.component as unknown as { closeMenus: () => boolean }
+    bar.closeMenus()
+    await waitFor(() => expect(screen.queryByLabelText(`Color ${COLORS[4]}`)).toBeNull())
+    expect(field).toHaveFocus()
+    field.remove()
   })
 
   it('has default text handlers', async () => {

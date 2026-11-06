@@ -15,10 +15,18 @@
     paintedBounds,
     toolForKey,
     translate,
+    type Style,
     type TextShape,
     type Tool,
   } from './shapes'
-  import { DEFAULT_TEXT, TEXT_SIZES, boxAt, sizeOf, type TextOptions } from './text'
+  import {
+    DEFAULT_TEXT,
+    TEXT_SIZES,
+    boxAt,
+    sizeOf,
+    type ShownTextOptions,
+    type TextOptions,
+  } from './text'
   import TextEditor from './TextEditor.svelte'
   import type ToolbarComponent from './Toolbar.svelte'
   import type { Option, ToolbarActions } from './Toolbar.svelte'
@@ -202,11 +210,55 @@
     set(e.existing ? replace(history.present, kept) : [...history.present, kept])
   }
 
-  /** A changed text option; the text being edited follows it. */
+  /** The selected shape, if it is a text: the toolbar's options apply to it. */
+  const selectedText = $derived(
+    history.present.find((s): s is TextShape => s.id === selected && s.kind === 'text'),
+  )
+
+  /** The text options the toolbar shows: the edited or selected text's, or the tool's. */
+  const shownText = $derived.by((): ShownTextOptions | null => {
+    if (editing) return { size: sizeOf(editing.fontSize), background: textOptions.background }
+    if (selectedText)
+      return { size: sizeOf(selectedText.fontSize), background: selectedText.background }
+    return tool === 'text' ? textOptions : null
+  })
+
+  /** Replaces the selected text with `change` applied and measured again, as one undo step. */
+  function restyle(text: TextShape, change: Partial<TextShape>) {
+    const next = { ...text, ...change }
+    set(replace(history.present, { ...next, ...board!.measure(next.text, next.fontSize) }))
+  }
+
+  /** A changed text option, for the tool and the text being edited or selected. */
   function setText(change: Partial<TextOptions>) {
     textOptions = { ...textOptions, ...change }
-    if (editing && change.size) editing.fontSize = TEXT_SIZES[change.size]
+    const fontSize = change.size && TEXT_SIZES[change.size]
+    if (editing) {
+      if (fontSize) editing.fontSize = fontSize
+    } else if (selectedText) {
+      restyle(selectedText, {
+        ...(fontSize && { fontSize }),
+        ...(change.background !== undefined && { background: change.background }),
+      })
+    }
   }
+
+  /** A new color or size, for the tool and the text being edited or selected. */
+  function setStyle(next: Style) {
+    style = next
+    if (editing) editing.style = next
+    // Only the color shows on text, so a size change leaves no undo step.
+    else if (selectedText)
+      restyle(selectedText, { style: { ...selectedText.style, color: next.color } })
+  }
+
+  /** Commits the text being edited before a toolbar action. */
+  const thenFinish =
+    <A extends unknown[]>(f: (...args: A) => void) =>
+    (...args: A) => {
+      finish()
+      f(...args)
+    }
 
   /** A press while text is edited commits it and does nothing more; Konva never sees it. */
   function onpointerdowncapture(e: PointerEvent) {
@@ -308,6 +360,8 @@
    * overlay handles Esc.
    */
   export function escape(): boolean {
+    // A menu opened while typing closes first: the text stays in the editor.
+    if (editing && toolbar?.closeMenus()) return true
     if (editing) finish()
     else if (start) cancel()
     else if (toolbar?.closeMenus()) return true
@@ -370,19 +424,18 @@
     <Toolbar
       bind:this={toolbar}
       {tool}
-      ontool={(t) => (tool = t)}
-      bind:style
-      text={tool === 'text' || editing
-        ? { ...textOptions, size: editing ? sizeOf(editing.fontSize) : textOptions.size }
-        : null}
+      ontool={thenFinish((t) => (tool = t))}
+      bind:style={() => style, setStyle}
+      text={shownText}
       ontext={setText}
+      keepFocus={editing !== null}
       drawable={!failed}
       canUndo={history.past.length > 0}
       canRedo={history.future.length > 0}
       canClear={history.present.length > 0}
-      onundo={() => move(undo(history))}
-      onredo={() => move(redo(history))}
-      onclear={() => set([])}
+      onundo={thenFinish(() => move(undo(history)))}
+      onredo={thenFinish(() => move(redo(history)))}
+      onclear={thenFinish(() => set([]))}
       {options}
       {actions}
     />

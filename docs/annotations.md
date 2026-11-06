@@ -66,9 +66,12 @@ proportions (Shift does not stretch it); the font scales and the box is measured
 
 While a text is edited, `key(e)` returns true for every key without `preventDefault`, so the
 overlay runs no shortcut, copy, save or nudge and the textarea gets the key. Esc comes from Rust
-as usual and `escape()` commits the text first. The size and Background buttons do not take
-focus, so the text being typed follows them. With Background, the box is filled with the color
-and the text is black or white, whichever reads better.
+as usual and `escape()` closes an open menu first, then commits the text. While text is typed,
+presses on the toolbar and its color menu leave focus in the textarea (`keepFocus`), so the text
+stays the active edit and follows the size, Background and color; a tool, undo, redo or clear
+commits it first. With a text selected, the same options apply to it, one undo step each. With
+Background, the box is filled with the color and the text is black or white, whichever reads
+better.
 
 ## Speed
 

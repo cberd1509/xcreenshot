@@ -628,6 +628,88 @@ describe('Annotator', () => {
       expect(editor()).toBeInTheDocument()
     })
 
+    it('changes the color of the text being typed from the color menu', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      const field = await place(api)
+      await user.type(field, 'Hi')
+      await user.click(screen.getByRole('button', { name: 'Color and size' }))
+      await user.click(await screen.findByLabelText('Color #007AFF'))
+      // Still the active edit, in the new color.
+      expect(field).toHaveFocus()
+      expect(editor()!.style.color).toBe('rgb(0, 122, 255)')
+      await user.type(field, '!')
+      // Esc closes the menu first, then commits.
+      expect(api.escape()).toBe(true)
+      await waitFor(() => expect(screen.queryByLabelText('Color #007AFF')).toBeNull())
+      expect(editor()).toHaveFocus()
+      expect(api.escape()).toBe(true)
+      await waitFor(() => expect(texts()).toEqual(['Hi!']))
+      expect(nodes()[0].children[1].attrs.fill).toBe('#007AFF')
+    })
+
+    it('commits the text being typed before a tool, undo, redo or clear', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      await user.type(await place(api), 'A')
+      await user.click(screen.getByRole('button', { name: 'Undo' }))
+      // Committed, then undone.
+      await waitFor(() => expect(editor()).not.toBeInTheDocument())
+      expect(kinds()).toEqual([])
+      await user.type(await place(api), 'B')
+      await user.click(screen.getByRole('button', { name: 'Redo' }))
+      expect(texts()).toEqual(['B'])
+      await user.type(await place(api, 300, 300), 'C')
+      await user.click(screen.getByLabelText('Rectangle'))
+      expect(texts()).toEqual(['B', 'C'])
+      await user.type(await place(api, 300, 200), 'D')
+      await user.click(screen.getByRole('button', { name: 'Clear all' }))
+      expect(kinds()).toEqual([])
+      expect(editor()).not.toBeInTheDocument()
+    })
+
+    it('applies size, Background and color to the selected text, one undo step each', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      await user.type(await place(api), 'Hi')
+      api.escape()
+      api.key(press('r'))
+      await waitFor(() => expect(texts()).toEqual(['Hi']))
+      expect(screen.queryByLabelText('Text size')).not.toBeInTheDocument()
+      nodes()[0].fire('pointerdown')
+      // Its options show, even with another tool.
+      await waitFor(() =>
+        expect(screen.getByLabelText('Medium text')).toHaveAttribute('data-state', 'on'),
+      )
+      const label = () => nodes()[0].children[1].attrs
+      const box = () => nodes()[0].children[0].attrs
+      await user.click(screen.getByLabelText('Large text'))
+      // Measured again: 2 x 18 + 2 x 11 padding wide in the fake.
+      await waitFor(() => expect(label().fontSize).toBe(36))
+      expect(box()).toMatchObject({ width: 58, fill: 'transparent' })
+      await user.click(screen.getByRole('button', { name: 'Background' }))
+      await waitFor(() => expect(box().fill).toBe('#FF3B30'))
+      expect(label().fontSize).toBe(36)
+      await user.click(screen.getByRole('button', { name: 'Color and size' }))
+      await user.click(await screen.findByLabelText('Color #FFCC00'))
+      await waitFor(() => expect(box().fill).toBe('#FFCC00'))
+      expect(label().fill).toBe('#000000')
+      // The stroke size does not show on text: no undo step.
+      await user.click(screen.getByLabelText('Thick'))
+      api.escape()
+      api.key(press('z', mod))
+      await waitFor(() => expect(box().fill).toBe('#FF3B30'))
+      api.key(press('z', mod))
+      await waitFor(() => expect(box().fill).toBe('transparent'))
+      expect(label().fontSize).toBe(36)
+      api.key(press('z', mod))
+      await waitFor(() => expect(label().fontSize).toBe(24))
+      // A rect selected: the text options are the tool's again.
+      await drag(300, 300, 350, 350)
+      nodes()[1].fire('pointerdown')
+      await waitFor(() => expect(screen.queryByLabelText('Text size')).not.toBeInTheDocument())
+    })
+
     it('commits the text being typed before exporting', async () => {
       fakeContext()
       const user = userEvent.setup()

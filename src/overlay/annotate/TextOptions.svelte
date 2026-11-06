@@ -6,10 +6,7 @@
   import * as Tooltip from '$lib/components/ui/tooltip'
   import { TEXT_SIZES, type ShownTextOptions, type TextOptions, type TextSize } from './text'
 
-  /**
-   * The text tool's font size and background, in the toolbar. Its buttons never take focus,
-   * so text being typed stays in its editor and follows the change.
-   */
+  /** The text tool's font size and background, in the toolbar. */
   let {
     options,
     onchange,
@@ -23,7 +20,7 @@
   const LABELS: Record<TextSize, string> = { S: 'Small text', M: 'Medium text', L: 'Large text' }
 </script>
 
-<div class="flex items-center gap-0.5" role="presentation" onmousedown={(e) => e.preventDefault()}>
+<div class="flex items-center gap-0.5">
   <Separator orientation="vertical" class="mx-1 h-5" />
   <ToggleGroup.Root
     type="single"
