@@ -48,14 +48,13 @@ function deferred() {
 /** Lays the sections out 200 px apart in a 300 px tall page, as jsdom has no layout. */
 function layOut() {
   const page = screen.getByRole('main')
-  const ids = ['shortcuts', 'capture', 'general', 'about']
-  ids.forEach((id, i) => {
-    const el = document.getElementById(id)!
+  const sections = page.querySelectorAll('section')
+  sections.forEach((el, i) => {
     Object.defineProperty(el, 'offsetTop', { value: 28 + i * 200 })
     Object.defineProperty(el, 'offsetHeight', { value: 170 })
   })
   Object.defineProperty(page, 'clientHeight', { value: 300 })
-  Object.defineProperty(page, 'scrollHeight', { value: 28 + 4 * 200 })
+  Object.defineProperty(page, 'scrollHeight', { value: 28 + sections.length * 200 })
   return async (top: number) => {
     page.scrollTop = top
     await fireEvent.scroll(page)
@@ -96,18 +95,18 @@ describe('Settings window', () => {
     vi.restoreAllMocks()
   })
 
-  it('lists the sections in the sidebar, with the app version at the bottom', async () => {
+  it('lists the sections in the sidebar in page order, with the app version at the bottom', async () => {
     render(App)
+    const order = ['General', 'Shortcuts', 'Capture', 'About']
     const nav = screen.getByRole('navigation', { name: 'Settings sections' })
-    expect(
-      within(nav)
-        .getAllByRole('link')
-        .map((a) => a.textContent?.trim()),
-    ).toEqual(['General', 'Shortcuts', 'Capture', 'About'])
+    const links = within(nav).getAllByRole('link')
+    expect(links.map((a) => a.textContent?.trim())).toEqual(order)
+    expect(screen.getAllByRole('heading').map((h) => h.textContent)).toEqual(order)
+    // Each link jumps to its own section.
+    expect(links.map((a) => a.getAttribute('href'))).toEqual(
+      [...document.querySelectorAll('section')].map((s) => `#${s.id}`),
+    )
     expect(await within(nav).findByText('Version 0.1.0')).toBe(nav.lastElementChild)
-    for (const name of ['Shortcuts', 'Capture', 'General', 'About']) {
-      expect(screen.getByRole('heading', { name })).toBeInTheDocument()
-    }
   })
 
   it('describes each setting', () => {
@@ -241,27 +240,27 @@ describe('Settings window', () => {
   it('marks the section in view, starting with the first on the page', async () => {
     render(App)
     const scrollTo = layOut()
-    expect(current()).toBe('Shortcuts')
-    await scrollTo(200)
-    expect(current()).toBe('Capture')
-    await scrollTo(400)
     expect(current()).toBe('General')
+    await scrollTo(200)
+    expect(current()).toBe('Shortcuts')
+    await scrollTo(400)
+    expect(current()).toBe('Capture')
     await scrollTo(528) // The end: About never reaches the top.
     expect(current()).toBe('About')
     await scrollTo(0)
-    expect(current()).toBe('Shortcuts')
+    expect(current()).toBe('General')
   })
 
   it('marks a clicked section while it is in view, then follows the scroll again', async () => {
     render(App)
     const scrollTo = layOut()
-    await userEvent.click(screen.getByRole('link', { name: 'General' }))
-    expect(current()).toBe('General')
-    // Scrolled to the end, General is still visible, so it stays marked.
+    await userEvent.click(screen.getByRole('link', { name: 'Capture' }))
+    expect(current()).toBe('Capture')
+    // Scrolled to the end, Capture is still visible, so it stays marked.
     await scrollTo(528)
-    expect(current()).toBe('General')
+    expect(current()).toBe('Capture')
     await scrollTo(0)
-    expect(current()).toBe('Shortcuts')
+    expect(current()).toBe('General')
     await scrollTo(528)
     expect(current()).toBe('About')
   })
