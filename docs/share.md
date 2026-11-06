@@ -19,7 +19,7 @@ pub fn restore_level(window: &WebviewWindow)
 
 - `anchor` is in logical (CSS) pixels relative to the page, origin top left: pass the share button's `getBoundingClientRect()`. The menu opens below it.
 - `share_png` returns as soon as the menu is on screen, without waiting for the user (the menu runs no nested tracking loop). It can be called from any thread, but it waits for the main thread to show the menu, so call it from an async command, not a sync one (those run on the main thread).
-- `on_done` runs once, on the main thread, when the menu closes: `Chosen(title)` (e.g. `"AirDrop"`) before that service shows its own UI, or `Cancelled`. It is not called if `share_png` returns an error.
+- `on_done` runs once, on the main thread, when the menu closes: `Chosen(title)` (e.g. `"AirDrop"`) before that service shows its own UI, or `Cancelled` (also for a picker dropped after 10 minutes without an answer). It is not called if `share_png` returns an error.
 - Errors (`kind` when serialized): `unsupported`, `notReady` (`share::init` was not called), `io` (temp file), `window` (no native window or view).
 - `share::init(app)` runs at startup (already wired in `lib.rs`).
 
@@ -33,7 +33,6 @@ The overlay sits at the screen saver level (1000), which would hide the menu (a 
 2. In `on_done`:
    - `Chosen`: remembers the region (like Copy and Save), closes the overlay right away without hiding the app, then calls `restore_level(&window)`. The window stays at 100 until then, so the service's own UI (AirDrop, Mail…) is not hidden behind it. Hiding the app, as other closes do to give focus back, would hide that UI too.
    - `Cancelled`: the level is already back. It takes Esc back (or closes, if it can't); the overlay stays open with the selection.
-   - Never called (a picker dropped after 10 minutes without reporting): counts as `Cancelled`, so the overlay is never stuck.
 
 The level is only restored if nobody changed it since, and a second share while the window is still lowered keeps the original level on record.
 

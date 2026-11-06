@@ -143,14 +143,21 @@ pub struct Session {
     painted: Vec<u32>,
     /// The Esc forwarded to the pages that is still waiting for their answers.
     escape: Option<EscapeWait>,
-    /// The Save dialog is open and the windows are hidden.
-    saving: bool,
-    /// The share sheet is open over the windows.
-    sharing: bool,
+    /// The Save dialog or share sheet that owns the session while it is open.
+    dialog: Option<Dialog>,
     /// Saves started in this session, so a slow copy can tell whether one began meanwhile.
     saves: u32,
     /// Whether Rust held Esc when the session opened (see [`Phase::wants_escape`]).
     escape_shortcut: bool,
+}
+
+/// A dialog over the overlay. One at a time; Esc is its while it is open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Dialog {
+    /// The Save dialog: the windows are hidden.
+    Save,
+    /// The share sheet: the windows stay.
+    Share,
 }
 
 /// One Esc press, until a page handles it or every shown page says it had nothing to undo.
@@ -261,8 +268,7 @@ impl Phase {
             remember: regions.is_some(),
             painted: Vec::new(),
             escape: None,
-            saving: false,
-            sharing: false,
+            dialog: None,
             saves: 0,
             escape_shortcut,
         });
@@ -399,7 +405,7 @@ impl Phase {
             focus,
             fallback,
             first,
-            hidden: s.saving,
+            hidden: s.dialog == Some(Dialog::Save),
         })
     }
 
@@ -407,7 +413,7 @@ impl Phase {
     /// share may start.
     fn idle_shown(&mut self, session: u64) -> Option<&mut Session> {
         self.current(session)
-            .filter(|s| !s.saving && !s.sharing && !s.painted.is_empty())
+            .filter(|s| s.dialog.is_none() && !s.painted.is_empty())
     }
 
     /// Starts a save in `session`: its windows hide while the Save dialog is open. `false`
@@ -416,7 +422,7 @@ impl Phase {
         let Some(s) = self.idle_shown(session) else {
             return false;
         };
-        s.saving = true;
+        s.dialog = Some(Dialog::Save);
         s.saves += 1;
         s.escape = None;
         true
@@ -428,7 +434,7 @@ impl Phase {
         let Some(s) = self.idle_shown(session) else {
             return false;
         };
-        s.sharing = true;
+        s.dialog = Some(Dialog::Share);
         s.escape = None;
         true
     }
@@ -436,14 +442,14 @@ impl Phase {
     /// The share sheet closed. Returns whether `session` was the one sharing.
     pub fn end_share(&mut self, session: u64) -> bool {
         self.current(session)
-            .is_some_and(|s| std::mem::take(&mut s.sharing))
+            .is_some_and(|s| s.dialog.take_if(|d| *d == Dialog::Share).is_some())
     }
 
     /// The Save dialog closed. Returns the displays to show again if `session` is still the
     /// one saving (one lock, so nothing can close it in between), or `None`.
     pub fn end_save(&mut self, session: u64) -> Option<Vec<u32>> {
-        let s = self.current(session).filter(|s| s.saving)?;
-        s.saving = false;
+        let s = self.current(session)?;
+        s.dialog.take_if(|d| *d == Dialog::Save)?;
         Some(s.painted.clone())
     }
 
@@ -454,26 +460,26 @@ impl Phase {
         match self {
             Phase::Idle => false,
             Phase::Capturing { .. } => true,
-            Phase::Open(s) => s.escape_shortcut && !s.saving && !s.sharing,
+            Phase::Open(s) => s.escape_shortcut && s.dialog.is_none(),
         }
     }
 
     /// Whether the Save dialog is open (the windows are hidden). Tests tell it from sharing.
     #[cfg(test)]
     pub fn saving(&self) -> bool {
-        matches!(self, Phase::Open(s) if s.saving)
+        matches!(self, Phase::Open(s) if s.dialog == Some(Dialog::Save))
     }
 
     /// Whether the Save dialog or the share sheet is open, so Esc is theirs.
     pub fn in_dialog(&self) -> bool {
-        matches!(self, Phase::Open(s) if s.saving || s.sharing)
+        matches!(self, Phase::Open(s) if s.dialog.is_some())
     }
 
     /// How many saves `session` has started, or `None` unless it is open and neither saving nor
     /// sharing. A copy notes it when it starts.
     pub fn saves(&self, session: u64) -> Option<u32> {
         match self {
-            Phase::Open(s) if s.id == session && !s.saving && !s.sharing => Some(s.saves),
+            Phase::Open(s) if s.id == session && s.dialog.is_none() => Some(s.saves),
             _ => None,
         }
     }

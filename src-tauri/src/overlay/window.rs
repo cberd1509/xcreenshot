@@ -300,44 +300,47 @@ pub fn close<R: Runtime>(app: &AppHandle<R>) {
 /// [`close`], only if `ok` holds for the phase. Checked and closed under one lock, so nothing
 /// can start in between (a save, say).
 pub fn close_if<R: Runtime>(app: &AppHandle<R>, ok: impl FnOnce(&Phase) -> bool) {
-    end_if(app, ok, true);
+    if end_if(app, ok) {
+        crate::windows::yield_focus(app, None);
+    }
 }
 
 /// [`close_session`], but the app stays active: a service chosen in the share sheet shows its
 /// UI (AirDrop, Mail…) in this app, and hiding the app would hide it too. Main thread only.
 pub(super) fn close_for_share<R: Runtime>(app: &AppHandle<R>, session: u64) {
-    end_if(app, |phase| phase.session() == Some(session), false);
+    end_if(app, |phase| phase.session() == Some(session));
 }
 
-/// Closes if `ok` holds; `give_back` hands focus back to the app the user was in.
-fn end_if<R: Runtime>(app: &AppHandle<R>, ok: impl FnOnce(&Phase) -> bool, give_back: bool) {
+/// Closes if `ok` holds and no dialog is open. Returns whether it closed.
+fn end_if<R: Runtime>(app: &AppHandle<R>, ok: impl FnOnce(&Phase) -> bool) -> bool {
     {
         let mut phase = phase(app);
         if phase.in_dialog() {
             log::info!("not closing the overlay while the Save dialog or share sheet is open");
-            return;
+            return false;
         }
         if !ok(&phase) {
-            return;
+            return false;
         }
         *phase = Phase::Idle;
     }
     sync_escape(app);
     hide(app);
-    let windows = app.webview_windows();
-    for label in windows.keys().filter(|l| display_id(l).is_some()) {
+    for label in app
+        .webview_windows()
+        .keys()
+        .filter(|l| display_id(l).is_some())
+    {
         if let Err(e) = app.emit_to(label.as_str(), CLOSED_EVENT, ()) {
             log::warn!("could not tell {label} to free its frame: {e}");
         }
     }
-    // First, so a notice shown again keeps the app visible, as Settings does. After a share
-    // too: only the focus stays with the chosen service.
+    // A notice hidden for the capture comes back after a share too; only giving focus back
+    // (in `close_if`) is skipped.
     crate::notice::show_after_capture(app);
-    if give_back {
-        crate::windows::yield_focus(app, None);
-    }
     // Last, so a waiting update restart sees the overlay gone.
     app.state::<Overlay>().idle.notify_waiters();
+    true
 }
 
 /// Hides every overlay window, keeping the session (the Save dialog hides them this way).
