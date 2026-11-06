@@ -103,6 +103,25 @@
   /** Keeps focus where it is, while `keepFocus`. */
   const keep = (e: Event) => keepFocus && e.preventDefault()
 
+  /** What had focus when the hue slider was pressed while `keepFocus`, to give it back. */
+  let refocus: HTMLElement | null = null
+
+  /**
+   * The hue slider takes the pointer, and focus for as long as it is dragged: a slider whose
+   * press is cancelled cannot move. The text being typed stays open (see `TextEditor`).
+   */
+  function hold(e: PointerEvent & { currentTarget: HTMLInputElement }) {
+    const active = document.activeElement
+    refocus = keepFocus && active instanceof HTMLElement ? active : null
+    e.currentTarget.setPointerCapture?.(e.pointerId)
+  }
+
+  /** Gives focus back after the slider, caret and all. */
+  function release() {
+    refocus?.focus()
+    refocus = null
+  }
+
   /** Closes the color or ⋯ menu. Returns whether one was open (for Esc). */
   export function closeMenus(): boolean {
     const open = colorsOpen || moreOpen
@@ -215,6 +234,7 @@
         onmousedown={keep}
         onOpenAutoFocus={keep}
         onCloseAutoFocus={keep}
+        trapFocus={!keepFocus}
       >
         <ToggleGroup.Root
           type="single"
@@ -231,13 +251,21 @@
           {/each}
         </ToggleGroup.Root>
         <!-- In the page, not the system color panel: that would open under the overlay. -->
+        <!-- Not `keep`: its press must go through. `data-keeps-text` keeps text open. -->
         <input
           type="range"
           min="0"
           max="359"
           aria-label="Custom color"
+          data-keeps-text
           class="hue mt-2 block h-3 w-full cursor-pointer appearance-none rounded-full"
-          onchange={(e) => (style = { ...style, color: hueColor(Number(e.currentTarget.value)) })}
+          onmousedown={(e) => e.stopPropagation()}
+          onpointerdown={hold}
+          onpointerup={release}
+          onchange={(e) => {
+            style = { ...style, color: hueColor(Number(e.currentTarget.value)) }
+            release()
+          }}
         />
         <ToggleGroup.Root
           type="single"

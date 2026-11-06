@@ -32,6 +32,15 @@
   const colors = $derived(textColors(color, background))
   const font = $derived(textFont(fontSize))
 
+  /**
+   * Losing focus commits, unless it went to a control that gives it back (`data-keeps-text`,
+   * the hue slider).
+   */
+  function onblur(e: FocusEvent) {
+    const to = e.relatedTarget
+    if (!(to instanceof Element && to.closest('[data-keeps-text]'))) oncommit()
+  }
+
   /** Focused on open, with the caret at the end. */
   function focus(el: HTMLTextAreaElement) {
     el.focus()
@@ -57,7 +66,7 @@
   style:color={colors.fill}
   style:caret-color={colors.fill}
   style:background={colors.box}
-  onblur={oncommit}
+  {onblur}
   onpointerdown={(e) => e.stopPropagation()}></textarea>
 
 <style>

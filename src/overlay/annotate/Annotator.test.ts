@@ -873,6 +873,40 @@ describe('Annotator', () => {
       expect(nodes()[0].children[1].attrs.fill).toBe('#007AFF')
     })
 
+    it('lets the hue slider move while text is typed, then gives the text its focus back', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      const field = await place(api)
+      await user.type(field, 'Hi')
+      field.setSelectionRange(1, 1)
+      await user.click(screen.getByRole('button', { name: 'Color and size' }))
+      const slider = await screen.findByLabelText<HTMLInputElement>('Custom color')
+      const capture = vi.fn<(id: number) => void>()
+      slider.setPointerCapture = capture
+      // The press is not cancelled, so the slider can move and take focus.
+      const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true })
+      slider.dispatchEvent(down)
+      expect(down.defaultPrevented).toBe(false)
+      await fireEvent.pointerDown(slider, { pointerId: 3 })
+      expect(capture).toHaveBeenCalledWith(3)
+      slider.focus()
+      // The text stays open while the slider has focus.
+      expect(editor()).toBe(field)
+      await fireEvent.change(slider, { target: { value: '240' } })
+      expect(field).toHaveFocus()
+      expect(field.selectionStart).toBe(1)
+      expect(field.style.color).toBe('rgb(0, 0, 255)')
+      // A release without a change gives focus back too.
+      await fireEvent.pointerDown(slider, { pointerId: 3 })
+      slider.focus()
+      await fireEvent.pointerUp(slider, { pointerId: 3 })
+      expect(field).toHaveFocus()
+      // Focus going anywhere else still commits.
+      field.blur()
+      await waitFor(() => expect(texts()).toEqual(['Hi']))
+      expect(api.escape()).toBe(true)
+    })
+
     it('drops the text being typed on Undo, and commits it before a tool or clear', async () => {
       const user = userEvent.setup()
       const { api } = await setup()
