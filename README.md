@@ -7,10 +7,10 @@ A fast, privacy-first, open-source screenshot tool for macOS (Windows coming soo
 ## Features (v0.1 goals)
 
 - Global hotkey — **⌃⇧⌘S** on macOS, **PrintScreen** on Windows (configurable)
-- Select a region or a window on a frozen, pixel-exact overlay (multi-monitor, Retina-aware)
+- Drag to select a region on a frozen, pixel-exact overlay (multi-monitor, Retina-aware)
 - Remember the last region (LightShot-style)
 - Inline annotations: pen, line, arrow, rectangle, ellipse, text, highlighter, blur — with colors and stroke widths
-- Copy to clipboard, save to disk, or share via the native OS share sheet
+- Copy to clipboard, save as PNG (native Save dialog, remembers your last folder), or share via the native OS share sheet
 
 ## Privacy
 
