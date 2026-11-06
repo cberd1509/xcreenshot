@@ -105,8 +105,8 @@ pub fn run() {
 
             let (capture_shortcut, print_screen_moved) = settings::init(app.handle());
             build_tray(app.handle(), &capture_shortcut)?;
-            if print_screen_moved {
-                print_screen::tell(app.handle(), open_settings);
+            if let Some(reason) = print_screen_moved {
+                print_screen::tell(app.handle(), reason, open_settings);
             }
             overlay::prewarm(app.handle());
             permission::on_startup(app.handle());
