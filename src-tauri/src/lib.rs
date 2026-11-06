@@ -4,12 +4,14 @@ mod actions;
 /// Public for `examples/capture.rs`.
 pub mod capture;
 mod overlay;
+mod permission;
 mod shortcut;
+mod windows;
 
 use actions::Action;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, WebviewUrl};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 const SETTINGS_WINDOW: &str = "settings";
@@ -32,6 +34,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(overlay::Overlay::default())
+        .manage(shortcut::Registered::default())
         .invoke_handler(tauri::generate_handler![
             overlay::window::overlay_ready,
             overlay::window::overlay_frame,
@@ -40,6 +43,11 @@ pub fn run() {
             overlay::window::overlay_escape,
             overlay::window::overlay_confirm,
             overlay::window::close_overlay,
+            permission::permission_granted,
+            #[cfg(target_os = "macos")]
+            permission::open_permission_settings,
+            permission::restart_app,
+            shortcut::capture_shortcut,
         ])
         .setup(|app| {
             // Menu bar app: no Dock icon.
@@ -47,21 +55,24 @@ pub fn run() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             build_tray(app.handle(), shortcut::DEFAULT)?;
-            if let Err(e) = app
+            match app
                 .global_shortcut()
                 .on_shortcut(shortcut::DEFAULT, |app, _, event| {
                     if event.state() == ShortcutState::Pressed {
                         handle(app, Action::Capture);
                     }
-                })
-            {
+                }) {
+                Ok(()) => app
+                    .state::<shortcut::Registered>()
+                    .set(Some(shortcut::DEFAULT)),
                 // Another app may own the shortcut; the menu bar item still works.
-                log::warn!(
+                Err(e) => log::warn!(
                     "could not register capture shortcut {}: {e}",
                     shortcut::DEFAULT
-                );
+                ),
             }
             overlay::prewarm(app.handle());
+            permission::on_startup(app.handle());
             #[cfg(debug_assertions)]
             overlay::debug::schedule(app.handle());
             Ok(())
@@ -141,16 +152,11 @@ fn handle(app: &AppHandle, action: Action) {
 /// The Settings webview is created on demand and destroyed on close. The only webviews kept
 /// while idle are the hidden overlay windows, prewarmed so the hotkey is fast.
 fn open_settings(app: &AppHandle) -> tauri::Result<()> {
-    let window = match app.get_webview_window(SETTINGS_WINDOW) {
-        Some(w) => w,
-        None => WebviewWindowBuilder::new(app, SETTINGS_WINDOW, WebviewUrl::default())
-            .title("xcreenshot Settings")
+    windows::show_window(app, SETTINGS_WINDOW, WebviewUrl::default(), |b| {
+        b.title("xcreenshot Settings")
             .inner_size(880.0, 640.0)
             .min_inner_size(640.0, 480.0)
             .center()
-            .build()?,
-    };
-    window.unminimize()?;
-    window.show()?;
-    window.set_focus()
+    })?;
+    Ok(())
 }

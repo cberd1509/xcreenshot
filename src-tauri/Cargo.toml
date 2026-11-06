@@ -27,6 +27,7 @@ tauri-plugin-single-instance = "2"
 xcap = "0.9.8"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+open = "5.4.5"
 objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSResponder", "NSWindow"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGDirectDisplay", "CGDisplayConfiguration", "CGWindow"] }

@@ -56,8 +56,8 @@ pub(super) fn phase<R: Runtime>(app: &AppHandle<R>) -> MutexGuard<'_, Phase> {
 
 /// The OS side of a capture: permission, listing displays and grabbing them. Faked in tests.
 pub(crate) trait Screen: Send + 'static {
-    /// Whether capture is allowed. May show the system prompt.
-    fn permitted(&self) -> bool;
+    /// Whether capture is allowed. If not, opens the permission window.
+    fn permitted<R: Runtime>(&self, app: &AppHandle<R>) -> bool;
     fn displays(&self) -> Result<Vec<Display>, CaptureError>;
     fn capture(&self, ids: &[u32]) -> Result<Vec<DisplayFrame>, CaptureError>;
     /// The cursor in the displays' OS units (points on macOS, pixels on Windows).
@@ -68,13 +68,11 @@ pub(crate) trait Screen: Send + 'static {
 struct Os;
 
 impl Screen for Os {
-    fn permitted(&self) -> bool {
+    fn permitted<R: Runtime>(&self, app: &AppHandle<R>) -> bool {
         if capture::has_permission() {
             return true;
         }
-        // TODO(#23): show the permission screen instead of only the system prompt.
-        let granted = capture::request_permission();
-        log::warn!("Screen Recording permission requested (granted: {granted})");
+        crate::permission::show(app);
         false
     }
 
@@ -125,7 +123,7 @@ fn start_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) -> Option<u64
         log::info!("capture ignored: the overlay is already open");
         return None;
     }
-    let listed = screen.permitted().then(|| screen.displays());
+    let listed = screen.permitted(app).then(|| screen.displays());
     let Some(Ok(displays)) = listed else {
         if let Some(Err(e)) = listed {
             log::error!("could not list displays: {e}");
@@ -535,7 +533,7 @@ mod tests {
     }
 
     impl Screen for Fake {
-        fn permitted(&self) -> bool {
+        fn permitted<R: Runtime>(&self, _: &AppHandle<R>) -> bool {
             self.permitted
         }
 
