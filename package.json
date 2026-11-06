@@ -30,7 +30,7 @@
     "@testing-library/svelte": "^5.4.2",
     "@testing-library/user-event": "^14.6.8",
     "@tsconfig/svelte": "^5.0.8",
-    "@types/node": "^24.19.2",
+    "@types/node": "^26.6.6",
     "@vitest/coverage-v8": "^5.1.0",
     "bits-ui": "^2.20.6",
     "cn": "^0.5.2",
