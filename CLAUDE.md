@@ -42,7 +42,7 @@ cd src-tauri && cargo clippy --all-targets -- -D warnings && cargo test
 - **Rust:** `lib.rs` only wires plugins, tray and shortcuts; logic lives in modules with unit tests. Keep pure logic (geometry, parsing) separate from OS calls so it's testable without a real screen. Put platform code behind `cfg(target_os = ...)` and keep Windows compiling.
 - **Frontend:** TypeScript strict, Svelte 5 runes, components covered by Testing Library tests.
 - **Speed:** hotkey-to-overlay must stay fast (target under 150 ms). Capture happens before any window appears. Benchmark capture changes with `cargo run --release --example capture`; don't swap the backend for a slower one.
-- **Privacy:** no telemetry, analytics or accounts. The only network request is the update check (on by default, can be turned off). Keep the strict CSP in `tauri.conf.json`.
+- **Privacy:** no telemetry, analytics or accounts. The only network requests are the update check (`latest.json` from GitHub Releases) and, when there is one, the update download. Checks are on by default and can be turned off. Keep the strict CSP in `tauri.conf.json`.
 - **UI copy:** short and plain. Don't over-explain or add privacy and marketing lines. When simplifying, change the wording, not the layout.
 
 ## Ask the maintainer first
