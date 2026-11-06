@@ -3,6 +3,8 @@
 mod actions;
 /// Public for `examples/capture.rs`.
 pub mod capture;
+#[cfg(all(target_os = "macos", not(test)))]
+mod macos;
 mod output;
 mod overlay;
 mod permission;

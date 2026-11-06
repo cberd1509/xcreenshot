@@ -2,20 +2,29 @@
 //! returns [`ShareError::Unsupported`]. See `docs/share.md` for what callers must do.
 //!
 //! The PNG goes to a temp file in the app's cache dir (`share/`), which is deleted when the
-//! user cancels or the chosen service reports back, and swept at the next startup otherwise.
+//! user cancels or soon after the chosen service reports back, and swept at the next startup
+//! otherwise.
 
 #[cfg(debug_assertions)]
 pub mod debug;
 #[cfg(all(target_os = "macos", not(test)))]
 mod macos;
+#[cfg(any(test, target_os = "macos"))]
+mod picker;
+// Only the macOS sheet drives sessions so far (Windows: #30).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod session;
 mod temp;
 
+pub use session::ShareOutcome;
+
+use session::{OnDone, Session};
 use temp::TempFiles;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, Runtime, WebviewWindow};
 
 /// A rectangle in logical pixels, relative to the window's content area (origin top left,
@@ -100,20 +109,7 @@ impl serde::Serialize for ShareError {
     }
 }
 
-/// How sharing ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(all(target_os = "macos", not(test))), allow(dead_code))]
-enum Ended {
-    /// The sheet was dismissed without a choice.
-    Cancelled,
-    /// The chosen service reported success or failure.
-    Finished,
-}
-
-/// Called once when sharing ends, on the main thread.
-type Done = Box<dyn FnOnce(Ended) + Send + 'static>;
-
-/// After a service reports back, the file is kept this long: some read it lazily.
+/// After a service reports back, the file is kept this long: some read it late.
 #[cfg_attr(not(all(target_os = "macos", not(test))), allow(dead_code))]
 const GRACE: Duration = Duration::from_secs(30);
 
@@ -123,13 +119,18 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) {
     let dir = app
         .path()
         .app_cache_dir()
-        .unwrap_or_else(|_| std::env::temp_dir().join("com.bervex.xcreenshot"))
+        .unwrap_or_else(|_| std::env::temp_dir().join(&app.config().identifier))
         .join("share");
     manage(app, dir);
 }
 
+/// Manages the tracker, starts the deadline sweeper and sweeps leftovers (the returned thread).
 fn manage<R: Runtime>(app: &AppHandle<R>, dir: PathBuf) -> JoinHandle<()> {
     app.manage(TempFiles::new(dir));
+    let sweeper = app.clone();
+    tauri::async_runtime::spawn(async move {
+        sweeper.state::<TempFiles>().run_deadlines().await;
+    });
     let app = app.clone();
     std::thread::spawn(move || {
         let swept = app.state::<TempFiles>().sweep();
@@ -139,59 +140,77 @@ fn manage<R: Runtime>(app: &AppHandle<R>, dir: PathBuf) -> JoinHandle<()> {
     })
 }
 
-/// Shows the share sheet for `png`, anchored to `anchor` in `window`. Returns once the sheet
-/// is open; the temp file is deleted when sharing ends. Callable from any thread.
+/// Shows the share sheet for `png`, anchored to `anchor` in `window`. Returns as soon as the
+/// menu is on screen, without waiting for the user. Callable from any thread; it blocks until
+/// the main thread has shown the menu, so call it from an async command, not a sync one.
 ///
-/// A window above the pop-up menu level (the overlay, at the screen saver level) would hide
-/// the sheet's menu, so it is lowered just below that level until the menu closes.
+/// `on_done` runs once on the main thread when the menu closes: `Chosen` before the service
+/// shows its own UI, or `Cancelled`. It is not called if this returns an error. The temp file
+/// is deleted separately, once sharing has ended.
+///
+/// A window above the pop-up menu level (the overlay) would hide the menu, so it is lowered
+/// just below it. `Cancelled` puts it back; after `Chosen` it stays lowered until the caller
+/// closes it and calls [`restore_level`]. A global Esc shortcut would steal Esc from the menu:
+/// release it before calling this and take it back in `on_done`.
 pub fn share_png<R: Runtime>(
     window: &WebviewWindow<R>,
     png: &[u8],
     anchor: Rect,
+    on_done: impl FnOnce(ShareOutcome) + Send + 'static,
 ) -> Result<(), ShareError> {
     #[cfg(all(target_os = "macos", not(test)))]
     {
         let now = chrono::Local::now().naive_local();
-        share_with(window, png, anchor, now, GRACE, macos::show)
+        let on_done = Box::new(on_done);
+        share_with(window, png, anchor, on_done, now, GRACE, macos::show)
     }
     #[cfg(not(all(target_os = "macos", not(test))))]
     {
-        let _ = (window, png, anchor);
+        let _ = (window, png, anchor, on_done);
         Err(ShareError::Unsupported)
     }
 }
 
-/// Writes the temp file and hands it to `show`, deleting it again if `show` fails.
+/// Writes the temp file and hands it to `show` with the session that will report the outcome
+/// and delete the file. Deletes it again if `show` fails.
 #[cfg_attr(not(all(target_os = "macos", not(test))), allow(dead_code))]
 fn share_with<R: Runtime>(
     window: &WebviewWindow<R>,
     png: &[u8],
     anchor: Rect,
+    on_done: OnDone,
     now: chrono::NaiveDateTime,
     grace: Duration,
-    show: impl FnOnce(&WebviewWindow<R>, Rect, &Path, Done) -> Result<(), ShareError>,
+    show: impl FnOnce(&WebviewWindow<R>, Rect, &Path, Session) -> Result<(), ShareError>,
 ) -> Result<(), ShareError> {
     let app = window.app_handle();
     let files = app.try_state::<TempFiles>().ok_or(ShareError::NotReady)?;
     let path = files.create(png, now)?;
     let handle = app.clone();
     let shared = path.clone();
-    let done: Done = Box::new(move |ended| {
-        let release = move || handle.state::<TempFiles>().release(&shared);
-        match ended {
-            Ended::Cancelled => release(),
-            Ended::Finished => {
-                std::thread::spawn(move || {
-                    std::thread::sleep(grace);
-                    release();
-                });
-            }
+    let release = Box::new(move |delay: Duration| {
+        let files = handle.state::<TempFiles>();
+        if delay.is_zero() {
+            files.release(&shared);
+        } else {
+            files.release_after(&shared, Instant::now() + delay);
         }
     });
-    show(window, anchor, &path, done).inspect_err(|e| {
+    let session = Session::new(on_done, release, grace);
+    show(window, anchor, &path, session).inspect_err(|e| {
         log::error!("{e}");
         files.release(&path);
     })
+}
+
+/// Puts `window` back at the level it had before a share lowered it, unless its level has
+/// changed since. Call it after closing the window when `on_done` reported `Chosen`. No-op off
+/// macOS, or when no share lowered the window.
+pub fn restore_level<R: Runtime>(window: &WebviewWindow<R>) {
+    #[cfg(all(target_os = "macos", not(test)))]
+    macos::restore_level(window);
+    #[cfg(not(all(target_os = "macos", not(test))))]
+    let _ = window;
 }
 
 #[cfg(test)]
@@ -289,62 +308,82 @@ mod tests {
     }
 
     #[test]
+    fn restoring_a_level_is_a_no_op_without_a_native_window() {
+        let app = app();
+        restore_level(&window(&app));
+    }
+
+    #[test]
     fn share_png_is_unsupported_without_a_native_sheet() {
         let app = app();
-        assert!(matches!(
-            share_png(&window(&app), b"png", ANCHOR),
-            Err(ShareError::Unsupported)
-        ));
+        let result = share_png(&window(&app), b"png", ANCHOR, |_| panic!("not shown"));
+        assert!(matches!(result, Err(ShareError::Unsupported)));
+    }
+
+    fn ignore() -> OnDone {
+        Box::new(|_| {})
     }
 
     #[test]
     fn share_needs_init() {
         let app = app();
         let w = window(&app);
-        let result = share_with(&w, b"png", ANCHOR, now(), Duration::ZERO, |_, _, _, _| {
+        let result = share_with(&w, b"png", ANCHOR, ignore(), now(), GRACE, |_, _, _, _| {
             Ok(())
         });
         assert!(matches!(result, Err(ShareError::NotReady)));
     }
 
-    /// Shares one file and returns its path and the callback that ends sharing.
-    fn shared(app: &App<MockRuntime>, grace: Duration) -> (PathBuf, Done) {
-        let (tx, rx) = mpsc::channel();
+    /// Shares one file; returns its path, the session and the outcomes reported so far.
+    fn shared(
+        app: &App<MockRuntime>,
+        grace: Duration,
+    ) -> (PathBuf, Session, mpsc::Receiver<ShareOutcome>) {
+        let (outcomes, rx) = mpsc::channel();
+        let on_done: OnDone = Box::new(move |o| outcomes.send(o).unwrap());
+        let mut opened = None;
         share_with(
             &window(app),
             b"png",
             ANCHOR,
+            on_done,
             now(),
             grace,
-            |_, anchor, path, done| {
+            |_, anchor, path, s| {
                 assert_eq!(anchor, ANCHOR);
-                tx.send((path.to_path_buf(), done)).unwrap();
+                opened = Some((path.to_path_buf(), s));
                 Ok(())
             },
         )
         .unwrap();
-        let (path, done) = rx.recv().unwrap();
+        let (path, session) = opened.unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"png");
-        (path, done)
+        (path, session, rx)
     }
 
     #[test]
-    fn cancelling_deletes_the_file_at_once() {
+    fn cancelling_reports_and_deletes_the_file_at_once() {
         let app = app();
         let dir = setup(&app, "cancel");
-        let (path, done) = shared(&app, Duration::from_secs(60));
+        let (path, session, outcomes) = shared(&app, Duration::from_secs(60));
         assert_eq!(path, dir.join("xcreenshot-2026-11-06-13.22.05.png"));
-        done(Ended::Cancelled);
+        session.handle(session::Event::Cancelled);
+        assert_eq!(outcomes.try_recv(), Ok(ShareOutcome::Cancelled));
         assert!(!path.exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
-    fn a_finished_share_deletes_the_file_after_the_grace_period() {
+    fn a_chosen_service_is_reported_and_the_file_outlives_it_briefly() {
         let app = app();
         let dir = setup(&app, "finish");
-        let (path, done) = shared(&app, Duration::from_millis(50));
-        done(Ended::Finished);
+        let (path, session, outcomes) = shared(&app, Duration::from_millis(50));
+        session.handle(session::Event::Chosen("AirDrop".into()));
+        assert_eq!(
+            outcomes.try_recv(),
+            Ok(ShareOutcome::Chosen("AirDrop".into()))
+        );
+        session.handle(session::Event::Finished);
         assert!(path.exists(), "kept for services that read it late");
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while path.exists() && std::time::Instant::now() < deadline {
@@ -355,24 +394,26 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_show_deletes_the_file() {
+    fn a_failed_show_deletes_the_file_and_reports_nothing() {
         let app = app();
         let dir = setup(&app, "failed");
         let w = window(&app);
-        let (tx, rx) = mpsc::channel();
+        let mut seen = None;
+        let on_done: OnDone = Box::new(|_| panic!("not shown"));
         let result = share_with(
             &w,
             b"png",
             ANCHOR,
+            on_done,
             now(),
-            Duration::ZERO,
+            GRACE,
             |_, _, path, _| {
-                tx.send(path.to_path_buf()).unwrap();
+                seen = Some(path.to_path_buf());
                 Err(ShareError::Window("no view".into()))
             },
         );
         assert!(matches!(result, Err(ShareError::Window(_))));
-        assert!(!rx.recv().unwrap().exists());
+        assert!(!seen.unwrap().exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

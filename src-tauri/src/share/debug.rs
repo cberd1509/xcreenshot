@@ -69,10 +69,15 @@ fn later<R: Runtime>(
 fn share<R: Runtime>(window: &WebviewWindow<R>, mode: Mode) {
     #[cfg(all(target_os = "macos", not(test)))]
     if mode != Mode::Normal {
-        super::macos::raise_like_overlay(window);
+        match crate::macos::ns_window(window) {
+            Ok(w) => w.setLevel(crate::macos::SCREEN_SAVER_LEVEL),
+            Err(e) => log::error!("debug share: {e}"),
+        }
     }
     let started = std::time::Instant::now();
-    let result = super::share_png(window, &test_png(), ANCHOR);
+    let result = super::share_png(window, &test_png(), ANCHOR, |outcome| {
+        log::info!("debug share: {outcome:?}");
+    });
     log::info!(
         "debug share ({mode:?}): {result:?}, returned after {:?}",
         started.elapsed()

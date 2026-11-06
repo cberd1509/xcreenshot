@@ -2,10 +2,12 @@
 //! deleted when sharing ends (or at the next startup if it never reports back).
 
 use chrono::NaiveDateTime;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::Instant;
+use tokio::sync::Notify;
 
 const PREFIX: &str = "xcreenshot-";
 const EXTENSION: &str = ".png";
@@ -14,8 +16,12 @@ const EXTENSION: &str = ".png";
 #[derive(Debug)]
 pub struct TempFiles {
     dir: PathBuf,
-    /// Files still being shared. Never reused for a new file, never swept.
-    live: Mutex<HashSet<PathBuf>>,
+    /// Files still being shared, with the time to delete them once sharing has ended. Never
+    /// reused for a new file, never swept. Every file operation on a live path happens under
+    /// this lock, so a name is never handed out while its old file is still being deleted.
+    live: Mutex<HashMap<PathBuf, Option<Instant>>>,
+    /// Wakes [`Self::run_deadlines`] when a deadline is added.
+    wake: Notify,
 }
 
 impl TempFiles {
@@ -23,10 +29,11 @@ impl TempFiles {
         Self {
             dir,
             live: Mutex::default(),
+            wake: Notify::new(),
         }
     }
 
-    fn live(&self) -> MutexGuard<'_, HashSet<PathBuf>> {
+    fn live(&self) -> MutexGuard<'_, HashMap<PathBuf, Option<Instant>>> {
         self.live.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -39,9 +46,9 @@ impl TempFiles {
             let mut live = self.live();
             let path = (1..)
                 .map(|n| self.dir.join(file_name(now, n)))
-                .find(|p| !live.contains(p))
+                .find(|p| !live.contains_key(p))
                 .expect("unbounded range");
-            live.insert(path.clone());
+            live.insert(path.clone(), None);
             path
         };
         let written = std::fs::create_dir_all(&self.dir).and_then(|()| std::fs::write(&path, png));
@@ -52,10 +59,56 @@ impl TempFiles {
         Ok(path)
     }
 
-    /// Sharing ended: deletes the file. Unknown paths are left alone.
+    /// Sharing ended: deletes the file now. Unknown paths are left alone.
     pub fn release(&self, path: &Path) {
-        if self.live().remove(path) {
+        let mut live = self.live();
+        if live.contains_key(path) {
+            // Deleted before the name is freed, both under the lock.
             remove(path);
+            live.remove(path);
+        }
+    }
+
+    /// Sharing ended, but the file is kept until `at` (see [`Self::run_deadlines`]).
+    pub fn release_after(&self, path: &Path, at: Instant) {
+        if let Some(deadline) = self.live().get_mut(path) {
+            *deadline = Some(at);
+            self.wake.notify_one();
+        }
+    }
+
+    /// Deletes the files whose deadline has passed. Returns how many.
+    pub fn release_due(&self, now: Instant) -> usize {
+        let mut live = self.live();
+        let due: Vec<PathBuf> = live
+            .iter()
+            .filter(|(_, at)| at.is_some_and(|at| at <= now))
+            .map(|(p, _)| p.clone())
+            .collect();
+        for path in &due {
+            remove(path);
+            live.remove(path);
+        }
+        due.len()
+    }
+
+    fn next_deadline(&self) -> Option<Instant> {
+        self.live().values().filter_map(|at| *at).min()
+    }
+
+    /// The one sweeper for deadlines: sleeps until the next one (or until a new one is added)
+    /// and deletes what is due. Runs for the life of the app.
+    pub async fn run_deadlines(&self) {
+        loop {
+            let added = self.wake.notified();
+            match self.next_deadline() {
+                Some(at) => {
+                    let wait = at.saturating_duration_since(Instant::now());
+                    let _ = tokio::time::timeout(wait, added).await;
+                }
+                None => added.await,
+            }
+            self.release_due(Instant::now());
         }
     }
 
@@ -71,7 +124,7 @@ impl TempFiles {
             .filter_map(Result::ok)
             .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
             .map(|e| e.path())
-            .filter(|p| is_ours(p) && !live.contains(p))
+            .filter(|p| is_ours(p) && !live.contains_key(p))
             .filter(|p| remove(p))
             .count()
     }
@@ -109,6 +162,7 @@ fn is_ours(path: &Path) -> bool {
 mod tests {
     use super::*;
     use chrono::NaiveDate;
+    use std::time::Duration;
 
     fn at(h: u32, m: u32, s: u32) -> NaiveDateTime {
         NaiveDate::from_ymd_opt(2026, 11, 6)
@@ -221,7 +275,7 @@ mod tests {
         std::fs::write(&dir, b"a file, not a directory").unwrap();
         let files = TempFiles::new(dir.join("share"));
         assert!(files.create(b"png", at(13, 22, 5)).is_err());
-        assert_eq!(files.live().len(), 0);
+        assert!(files.live().is_empty());
         std::fs::remove_file(dir).unwrap();
     }
 
@@ -237,6 +291,72 @@ mod tests {
         let kept = path.exists();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert!(kept);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn deadlines_delete_only_what_is_due() {
+        let dir = scratch("deadlines");
+        let files = TempFiles::new(dir.clone());
+        let t0 = Instant::now();
+        let soon = files.create(b"a", at(13, 22, 5)).unwrap();
+        let later = files.create(b"b", at(13, 22, 5)).unwrap();
+        let open = files.create(b"c", at(13, 22, 5)).unwrap();
+        files.release_after(&soon, t0 + Duration::from_secs(1));
+        files.release_after(&later, t0 + Duration::from_secs(5));
+        // Unknown paths are ignored.
+        files.release_after(&dir.join("other.png"), t0);
+        assert_eq!(files.next_deadline(), Some(t0 + Duration::from_secs(1)));
+        assert_eq!(files.release_due(t0), 0);
+        assert_eq!(files.release_due(t0 + Duration::from_secs(2)), 1);
+        assert!(!soon.exists() && later.exists() && open.exists());
+        assert_eq!(files.next_deadline(), Some(t0 + Duration::from_secs(5)));
+        assert_eq!(files.release_due(t0 + Duration::from_secs(9)), 1);
+        assert!(open.exists(), "still being shared");
+        assert_eq!(files.next_deadline(), None);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_sweeper_deletes_files_when_due() {
+        let dir = scratch("sweeper");
+        let files = std::sync::Arc::new(TempFiles::new(dir.clone()));
+        let path = files.create(b"png", at(13, 22, 5)).unwrap();
+        let runner = files.clone();
+        tauri::async_runtime::spawn(async move { runner.run_deadlines().await });
+        // Added while the sweeper is idle: it wakes up for it.
+        files.release_after(&path, Instant::now() + Duration::from_millis(30));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while path.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!path.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_name_is_never_reused_before_its_file_is_gone() {
+        // Many threads share and release in the same second: each one's file must hold its
+        // own bytes until it releases it.
+        let dir = scratch("race");
+        let files = std::sync::Arc::new(TempFiles::new(dir.clone()));
+        let workers: Vec<_> = (0..8u8)
+            .map(|i| {
+                let files = files.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..50 {
+                        let path = files.create(&[i; 16], at(13, 22, 5)).unwrap();
+                        assert_eq!(std::fs::read(&path).unwrap(), [i; 16]);
+                        files.release(&path);
+                    }
+                })
+            })
+            .collect();
+        for w in workers {
+            w.join().unwrap();
+        }
+        assert!(files.live().is_empty());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

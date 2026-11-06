@@ -1,72 +1,90 @@
-//! AppKit glue for `NSSharingServicePicker`. Main thread only; kept thin, the logic it relies
-//! on (anchor rect, temp files) is tested in the parent module.
+//! AppKit glue for `NSSharingServicePicker`: FFI calls only, on the main thread. The decisions
+//! (levels, edge, events, which pickers to keep) are in `picker.rs` and `session.rs`.
 
-use super::{Done, Ended, Rect, ShareError};
+use super::picker::{self, Edge, Entry, Levels, Open};
+use super::session::{Event, Session};
+use super::{Rect, ShareError};
+use crate::macos::ns_window;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSPopUpMenuWindowLevel, NSSharingService, NSSharingServiceDelegate, NSSharingServicePicker,
+    NSSharingService, NSSharingServiceDelegate, NSSharingServicePicker,
     NSSharingServicePickerDelegate, NSWindow,
 };
 use objc2_foundation::{NSArray, NSError, NSPoint, NSRect, NSRectEdge, NSSize, NSString, NSURL};
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::path::Path;
 use std::sync::mpsc;
+use std::time::Instant;
 use tauri::{Runtime, WebviewWindow};
 
-/// The picker's menu is a pop-up menu window (101). A higher window (the overlay, at the screen
-/// saver level) waits here while the menu is open: under the menu, over the menu bar and Dock.
-const BELOW_MENUS: isize = NSPopUpMenuWindowLevel - 1;
+thread_local! {
+    static OPEN: RefCell<Open<Retained<Delegate>>> = RefCell::default();
+    static LEVELS: RefCell<Levels> = RefCell::default();
+}
 
-/// Shows the picker on the main thread, waiting for it if called from another thread.
-pub fn show<R: Runtime>(
+/// Runs `f` on the main thread and waits for it, or runs it directly when already there.
+fn on_main<R: Runtime, T: Send + 'static>(
     window: &WebviewWindow<R>,
-    anchor: Rect,
-    path: &Path,
-    done: Done,
-) -> Result<(), ShareError> {
-    if MainThreadMarker::new().is_some() {
-        return present(window, anchor, path, done);
+    f: impl FnOnce(&WebviewWindow<R>, MainThreadMarker) -> T + Send + 'static,
+) -> Result<T, ShareError> {
+    if let Some(mtm) = MainThreadMarker::new() {
+        return Ok(f(window, mtm));
     }
-    let path = path.to_path_buf();
     let (tx, rx) = mpsc::channel();
     let target = window.clone();
     window
         .run_on_main_thread(move || {
-            let _ = tx.send(present(&target, anchor, &path, done));
+            let mtm = MainThreadMarker::new().expect("on the main thread");
+            let _ = tx.send(f(&target, mtm));
         })
         .map_err(|e| ShareError::Window(e.to_string()))?;
     rx.recv()
-        .map_err(|_| ShareError::Window("the main thread did not run the share sheet".into()))?
+        .map_err(|_| ShareError::Window("the main thread did not answer".into()))
 }
 
-fn ns_window<R: Runtime>(window: &WebviewWindow<R>) -> Result<&NSWindow, ShareError> {
-    let ptr = window
-        .ns_window()
-        .map_err(|e| ShareError::Window(format!("no NSWindow for {}: {e}", window.label())))?;
-    // SAFETY: Tauri returns the live NSWindow of this window; callers are on the main thread.
-    Ok(unsafe { &*ptr.cast::<NSWindow>() })
+pub fn show<R: Runtime>(
+    window: &WebviewWindow<R>,
+    anchor: Rect,
+    path: &Path,
+    session: Session,
+) -> Result<(), ShareError> {
+    let path = path.to_path_buf();
+    on_main(window, move |w, mtm| {
+        present(w, mtm, anchor, &path, session)
+    })?
 }
 
-/// Dev builds: puts `window` at the overlay's level (see `overlay::window::macos::raise`), to
-/// try the share sheet over it.
-#[cfg(debug_assertions)]
-pub fn raise_like_overlay<R: Runtime>(window: &WebviewWindow<R>) {
-    match ns_window(window) {
-        Ok(w) => w.setLevel(objc2_app_kit::NSScreenSaverWindowLevel),
-        Err(e) => log::error!("{e}"),
+pub fn restore_level<R: Runtime>(window: &WebviewWindow<R>) {
+    let restored = on_main(window, |w, _| {
+        ns_window(w)
+            .map(restore)
+            .map_err(|e| ShareError::Window(e.to_string()))
+    });
+    if let Err(e) = restored.and_then(|r| r) {
+        log::error!("could not restore the window level: {e}");
+    }
+}
+
+fn key(window: &NSWindow) -> usize {
+    window as *const NSWindow as usize
+}
+
+fn restore(window: &NSWindow) {
+    if let Some(level) = LEVELS.with_borrow_mut(|l| l.restore(key(window), window.level())) {
+        window.setLevel(level);
     }
 }
 
 fn present<R: Runtime>(
     window: &WebviewWindow<R>,
+    mtm: MainThreadMarker,
     anchor: Rect,
     path: &Path,
-    done: Done,
+    session: Session,
 ) -> Result<(), ShareError> {
-    let mtm = MainThreadMarker::new().expect("present runs on the main thread");
-    let ns_window = ns_window(window)?;
+    let ns_window = ns_window(window).map_err(|e| ShareError::Window(e.to_string()))?;
     let view = ns_window
         .contentView()
         .ok_or_else(|| ShareError::Window("the window has no content view".into()))?;
@@ -82,13 +100,10 @@ fn present<R: Runtime>(
         NSRect::new(NSPoint::new(r.x, r.y), NSSize::new(r.width, r.height)),
         None,
     );
-    // Below the anchor: the bottom edge is MaxY in a flipped view.
-    let edge = if view.isFlipped() {
-        NSRectEdge::MaxY
-    } else {
-        NSRectEdge::MinY
+    let edge = match picker::edge_below(view.isFlipped()) {
+        Edge::MinY => NSRectEdge::MinY,
+        Edge::MaxY => NSRectEdge::MaxY,
     };
-
     let path = path
         .to_str()
         .ok_or_else(|| ShareError::Window("the temp path is not UTF-8".into()))?;
@@ -98,46 +113,43 @@ fn present<R: Runtime>(
     // SAFETY: the items are file URLs, which conform to NSPasteboardWriting.
     let picker = unsafe { NSSharingServicePicker::initWithItems(mtm.alloc(), &items) };
 
-    let level = ns_window.level();
-    let raised = (level > BELOW_MENUS).then(|| {
-        ns_window.setLevel(BELOW_MENUS);
-        (ns_window.retain(), level)
-    });
-    let delegate = Delegate::new(mtm, done, picker.clone(), raised);
+    if let Some(level) = LEVELS.with_borrow_mut(|l| l.lower(key(ns_window), ns_window.level())) {
+        ns_window.setLevel(level);
+    }
+    let delegate = Delegate::new(mtm, session, picker.clone(), ns_window.retain());
     picker.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-    ACTIVE.with_borrow_mut(|active| {
-        // Finished delegates are dropped here rather than in their own callbacks, so neither
-        // they nor their picker are freed while AppKit is still calling them.
-        active.retain(|d| !d.finished());
-        active.push(delegate);
-    });
+    delegate.prune_after(picker::TIMEOUT.as_secs_f64());
+    let dropped = OPEN.with_borrow_mut(|open| open.push(Instant::now(), delegate));
+    drop(dropped);
+    // Returns at once: the menu is shown without a nested tracking loop (checked on macOS 26).
     picker.showRelativeToRect_ofView_preferredEdge(rect, &view, edge);
     Ok(())
+}
+
+/// Drops the pickers that are done. Runs from the run loop, never inside their callbacks.
+fn prune() {
+    let dropped = OPEN.with_borrow_mut(|open| open.prune(Instant::now()));
+    drop(dropped);
 }
 
 /// Dev builds: dismisses every open share sheet, as if the user cancelled.
 #[cfg(debug_assertions)]
 pub fn close_all() {
-    let open: Vec<_> = ACTIVE.with_borrow(|active| {
-        active
-            .iter()
-            .filter(|d| !d.finished())
+    let open: Vec<_> = OPEN.with_borrow(|open| {
+        open.iter()
+            .filter(|d| !d.is_over())
             .map(|d| d.ivars().picker.clone())
             .collect()
     });
     open.iter().for_each(|p| p.close());
 }
 
-thread_local! {
-    /// The picker's delegate is a weak reference, so open shares are kept alive here.
-    static ACTIVE: RefCell<Vec<Retained<Delegate>>> = const { RefCell::new(Vec::new()) };
-}
-
 struct Ivars {
-    done: RefCell<Option<Done>>,
+    session: Session,
+    /// Kept alive while it is open; only read by `close_all`.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     picker: Retained<NSSharingServicePicker>,
-    /// The window and its own level, while it is lowered for the menu.
-    raised: Cell<Option<(Retained<NSWindow>, isize)>>,
+    window: Retained<NSWindow>,
 }
 
 define_class!(
@@ -148,19 +160,24 @@ define_class!(
     #[ivars = Ivars]
     struct Delegate;
 
+    impl Delegate {
+        #[unsafe(method(xcreenshotPrune))]
+        fn prune_now(&self) {
+            prune();
+        }
+    }
+
     unsafe impl NSObjectProtocol for Delegate {}
 
     unsafe impl NSSharingServicePickerDelegate for Delegate {
-        /// The menu closed. `None` means it was dismissed without a choice.
+        /// The menu closed, with the chosen service or none. After a choice the window stays
+        /// lowered: the caller closes it (see `share::restore_level`).
         #[unsafe(method(sharingServicePicker:didChooseSharingService:))]
         fn did_choose(&self, _picker: &NSSharingServicePicker, service: Option<&NSSharingService>) {
-            if let Some((window, level)) = self.ivars().raised.take() {
-                window.setLevel(level);
+            if service.is_none() {
+                restore(&self.ivars().window);
             }
-            match service {
-                Some(s) => log::info!("sharing with {}", s.title()),
-                None => self.finish(Ended::Cancelled),
-            }
+            self.handle(picker::event_for(service.map(|s| s.title().to_string())));
         }
 
         /// The chosen service reports back to the same object.
@@ -177,13 +194,13 @@ define_class!(
     unsafe impl NSSharingServiceDelegate for Delegate {
         #[unsafe(method(sharingService:didShareItems:))]
         fn did_share(&self, _service: &NSSharingService, _items: &NSArray) {
-            self.finish(Ended::Finished);
+            self.handle(Event::Finished);
         }
 
         #[unsafe(method(sharingService:didFailToShareItems:error:))]
         fn did_fail(&self, _service: &NSSharingService, _items: &NSArray, error: &NSError) {
             log::warn!("sharing failed: {}", error.localizedDescription());
-            self.finish(Ended::Finished);
+            self.handle(Event::Finished);
         }
     }
 );
@@ -191,26 +208,46 @@ define_class!(
 impl Delegate {
     fn new(
         mtm: MainThreadMarker,
-        done: Done,
+        session: Session,
         picker: Retained<NSSharingServicePicker>,
-        raised: Option<(Retained<NSWindow>, isize)>,
+        window: Retained<NSWindow>,
     ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(Ivars {
-            done: RefCell::new(Some(done)),
+            session,
             picker,
-            raised: Cell::new(raised),
+            window,
         });
         // SAFETY: NSObject's init.
         unsafe { msg_send![super(this), init] }
     }
 
-    fn finish(&self, ended: Ended) {
-        if let Some(done) = self.ivars().done.take() {
-            done(ended);
+    fn handle(&self, event: Event) {
+        self.ivars().session.handle(event);
+        if self.ivars().session.is_over() {
+            self.prune_after(0.0);
         }
     }
 
-    fn finished(&self) -> bool {
-        self.ivars().done.borrow().is_none()
+    /// Schedules a prune on the main run loop, which keeps `self` alive until it has run.
+    fn prune_after(&self, seconds: f64) {
+        // SAFETY: `xcreenshotPrune` is defined above, takes no argument and returns nothing.
+        let _: () = unsafe {
+            msg_send![
+                self,
+                performSelector: sel!(xcreenshotPrune),
+                withObject: std::ptr::null::<AnyObject>(),
+                afterDelay: seconds
+            ]
+        };
+    }
+}
+
+impl Entry for Retained<Delegate> {
+    fn is_over(&self) -> bool {
+        self.ivars().session.is_over()
+    }
+
+    fn expire(&self) {
+        self.ivars().session.handle(Event::Finished);
     }
 }
