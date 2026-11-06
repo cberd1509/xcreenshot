@@ -99,3 +99,14 @@ jobs:
       - name: Rust tests with coverage (90% minimum)
         if: runner.os == 'macOS'
         run: ./scripts/rust-coverage.sh
+
+  # Single required check: passes when every job passed or was skipped on purpose.
+  ci:
+    name: CI result
+    if: always()
+    needs: [changes, lint, app]
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo '${{ toJSON(needs) }}'
+          if ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}; then exit 1; fi
