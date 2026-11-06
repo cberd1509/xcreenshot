@@ -14,6 +14,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
+    "readme-media": "node scripts/readme-media.ts",
     "icons": "tauri icon assets/icon.svg && rm -rf src-tauri/icons/android src-tauri/icons/ios && rsvg-convert -w 22 -h 22 assets/tray.svg -o src-tauri/icons/tray-template.png && rsvg-convert -w 44 -h 44 assets/tray.svg -o src-tauri/icons/tray-template@2x.png",
     "prepare": "husky"
   },
@@ -39,6 +40,7 @@
     "jsdom": "^31.0.0",
     "lint-staged": "^17.6.0",
     "oxlint": "^1.91.0",
+    "playwright": "^1.65.0",
     "prettier": "^3.9.10",
     "prettier-plugin-svelte": "^4.1.1",
     "prettier-plugin-tailwindcss": "^0.8.1",

@@ -51,6 +51,8 @@ export default defineConfig({
         'src/overlay/main.ts',
         'src/permission/main.ts',
         'scripts/**/*.test.ts',
+        // Drives a browser; its pure parts are in scripts/media.ts.
+        'scripts/readme-media.ts',
       ],
       thresholds: { lines: 90, functions: 90, branches: 90, statements: 90 },
       reporter: ['text'],
