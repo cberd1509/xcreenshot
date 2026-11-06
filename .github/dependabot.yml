@@ -17,7 +17,8 @@ updates:
         update-types: [minor, patch]
     commit-message: { prefix: 'chore(deps)' }
   - package-ecosystem: github-actions
-    directory: /
+    # Also scan the shared composite action, which Dependabot skips by default.
+    directories: ['/', '/.github/actions/*']
     schedule: { interval: weekly }
     open-pull-requests-limit: 5
     groups:
