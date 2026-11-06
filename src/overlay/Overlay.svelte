@@ -112,6 +112,8 @@
     x: Math.floor(pointer.x * scale.x),
     y: Math.floor(pointer.y * scale.y),
   })
+  /** No frame drawn: the page renders nothing and ignores the pointer. */
+  const idle = $derived(frame.width === 0)
   // A captured drag can go past this display; the loupe hides until the pointer is back.
   const onDisplay = $derived(
     pointer.x >= 0 && pointer.y >= 0 && pointer.x < display.width && pointer.y < display.height,
@@ -240,12 +242,15 @@
     }
   }
 
-  // The overlay closed: free the frame. The next frame is drawn before the window shows
-  // again, so nothing stale or empty is ever seen. Hiding for the Save dialog keeps it.
+  // The overlay closed: free the frame. With no frame the page renders nothing (`idle`), so
+  // WebKit also drops the canvas layer's full-screen backing store. The next frame is drawn
+  // before the window shows again, so nothing stale or empty is ever seen. Hiding for the Save
+  // dialog keeps it.
   function free() {
     generation++
     canvas.width = 0
     canvas.height = 0
+    frame = { width: 0, height: 0 }
     reset()
     clearTimeout(noticeTimer)
     notice = null
@@ -255,12 +260,12 @@
 
   // Keys go to the display pressed, whoever handles the press (the annotations stop theirs).
   function onpointerdowncapture(e: PointerEvent) {
-    if (e.button !== 0 || frame.width === 0) return
+    if (e.button !== 0 || idle) return
     view.setFocus().catch((err) => console.error('could not focus the overlay', err))
   }
 
   function onpointerdown(e: PointerEvent) {
-    if (e.button !== 0 || frame.width === 0) return
+    if (e.button !== 0 || idle) return
     const start = at(e)
     pointer = start
     const handle = (e.target as Element).closest<HTMLElement>('[data-handle]')?.dataset.handle
@@ -363,6 +368,7 @@
 
 <div
   class="root"
+  style:display={idle ? 'none' : null}
   class:dragging={cursor}
   style:cursor
   data-testid="overlay"
