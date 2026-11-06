@@ -1,23 +1,112 @@
 {
   "v": 3,
-  "createdOnFiles": {"v": 1, "at": "2026-11-06T13:10:00Z"},
+  "createdOnFiles": {
+    "v": 1,
+    "at": "2026-11-06T13:10:00Z"
+  },
   "title": "xcreenshot UI",
-  "launch": {"view": "canvas"},
+  "launch": {
+    "view": "canvas"
+  },
   "pages": [],
   "boards": {
-    "Main.dc.html": {"x": 0, "y": 0, "w": 1440, "h": 900, "title": "Region selected + annotating"},
-    "WindowSelect.dc.html": {"x": 1520, "y": 0, "w": 1440, "h": 900, "title": "Ready to drag (magnifier enabled, optional)"},
-    "Desktop.dc.html": {"x": 3040, "y": 0, "w": 1440, "h": 900, "title": "Frozen frame (shared mock desktop)"},
-    "Settings.dc.html": {"x": 0, "y": 1280, "w": 880, "h": 680, "title": "Settings"},
-    "Onboarding.dc.html": {"x": 960, "y": 1280, "w": 560, "h": 640, "title": "First run: Screen Recording permission"},
-    "Tray.dc.html": {"x": 1600, "y": 1280, "w": 300, "h": 400, "title": "Menu bar menu"},
-    "AppIcon.dc.html": {"x": 0, "y": 2300, "w": 1240, "h": 960, "title": "App icon options (Lucide glyphs)"}
+    "Main.dc.html": {
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "title": "Region selected + annotating"
+    },
+    "WindowSelect.dc.html": {
+      "x": 1520,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "title": "Ready to drag (magnifier enabled, optional)"
+    },
+    "Desktop.dc.html": {
+      "x": 3040,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "title": "Frozen frame (shared mock desktop)"
+    },
+    "Settings.dc.html": {
+      "x": 0,
+      "y": 1280,
+      "w": 880,
+      "h": 680,
+      "title": "Settings"
+    },
+    "Onboarding.dc.html": {
+      "x": 960,
+      "y": 1280,
+      "w": 560,
+      "h": 640,
+      "title": "First run: Screen Recording permission"
+    },
+    "Tray.dc.html": {
+      "x": 1600,
+      "y": 1280,
+      "w": 300,
+      "h": 400,
+      "title": "Menu bar menu"
+    },
+    "AppIcon.dc.html": {
+      "x": 0,
+      "y": 2300,
+      "w": 1240,
+      "h": 960,
+      "title": "App icon options (Lucide glyphs)"
+    },
+    "UpdateReady.dc.html": {
+      "x": 1980,
+      "y": 1280,
+      "w": 440,
+      "h": 200,
+      "title": "Update ready"
+    },
+    "ShortcutNotice.dc.html": {
+      "x": 1980,
+      "y": 1560,
+      "w": 440,
+      "h": 220,
+      "title": "Shortcut changed (Windows)"
+    }
   },
-  "order": ["Desktop.dc.html", "Main.dc.html", "WindowSelect.dc.html", "Settings.dc.html", "Onboarding.dc.html", "Tray.dc.html", "AppIcon.dc.html"],
+  "order": [
+    "Desktop.dc.html",
+    "Main.dc.html",
+    "WindowSelect.dc.html",
+    "Settings.dc.html",
+    "Onboarding.dc.html",
+    "Tray.dc.html",
+    "UpdateReady.dc.html",
+    "ShortcutNotice.dc.html",
+    "AppIcon.dc.html"
+  ],
   "notes": {
-    "capture": {"x": 0, "y": -280, "text": "Capture overlay", "kind": "title1", "maxW": 4480},
-    "app": {"x": 0, "y": 1000, "text": "App chrome", "kind": "title1", "maxW": 1900},
-    "icon": {"x": 0, "y": 2040, "text": "App icon", "kind": "title1", "maxW": 1240}
+    "capture": {
+      "x": 0,
+      "y": -280,
+      "text": "Capture overlay",
+      "kind": "title1",
+      "maxW": 4480
+    },
+    "app": {
+      "x": 0,
+      "y": 1000,
+      "text": "App chrome",
+      "kind": "title1",
+      "maxW": 2420
+    },
+    "icon": {
+      "x": 0,
+      "y": 2040,
+      "text": "App icon",
+      "kind": "title1",
+      "maxW": 1240
+    }
   },
   "designSystems": []
 }
