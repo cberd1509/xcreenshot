@@ -32,6 +32,46 @@ The overlay gets the raw RGBA bytes (about 34 MB for this display), so there is 
 the way to the screen. Only the final crop is encoded: a half-screen crop (1800x1169 px) takes
 about 1 ms to cut and 65–90 ms to encode as PNG. Run `cargo run --release --example capture`.
 
+## First capture and idle memory (#55)
+
+The first capture in a process is slow: listing displays takes 30–40 ms the first time (under
+0.1 ms after), and the first capture 100–190 ms (40–70 ms after). So at startup, once the overlay
+windows exist, a worker thread captures one pixel of the first display and drops it
+(`capture::warm_up`), only if Screen Recording is already allowed. It has the same timeout as a
+capture, and its own stuck-display list, so a hotkey pressed during it still captures.
+
+Release build, one 3600x2338 display, first capture 2 s after launch, interleaved launches:
+
+| | hotkey to painted | capture |
+| --- | --- | --- |
+| No warm-up | 166–219 ms (median ~183) | 135–187 ms |
+| 1 px warm-up | 87–158 ms (median ~125) | 62–116 ms |
+| Full-frame warm-up | 94–159 ms (median ~109) | 70–123 ms |
+
+A full frame was a little faster only right after launch: it also warms the allocator, which
+gives the 34 MB buffers back within a minute, and it holds that memory meanwhile. With the first
+capture 60 s after launch both were the same (capture 66–101 ms full, 80–97 ms 1 px), so the
+1 px region is used. At 60 s, the time after the capture (fetch, draw, show) also grew, from
+about 25 ms to 35–150 ms: the hidden page cools down. That part is not fixed yet.
+
+Warm captures are unchanged (median 110–117 ms on this machine under load from other builds).
+
+Memory after captures, closed, measured with `footprint` (each closed capture sampled 1 s after
+it closed). It reaches a plateau after one or two captures and does not grow with more:
+
+- **Main process:** about 23 MB idle, then 55–90 MB. The difference is not live data (`heap`
+  shows no large allocation): it is "Malloc Large (empty)", the frame and its copy freed but
+  kept by the allocator, returned within about a minute. `malloc_zone_pressure_relief` returns
+  nothing for these.
+- **WebContent:** about 25 MB idle, then 150–220 MB. Most of it is WebKit's full-screen layer
+  backing stores (about 34 MB each), kept while the window is hidden, plus the last frame's
+  `ArrayBuffer` until it is garbage collected (about 33 MB). With no frame the page now renders
+  nothing (`display: none`), which drops the canvas layer's backing store: graphics
+  memory after close went from 131 MB to 98 MB. Shrinking the hidden window to 1x1 freed more,
+  but made painting 100+ ms slower, so it was dropped; a software canvas (`willReadFrequently`)
+  and a transparent page background saved nothing.
+- **GPU:** about 14 MB idle, 23–36 MB right after a capture, back to about 13 MB within 10 s.
+
 ## Crop source (#9)
 
 The crop for copy and save (#12) needs the exact captured pixels. Two options:

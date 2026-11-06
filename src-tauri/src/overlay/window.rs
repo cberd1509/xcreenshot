@@ -13,7 +13,7 @@
 //! Rust holds Esc exactly when [`Phase::wants_escape`] says so: [`sync_escape`] runs after every
 //! phase change. Window and shortcut calls stay on the main thread.
 
-use super::{FrameInfo, Phase, captured_all, diff, display_at, display_id, label};
+use super::{FrameInfo, Phase, captured_all, diff, display_at, display_id, label, ms_since};
 use crate::capture::{self, Bounds, CaptureError, Display, DisplayFrame};
 use crate::region::{self, Region};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -104,6 +104,9 @@ pub(crate) trait Screen: Send + 'static {
     fn cursor<R: Runtime>(&self, app: &AppHandle<R>) -> Option<(f64, f64)>;
     /// The remembered regions, or `None` while the setting is off (see `region::load`).
     fn regions<R: Runtime>(&self, app: &AppHandle<R>) -> Option<Vec<Region>>;
+    /// Pays the OS's one-time capture setup now. Does nothing unless capture is already
+    /// allowed, so it never asks for permission.
+    fn warm_up(&self);
 }
 
 /// The real screen, through `capture`.
@@ -140,20 +143,36 @@ impl Screen for Os {
     fn regions<R: Runtime>(&self, app: &AppHandle<R>) -> Option<Vec<Region>> {
         region::load(app)
     }
-}
 
-/// Creates a hidden overlay window per display at startup, so the hotkey only has to show them.
-pub fn prewarm<R: Runtime>(app: &AppHandle<R>) {
-    prewarm_with(app, &Os);
-}
-
-fn prewarm_with<R: Runtime>(app: &AppHandle<R>, screen: &impl Screen) {
-    let result = screen.displays().map(|d| sync(app, &ids(&d)));
-    match result {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => log::error!("could not create overlay windows: {e}"),
-        Err(e) => log::error!("could not list displays for the overlay: {e}"),
+    fn warm_up(&self) {
+        if !capture::has_permission() {
+            return;
+        }
+        let started = Instant::now();
+        match capture::warm_up() {
+            Ok(()) => log::info!("capture warmed up in {:.0} ms", ms_since(started)),
+            Err(e) => log::warn!("could not warm up the capture: {e}"),
+        }
     }
+}
+
+/// Creates a hidden overlay window per display at startup, so the hotkey only has to show
+/// them, then warms up the capture on a worker thread so the first hotkey is as fast as the
+/// next ones. Never blocks startup.
+pub fn prewarm<R: Runtime>(app: &AppHandle<R>) {
+    prewarm_with(app, Os);
+}
+
+fn prewarm_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) {
+    let displays = match screen.displays() {
+        Ok(displays) if !displays.is_empty() => displays,
+        Ok(_) => return log::error!("no displays for the overlay"),
+        Err(e) => return log::error!("could not list displays for the overlay: {e}"),
+    };
+    if let Err(e) = sync(app, &ids(&displays)) {
+        log::error!("could not create overlay windows: {e}");
+    }
+    std::thread::spawn(move || screen.warm_up());
 }
 
 /// Hotkey handler (main thread). Returns the session id if a capture started.
@@ -658,12 +677,14 @@ pub(super) mod tests {
 
     pub(crate) type Handle = AppHandle<MockRuntime>;
 
-    /// Displays `ids`. Its capture waits for the test: `true` captures, `false` fails.
+    /// Displays `ids`. Its capture waits for the test: `true` captures, `false` fails. Warm-ups
+    /// call `warmed`.
     struct Fake {
         permitted: bool,
         ids: Vec<u32>,
         release: mpsc::Receiver<bool>,
         regions: Vec<Region>,
+        warmed: Option<Box<dyn Fn() + Send>>,
     }
 
     impl Screen for Fake {
@@ -699,6 +720,12 @@ pub(super) mod tests {
         fn regions<R: Runtime>(&self, _: &AppHandle<R>) -> Option<Vec<Region>> {
             Some(self.regions.clone())
         }
+
+        fn warm_up(&self) {
+            if let Some(warmed) = &self.warmed {
+                warmed();
+            }
+        }
     }
 
     fn fake(permitted: bool, ids: &[u32]) -> (Fake, mpsc::Sender<bool>) {
@@ -710,6 +737,7 @@ pub(super) mod tests {
                 ids,
                 release,
                 regions: Vec::new(),
+                warmed: None,
             },
             tx,
         )
@@ -812,16 +840,37 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn prewarm_creates_a_window_per_display() {
+    fn prewarm_creates_a_window_per_display_then_warms_up_off_the_main_thread() {
         let app = app();
         let h = app.handle();
-        prewarm_with(h, &fake(true, &[]).0);
+        // Each warm-up reports its thread and the overlay windows that existed when it ran.
+        let screen = |ids: &[u32]| {
+            let (tx, warm_ups) = mpsc::channel();
+            let handle = h.clone();
+            let warmed = move || {
+                let _ = tx.send((std::thread::current().id(), overlay_labels(&handle)));
+            };
+            let screen = Fake {
+                warmed: Some(Box::new(warmed)),
+                ..fake(true, ids).0
+            };
+            (screen, warm_ups)
+        };
+        // Listing the displays fails: no windows, and nothing to warm up.
+        let (failing, warm_ups) = screen(&[]);
+        prewarm_with(h, failing);
         assert!(overlay_labels(h).is_empty());
-        prewarm_with(h, &fake(true, &[4, 5]).0);
+        assert!(warm_ups.recv().is_err(), "no warm-up");
+        // Listed: the windows first, then one warm-up on a worker thread.
+        let (listed, warm_ups) = screen(&[4, 5]);
+        prewarm_with(h, listed);
         assert_eq!(overlay_labels(h), ["overlay-4", "overlay-5"]);
         assert!(is_idle(h));
+        let (thread, windows) = warm_ups.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_ne!(thread, std::thread::current().id());
+        assert_eq!(windows, ["overlay-4", "overlay-5"]);
+        assert!(warm_ups.recv().is_err(), "warmed up once");
     }
-
     #[test]
     fn hotkey_places_a_window_per_display_then_sends_frames() {
         let app = app();

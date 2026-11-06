@@ -252,8 +252,12 @@ describe('Overlay', () => {
 
   it('frees the frame when the overlay closes, not when it is only hidden', async () => {
     const { container } = await mount()
+    const root = screen.getByTestId('overlay')
+    // Nothing is rendered until there is a frame.
+    expect(root).not.toBeVisible()
     await emit('overlay:show', small(1))
     await waitFor(() => expect(called('overlay_painted')).toHaveLength(1))
+    expect(root).toBeVisible()
     const canvas = container.querySelector('canvas')!
     // Hidden for the Save dialog: the frame stays for when it shows again.
     vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
@@ -261,6 +265,8 @@ describe('Overlay', () => {
     expect(canvas.width).toBe(4)
     await emit('overlay:closed')
     await waitFor(() => expect([canvas.width, canvas.height]).toEqual([0, 0]))
+    // Rendering nothing lets WebKit drop the full-screen layers too.
+    expect(root).not.toBeVisible()
   })
 
   it('ignores a show for an older session', async () => {

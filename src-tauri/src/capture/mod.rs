@@ -149,17 +149,22 @@ const DISPLAY_TIMEOUT: Duration = Duration::from_secs(1);
 /// Displays whose capture thread is still running (stalled past the timeout).
 static IN_FLIGHT: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
+/// The same for warm-ups. Kept apart, so a warm-up still running never makes a hotkey capture
+/// skip its display as stuck.
+static WARMING: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
 /// Runs `capture` for every display at once, so total time is the slowest display. A display
 /// that panics or takes longer than `timeout` gets an error instead. A display whose previous
 /// capture is still stuck is skipped, so a hung driver costs at most one thread per display.
-fn capture_each<F>(
+fn capture_each<T, F>(
     ids: &[u32],
     capture: F,
     timeout: Duration,
     in_flight: &'static Mutex<Vec<u32>>,
-) -> Vec<Result<DisplayFrame, CaptureError>>
+) -> Vec<Result<T, CaptureError>>
 where
-    F: Fn(u32) -> Result<DisplayFrame, CaptureError> + Send + Sync + 'static,
+    F: Fn(u32) -> Result<T, CaptureError> + Send + Sync + 'static,
+    T: Send + 'static,
 {
     let lock = || in_flight.lock().unwrap_or_else(PoisonError::into_inner);
     let capture = Arc::new(capture);
@@ -278,6 +283,19 @@ pub fn displays() -> Result<Vec<Display>, CaptureError> {
     Ok(out)
 }
 
+/// Captures one pixel of the first display and drops it. The first capture in a process pays a
+/// one-time OS setup (about 60–150 ms on macOS); doing it at startup keeps it off the hotkey.
+/// Same timeout as a capture, and its own stuck-display guard ([`WARMING`]), so a hotkey pressed
+/// meanwhile still captures. Needs permission like [`capture_all`].
+pub fn warm_up() -> Result<(), CaptureError> {
+    let display = displays()?.first().ok_or(CaptureError::NoDisplays)?.id;
+    let pixel = |id| monitor(id)?.capture_region(0, 0, 1, 1).map_err(backend);
+    capture_each(&[display], pixel, DISPLAY_TIMEOUT, &WARMING)
+        .pop()
+        .unwrap_or(Err(CaptureError::NoDisplays))
+        .map(drop)
+}
+
 fn os_bounds(m: &xcap::Monitor) -> Result<Bounds, CaptureError> {
     Ok(Bounds {
         x: m.x().map_err(backend)?,
@@ -288,13 +306,17 @@ fn os_bounds(m: &xcap::Monitor) -> Result<Bounds, CaptureError> {
 }
 
 /// `xcap` monitors cannot cross threads on Windows, so each thread looks its display up again.
-fn capture_display(id: u32) -> Result<DisplayFrame, CaptureError> {
-    let monitors = xcap::Monitor::all().map_err(backend)?;
-    let m = monitors
-        .iter()
+fn monitor(id: u32) -> Result<xcap::Monitor, CaptureError> {
+    xcap::Monitor::all()
+        .map_err(backend)?
+        .into_iter()
         .find(|m| m.id().ok() == Some(id))
-        .ok_or_else(|| CaptureError::Backend(format!("display {id} disappeared")))?;
-    let bounds = os_bounds(m)?;
+        .ok_or_else(|| CaptureError::Backend(format!("display {id} disappeared")))
+}
+
+fn capture_display(id: u32) -> Result<DisplayFrame, CaptureError> {
+    let m = monitor(id)?;
+    let bounds = os_bounds(&m)?;
     let scale = m.scale_factor().map_err(backend)?;
     to_frame(
         id,
@@ -475,6 +497,31 @@ mod tests {
             again[1],
             Err(CaptureError::Backend("display 2 is still stuck".into()))
         );
+    }
+
+    #[test]
+    fn a_hotkey_during_the_warm_up_still_captures() {
+        // A warm-up of display 77 that is still running (stalled past its timeout).
+        let (unblock, blocked) = mpsc::channel::<()>();
+        let blocked = Mutex::new(blocked);
+        let warm = capture_each(
+            &[77],
+            move |_| {
+                blocked
+                    .lock()
+                    .unwrap()
+                    .recv()
+                    .map_err(|_| CaptureError::EmptyImage)
+            },
+            Duration::from_millis(10),
+            &WARMING,
+        );
+        assert!(warm[0].is_err(), "timed out");
+        assert!(WARMING.lock().unwrap().contains(&77));
+        // The hotkey captures display 77 anyway.
+        let captured = capture_each(&[77], |id| ok_frame(id, 0), DISPLAY_TIMEOUT, &IN_FLIGHT);
+        assert_eq!(captured[0].as_ref().unwrap().id, 77);
+        unblock.send(()).unwrap();
     }
 
     fn fresh() -> &'static Mutex<Vec<u32>> {
