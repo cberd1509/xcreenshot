@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "xcreenshot",
   "version": "../package.json",
-  "identifier": "io.github.cberd1509.xcreenshot",
+  "identifier": "com.bervex.xcreenshot",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
