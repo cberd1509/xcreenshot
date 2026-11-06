@@ -79,17 +79,10 @@
   /** Konva could not load: the tools show as unavailable until a later selection retries. */
   let failed = $state(false)
   let history = $state.raw<History>(empty)
-  // The last tool, color and size come back on the next capture.
-  const recalled = recall()
-  let tool = $state<Tool | null>(recalled.tool)
-  let style = $state(recalled.style)
+  // Each capture starts in Select, with the last color and size.
+  let tool = $state<Tool | null>(null)
+  let style = $state(recall())
 
-  /** Takes up the last tool, color and size, as any overlay window saved them. */
-  function restore() {
-    const r = recall()
-    tool = r.tool
-    style = r.style
-  }
   let selected = $state<string | null>(null)
   /**
    * A drag drawing a shape: where it started, where the pointer is, where the shape ends, and
@@ -172,7 +165,6 @@
   // Each is kept only when it changes, so this window never writes back another's newer choice.
   const lastColor = $derived(style.color)
   const lastSize = $derived(style.size)
-  $effect(() => void (tool && remember('tool', tool)))
   $effect(() => remember('color', lastColor))
   $effect(() => remember('size', lastSize))
 
@@ -199,14 +191,15 @@
   export const typingText = () => editing !== null
 
   /**
-   * Drops every annotation and the shape being drawn, and goes back to the last tool, color
-   * and size used (in any overlay window). Not undoable. `frame` says the frame changed too.
+   * Drops every annotation and the shape being drawn, and goes back to Select with the last
+   * color and size used (in any overlay window). Not undoable. `frame` says the frame changed too.
    */
   export function reset(frame = false) {
     history = empty
     selected = null
     editing = null
-    restore()
+    tool = null
+    style = recall()
     cancel()
     if (frame) board?.newFrame()
   }
@@ -319,7 +312,7 @@
 
   /**
    * A new color or size. The selected shape takes it as one undo step (text only its color),
-   * or the text being typed does; the tool always does too, and remembers it.
+   * or the text being typed does; the next shapes take it too, and it is kept for the next capture.
    */
   function setStyle(next: Style) {
     if (editing) editing.style = next

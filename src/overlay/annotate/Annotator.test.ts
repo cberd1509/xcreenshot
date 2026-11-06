@@ -407,48 +407,46 @@ describe('Annotator', () => {
     api.reset()
     expect(api.annotated()).toBe(false)
     await waitFor(() => expect(kinds()).toEqual([]))
-    // The last tool stays for the next capture.
+    // The next capture starts in Select: a drag draws nothing.
     await drag(150, 150, 250, 250)
-    expect(kinds()).toEqual(['Rect'])
+    expect(kinds()).toEqual([])
   })
 
-  it('remembers the last tool, color and size for the next time', async () => {
+  it('starts each capture in Select, with the last color and size', async () => {
     const user = userEvent.setup()
     const first = await setup()
     first.api.key(press('o'))
     await user.click(screen.getByRole('button', { name: 'Color and size' }))
     await user.click(await screen.findByLabelText('Thick'))
-    // Dropping the tool keeps the last one used.
-    first.api.escape()
-    first.api.escape()
-    await waitFor(() =>
-      expect(screen.getByLabelText('Ellipse')).toHaveAttribute('data-state', 'off'),
-    )
+    await user.click(screen.getByLabelText('Blue'))
     first.api.reset()
     await waitFor(() =>
-      expect(screen.getByLabelText('Ellipse')).toHaveAttribute('data-state', 'on'),
+      expect(screen.getByLabelText('Ellipse')).toHaveAttribute('data-state', 'off'),
     )
     first.view.unmount()
 
     stages.length = 0
     const second = await setup()
-    expect(screen.getByLabelText('Ellipse')).toHaveAttribute('data-state', 'on')
-    // Without a selection, the remembered tool does not keep Esc from closing the overlay.
-    await second.view.rerender(props({ selection: null }))
+    expect(screen.getByLabelText('Ellipse')).toHaveAttribute('data-state', 'off')
+    // With no tool picked, the first Esc goes on to close the overlay.
     expect(second.api.escape()).toBe(false)
-    await second.view.rerender(props({ selection: sel }))
+    second.api.key(press('o'))
     await drag(150, 150, 250, 200)
     expect(nodes()[0]).toMatchObject({ className: 'Ellipse' })
-    expect(nodes()[0].attrs).toMatchObject({ strokeWidth: 8, radiusX: 50, radiusY: 25 })
+    expect(nodes()[0].attrs).toMatchObject({
+      stroke: '#3B82F6',
+      strokeWidth: 8,
+      radiusX: 50,
+      radiusY: 25,
+    })
   })
 
-  it('takes up what another overlay window remembered on the next capture', async () => {
+  it('takes up the color and size another overlay window remembered', async () => {
     const { api } = await setup()
-    remember('tool', 'line')
     remember('color', '#3B82F6')
     remember('size', 2)
     api.reset(true)
-    await waitFor(() => expect(screen.getByLabelText('Line')).toHaveAttribute('data-state', 'on'))
+    api.key(press('l'))
     await drag(150, 150, 250, 150)
     expect(nodes()[0].attrs).toMatchObject({ stroke: '#3B82F6', strokeWidth: 2 })
   })
@@ -468,13 +466,13 @@ describe('Annotator', () => {
     await user.click(screen.getByLabelText('Thick'))
     await waitFor(() => expect(ellipse.attrs.strokeWidth).toBe(8))
     expect(screen.getByTestId('current-color').style.background).toBe('rgb(59, 130, 246)')
-    // The tool takes the choice too, and remembers it for the next capture.
+    // Dropping the tool keeps the color and size, for the next capture too.
     api.escape()
     api.escape()
     await waitFor(() =>
       expect(screen.getByTestId('current-color').style.background).toBe('rgb(59, 130, 246)'),
     )
-    expect(recall().style).toEqual({ color: '#3B82F6', size: 8 })
+    expect(recall()).toEqual({ color: '#3B82F6', size: 8 })
     api.key(press('z', mod))
     await waitFor(() => expect(ellipse.attrs.strokeWidth).toBe(4))
     expect(ellipse.attrs.stroke).toBe('#3B82F6')
