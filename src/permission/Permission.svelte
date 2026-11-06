@@ -4,17 +4,15 @@
   import { onMount } from 'svelte'
   import ShortcutKbd from '$lib/components/ShortcutKbd.svelte'
   import { Button } from '$lib/components/ui/button'
-  import { settings } from '$lib/settings.svelte'
   import { FAILURES_SHOWN, nextDelay } from './poll'
 
-  /** The capture shortcut until it can be changed (#21). */
-  const DEFAULT_SHORTCUT = settings.shortcut
+  type CaptureShortcut = { accelerator: string; registered: boolean }
 
   let granted = $state(false)
   /** Back from System Settings and still not allowed: macOS needs a restart. */
   let needsRestart = $state(false)
-  /** The registered capture shortcut; null if none, undefined until known. */
-  let shortcut = $state<string | null>()
+  /** The capture shortcut and whether it works; null if unknown, undefined until known. */
+  let shortcut = $state<CaptureShortcut | null>()
   /** Failed checks in a row. */
   let failures = $state(0)
   let openedSettings = false
@@ -51,7 +49,18 @@
     invoke('restart_app').catch(failed('restart_app'))
   }
 
+  /** Reads the capture shortcut; again on focus, as it may have changed in Settings. */
+  function loadShortcut() {
+    invoke<CaptureShortcut>('capture_shortcut')
+      .then((s) => (shortcut = s))
+      .catch((e: unknown) => {
+        shortcut = null
+        failed('capture_shortcut')(e)
+      })
+  }
+
   function onfocus() {
+    loadShortcut()
     if (!openedSettings || granted) return
     void check().then((now) => {
       if (now === false) needsRestart = true
@@ -60,12 +69,7 @@
 
   onMount(() => {
     void check()
-    invoke<string | null>('capture_shortcut')
-      .then((s) => (shortcut = s))
-      .catch((e: unknown) => {
-        shortcut = null
-        failed('capture_shortcut')(e)
-      })
+    loadShortcut()
     return () => {
       stopped = true
       clearTimeout(timer)
@@ -87,19 +91,19 @@
     <div class="flex grow flex-col items-center justify-center gap-3 text-center">
       <CircleCheck class="size-10" aria-hidden="true" />
       <h1 class="text-base font-semibold">All set.</h1>
-      {#if shortcut}
+      {#if shortcut?.registered}
         <p class="text-sm text-muted-foreground">
-          Press <ShortcutKbd accelerator={shortcut} /> to take a screenshot.
+          Press <ShortcutKbd accelerator={shortcut.accelerator} /> to take a screenshot.
         </p>
-      {:else if shortcut === null}
+      {:else if shortcut}
         <p class="text-sm text-muted-foreground">
-          Another app is using <ShortcutKbd accelerator={DEFAULT_SHORTCUT} />. Close it and restart
-          xcreenshot.
+          Another app is using <ShortcutKbd accelerator={shortcut.accelerator} />. Close it and
+          restart xcreenshot.
         </p>
         <Button size="sm" onclick={restart}>Restart xcreenshot</Button>
       {/if}
     </div>
-    {#if shortcut}
+    {#if shortcut?.registered}
       <p class="flex items-center justify-center gap-1 text-[13px] text-muted-foreground">
         Screenshots look empty?
         <Button size="sm" variant="link" class="h-auto px-0" onclick={restart}>

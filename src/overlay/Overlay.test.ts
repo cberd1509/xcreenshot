@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { emit, listen } from '@tauri-apps/api/event'
 import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { setSetting, settings } from '$lib/settings.svelte'
+import { resetSettings, settings } from '$lib/settings.svelte'
 import { box, fakeContext } from '../test/canvas'
 import { stages } from '../test/konva'
 import { OUTPUT_HEADER } from './annotate/output'
@@ -140,6 +140,10 @@ describe('Overlay', () => {
         if (cmd === 'overlay_ready') return ready
         if (cmd === 'overlay_frame') return frame(args as { session: number })
         if (cmd === 'overlay_copy' || cmd === 'overlay_save') return finished(cmd)
+        if (cmd === 'set_capture_option') {
+          const { key, on } = args as { key: string; on: boolean }
+          return { ...settings, [key]: on, version: calls.length }
+        }
       },
       { shouldMockEvents: true },
     )
@@ -837,8 +841,9 @@ describe('Overlay', () => {
       await userEvent.click(
         (await screen.findByText('Magnifier')).closest('[role=menuitemcheckbox]')!,
       )
-      expect(settings.magnifier).toBe(true)
-      setSetting('magnifier', false)
+      await waitFor(() => expect(settings.magnifier).toBe(true))
+      expect(called('set_capture_option')[0].args).toEqual({ key: 'magnifier', on: true })
+      resetSettings()
     })
   })
 })

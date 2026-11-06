@@ -19,7 +19,7 @@ use super::window::{Overlay, close, close_if, hide, on_main, phase, reshow, sync
 use crate::capture::{self, CaptureError, PixelRect, clamp_rect};
 use crate::output::compose::{self, Layer, Marks};
 use crate::output::{self, Clipboard, Target};
-use crate::prefs::{self, Prefs};
+use crate::prefs;
 use chrono::NaiveDateTime;
 use image::{ImageBuffer, RgbaImage};
 use serde::Deserialize;
@@ -346,16 +346,22 @@ impl<R: Runtime> Saver for OsSaver<R> {
     }
 
     fn last_dir(&self) -> Option<PathBuf> {
-        prefs::open(&self.0).and_then(|store| Prefs::load(&store).last_save_dir())
+        prefs::load(&self.0).last_save_dir()
     }
 
+    /// Through `prefs::update`, so it can't write back settings changed meanwhile.
     fn remember_dir(&self, dir: &Path) {
-        let Some(store) = prefs::open(&self.0) else {
-            return;
-        };
-        let mut prefs = Prefs::load(&store);
-        if prefs.set_last_save_dir(dir)
-            && let Err(e) = prefs.save(&store)
+        // `set_last_save_dir` logs a folder it can't remember; nothing to save then.
+        const SKIPPED: &str = "not remembered";
+        let remembered = prefs::update(&self.0, |p| {
+            if p.set_last_save_dir(dir) {
+                Ok(())
+            } else {
+                Err(SKIPPED)
+            }
+        });
+        if let Err(e) = remembered
+            && e != SKIPPED
         {
             log::warn!("could not remember the save folder: {e}");
         }

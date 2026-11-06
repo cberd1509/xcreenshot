@@ -3,12 +3,14 @@
 mod actions;
 /// Public for `examples/capture.rs`.
 pub mod capture;
+mod login;
 #[cfg(all(target_os = "macos", not(test)))]
 mod macos;
 mod output;
 mod overlay;
 mod permission;
 mod prefs;
+mod settings;
 /// Public so the overlay (and later commands) can call it; see `docs/share.md`.
 pub mod share;
 mod shortcut;
@@ -18,8 +20,8 @@ mod windows;
 use actions::Action;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow};
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+use tauri::{AppHandle, Listener, Manager, WebviewUrl, WebviewWindow};
+use tauri_plugin_global_shortcut::ShortcutState;
 
 const SETTINGS_WINDOW: &str = "settings";
 
@@ -39,17 +41,29 @@ pub fn run() {
                 .level(log::LevelFilter::Info)
                 .build(),
         )
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        // Used from Rust only: the pages get no updater, dialog or store permissions.
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, pressed, event| {
+                    if event.state() == ShortcutState::Pressed
+                        && app.state::<shortcut::Registered>().is_capture(pressed)
+                    {
+                        handle(app, Action::Capture);
+                    }
+                })
+                .build(),
+        )
+        // Used from Rust only: the pages get no updater, dialog, store or autostart permissions.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_store::Builder::new().build());
+        .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_autostart::Builder::new().build());
     // macOS writes the clipboard itself (`output::write_png`).
     #[cfg(not(target_os = "macos"))]
     let builder = builder.plugin(tauri_plugin_clipboard_manager::init());
     builder
         .manage(overlay::Overlay::default())
         .manage(shortcut::Registered::default())
+        .manage(actions::MenuShows::default())
         .manage(overlay::global_escape::<tauri::Wry>())
         .invoke_handler(tauri::generate_handler![
             overlay::window::overlay_ready,
@@ -65,29 +79,31 @@ pub fn run() {
             permission::open_permission_settings,
             permission::restart_app,
             shortcut::capture_shortcut,
+            shortcut::pause_capture_shortcut,
+            shortcut::resume_capture_shortcut,
+            settings::get_prefs,
+            settings::set_pref,
+            settings::set_capture_option,
         ])
+        // The capture shortcut is paused while Settings records a new one: take it back if
+        // that page reloads or its window closes mid-recording.
+        .on_page_load(|webview, _| {
+            if webview.label() == SETTINGS_WINDOW {
+                shortcut::resume_capture(webview.app_handle());
+            }
+        })
+        .on_window_event(|window, event| {
+            if window.label() == SETTINGS_WINDOW && matches!(event, tauri::WindowEvent::Destroyed) {
+                shortcut::resume_capture(window.app_handle());
+            }
+        })
         .setup(|app| {
             // Menu bar app: no Dock icon.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            build_tray(app.handle(), shortcut::DEFAULT)?;
-            match app
-                .global_shortcut()
-                .on_shortcut(shortcut::DEFAULT, |app, _, event| {
-                    if event.state() == ShortcutState::Pressed {
-                        handle(app, Action::Capture);
-                    }
-                }) {
-                Ok(()) => app
-                    .state::<shortcut::Registered>()
-                    .set(Some(shortcut::DEFAULT)),
-                // Another app may own the shortcut; the menu bar item still works.
-                Err(e) => log::warn!(
-                    "could not register capture shortcut {}: {e}",
-                    shortcut::DEFAULT
-                ),
-            }
+            let capture_shortcut = settings::init(app.handle());
+            build_tray(app.handle(), &capture_shortcut)?;
             overlay::prewarm(app.handle());
             permission::on_startup(app.handle());
             updates::start(app.handle(), offer_update);
@@ -111,12 +127,25 @@ pub fn run() {
 }
 
 fn build_tray(app: &AppHandle, capture_accelerator: &str) -> tauri::Result<()> {
-    let menu = tray_menu(app, capture_accelerator, None)?;
+    // The first menu counts as shown once the tray is built with it.
+    app.state::<actions::MenuShows>()
+        .refresh(capture_accelerator, None, || {
+            build_tray_icon(app, capture_accelerator)
+        })?;
+    // Keep the capture item's shortcut in step with the setting.
+    let tray_app = app.clone();
+    app.listen(settings::CHANGED, move |_| {
+        refresh_tray(&tray_app, updates::ready_version(&tray_app).as_deref())
+    });
+    Ok(())
+}
+
+fn build_tray_icon(app: &AppHandle, capture_accelerator: &str) -> tauri::Result<()> {
     TrayIconBuilder::with_id("main")
         .icon(tray_icon())
         .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("xcreenshot")
-        .menu(&menu)
+        .menu(&tray_menu(app, capture_accelerator, None)?)
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| {
             if let Some(action) = Action::from_id(event.id().as_ref()) {
@@ -155,12 +184,23 @@ fn tray_menu(
 
 /// Adds "Restart to update (vX)" once an update is downloaded.
 fn offer_update(app: &AppHandle, version: &str) {
-    let menu = tray_menu(app, shortcut::DEFAULT, Some(version));
-    if let Err(e) = menu.and_then(|m| match app.tray_by_id("main") {
-        Some(tray) => tray.set_menu(Some(m)),
-        None => Ok(()),
-    }) {
-        log::error!("could not add the restart item: {e}");
+    refresh_tray(app, Some(version));
+}
+
+/// Rebuilds the menu bar items with the current capture shortcut and pending update.
+fn refresh_tray(app: &AppHandle, update: Option<&str>) {
+    let accelerator = app.state::<shortcut::Registered>().get().accelerator;
+    let installed = app
+        .state::<actions::MenuShows>()
+        .refresh(&accelerator, update, || {
+            let menu = tray_menu(app, &accelerator, update)?;
+            match app.tray_by_id("main") {
+                Some(tray) => tray.set_menu(Some(menu)),
+                None => Ok(()),
+            }
+        });
+    if let Err(e) = installed {
+        log::error!("could not update the menu bar: {e}");
     }
 }
 

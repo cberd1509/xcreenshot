@@ -8,7 +8,7 @@
 //! The flow works against the [`Host`] trait and injected time, so it is tested without a
 //! network or a screen. [`TauriHost`] is the thin glue to the updater and dialog plugins.
 
-use crate::prefs::Prefs;
+use crate::prefs;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -279,8 +279,7 @@ pub fn start<R: Runtime>(app: &AppHandle<R>, offer: fn(&AppHandle<R>, &str)) {
         let host = TauriHost(app.clone());
         let state = app.state::<AppUpdates>();
         // Read before each check, so turning it off takes effect within a tick.
-        let allowed =
-            || crate::prefs::open(&app).is_none_or(|store| Prefs::load(&store).check_for_updates);
+        let allowed = || prefs::load(&app).check_for_updates;
         schedule(
             SystemTime::now,
             allowed,
@@ -300,6 +299,12 @@ pub fn check_now<R: Runtime>(app: &AppHandle<R>) {
     tauri::async_runtime::spawn(async move {
         manual_check(&TauriHost(app.clone()), &app.state::<AppUpdates>()).await;
     });
+}
+
+/// The version of the downloaded update waiting for a restart, if any.
+pub fn ready_version<R: Runtime>(app: &AppHandle<R>) -> Option<String> {
+    let ready = app.try_state::<AppUpdates>()?.ready()?;
+    Some(ready.version.clone())
 }
 
 /// "Restart to update" from the menu bar.
@@ -789,5 +794,14 @@ mod tests {
         host.offer("99.0.0");
         assert!(OFFERED.load(Ordering::SeqCst));
         assert!(app.state::<AppUpdates>().ready().is_none());
+        assert_eq!(ready_version(app.handle()), None);
+    }
+
+    #[test]
+    fn no_ready_version_before_the_updater_starts() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        assert_eq!(ready_version(app.handle()), None);
     }
 }

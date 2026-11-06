@@ -57,9 +57,75 @@ impl Action {
     }
 }
 
+/// What the menu bar shows that can change: the capture shortcut and a pending update.
+type Shown = (String, Option<String>);
+
+/// Remembers what the menu bar shows, so it is rebuilt only when that changes.
+#[derive(Default)]
+pub struct MenuShows(std::sync::Mutex<Option<Shown>>);
+
+impl MenuShows {
+    /// Runs `install` if `capture` and `update` differ from what is shown, and remembers them
+    /// only if it succeeds. One refresh at a time, so an older one can't install over a newer.
+    pub fn refresh<E>(
+        &self,
+        capture: &str,
+        update: Option<&str>,
+        install: impl FnOnce() -> Result<(), E>,
+    ) -> Result<(), E> {
+        let next = Some((capture.to_owned(), update.map(str::to_owned)));
+        let mut shown = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *shown != next {
+            install()?;
+            *shown = next;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_menu_changes_only_with_the_shortcut_or_update() {
+        let shows = MenuShows::default();
+        let installs = std::cell::Cell::new(0);
+        let install = || {
+            installs.set(installs.get() + 1);
+            Ok::<(), ()>(())
+        };
+        for (capture, update) in [
+            ("Alt+S", None),
+            ("Alt+S", None),
+            ("Alt+D", None),
+            ("Alt+D", Some("1.2.0")),
+            ("Alt+D", Some("1.2.0")),
+        ] {
+            shows.refresh(capture, update, install).unwrap();
+        }
+        assert_eq!(installs.get(), 3);
+    }
+
+    #[test]
+    fn a_failed_install_is_tried_again() {
+        let shows = MenuShows::default();
+        assert_eq!(
+            shows.refresh("Alt+S", None, || Err("no tray")),
+            Err("no tray")
+        );
+        let mut installed = false;
+        shows
+            .refresh("Alt+S", None, || {
+                installed = true;
+                Ok::<(), &str>(())
+            })
+            .unwrap();
+        assert!(installed, "nothing was remembered after the failure");
+    }
 
     #[test]
     fn ids_round_trip() {
