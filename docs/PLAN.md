@@ -8,7 +8,7 @@
 | Platforms | macOS first; Windows in M5 (CI builds Windows from day one) |
 | Default hotkey | macOS ⌃⇧⌘S · Windows PrintScreen (configurable) |
 | Capture UX | Frozen-frame overlay per display, inline toolbar on selection |
-| License | GPL-3.0 |
+| License | MIT (keeps App Store / Microsoft Store distribution open) |
 | macOS distribution | Developer ID signed + notarized DMG on GitHub Releases, Homebrew tap, Tauri updater |
 | Windows distribution | SignPath-signed MSI/EXE on GitHub Releases + winget |
 | Backlog | Mac App Store, Microsoft Store, Linux, P2P device sync |

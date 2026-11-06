@@ -23,4 +23,4 @@ A fast, privacy-first, open-source screenshot tool for macOS (Windows coming soo
 
 ## License
 
-[GPL-3.0](LICENSE)
+[MIT](LICENSE)
