@@ -29,6 +29,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm check
+      - name: Tests with coverage (90% minimum)
+        run: pnpm coverage
       - name: cargo fmt
         working-directory: src-tauri
         run: cargo fmt --check
@@ -49,7 +51,7 @@ jobs:
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
@@ -62,5 +64,14 @@ jobs:
         working-directory: src-tauri
         run: cargo clippy --all-targets -- -D warnings
       - name: cargo test
+        if: runner.os == 'Windows'
         working-directory: src-tauri
         run: cargo test
+      - name: Install cargo-llvm-cov
+        if: runner.os == 'macOS'
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Rust tests with coverage (90% minimum)
+        if: runner.os == 'macOS'
+        working-directory: src-tauri
+        # main.rs/lib.rs are only app wiring; logic lives in other modules and must be tested.
+        run: cargo llvm-cov --ignore-filename-regex '(^|/)(main|lib)\.rs$' --fail-under-lines 90

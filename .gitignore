@@ -20,3 +20,4 @@ src-tauri/gen/
 .idea
 .DS_Store
 *.sw?
+coverage/
