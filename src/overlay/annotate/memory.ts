@@ -1,19 +1,14 @@
-// The last tool, color and size, kept in the overlay's localStorage. Overlay UI state, not a
+// The last color and size, kept in the overlay's localStorage. Overlay UI state, not a
 // setting: anything missing or unreadable falls back to the defaults. Each is kept on its own,
 // so an overlay window that changes one never overwrites another window's newer choice of the
-// others.
+// other. The tool is not kept: every capture starts in Select, so Esc closes it at once.
 
-import { DEFAULT_STYLE, READY, SIZES, type Style, type Tool } from './shapes'
+import { DEFAULT_STYLE, SIZES, type Style } from './shapes'
 
-export type Remembered = { tool: Tool; color: string; size: number }
-
-export const KEYS: Record<keyof Remembered, string> = {
-  tool: 'xcreenshot.annotate.tool',
+export const KEYS: Record<keyof Style, string> = {
   color: 'xcreenshot.annotate.color',
   size: 'xcreenshot.annotate.size',
 }
-
-export type Memory = { tool: Tool | null; style: Style }
 
 const HEX = /^#[0-9A-F]{6}$/
 
@@ -26,7 +21,7 @@ function storage(): Storage | null {
   }
 }
 
-function read(key: keyof Remembered): string {
+function read(key: keyof Style): string {
   try {
     return storage()?.getItem(KEYS[key]) ?? ''
   } catch {
@@ -35,15 +30,17 @@ function read(key: keyof Remembered): string {
 }
 
 /** What `remember` kept, checked; the defaults for anything missing or wrong. */
-export function recall(): Memory {
-  const tool = READY.has(read('tool') as Tool) ? (read('tool') as Tool) : null
-  const color = HEX.test(read('color')) ? read('color') : DEFAULT_STYLE.color
-  const size = SIZES.includes(Number(read('size'))) ? Number(read('size')) : DEFAULT_STYLE.size
-  return { tool, style: { color, size } }
+export function recall(): Style {
+  const color = read('color')
+  const size = Number(read('size'))
+  return {
+    color: HEX.test(color) ? color : DEFAULT_STYLE.color,
+    size: SIZES.includes(size) ? size : DEFAULT_STYLE.size,
+  }
 }
 
-/** Keeps one of the tool, color and size, leaving the others as they were. */
-export function remember<K extends keyof Remembered>(key: K, value: Remembered[K]) {
+/** Keeps the color or the size, leaving the other as it was. */
+export function remember<K extends keyof Style>(key: K, value: Style[K]) {
   try {
     storage()?.setItem(KEYS[key], String(value))
   } catch {
