@@ -44,7 +44,7 @@ cd src-tauri && cargo clippy --all-targets -- -D warnings && cargo test
 - **Speed:** hotkey-to-overlay must stay fast (target under 150 ms). Capture happens before any window appears. Benchmark capture changes with `cargo run --release --example capture`; don't swap the backend for a slower one.
 - **Privacy:** no telemetry, analytics or accounts. The only network requests are the update check (`latest.json` from GitHub Releases) and, when there is one, the update download. Checks are on by default and can be turned off. Keep the strict CSP in `tauri.conf.json`.
 - **Design:** the [design canvas](https://claude.ai/artifact/RAcQ8kKKNBJCeC4Z3MriRr) is the source of truth for layout, copy, spacing and color. `design/` mirrors it in the repo: read the artboards there, and sync it when the canvas changes (see `design/README.md`). `design/` only changes when someone syncs it: before any UI work, compare the canvas version with `design/sync.json` and sync first if they differ. Every UI change names the artboard it follows and matches it. A screen with no artboard gets one on the canvas before it's built.
-- **UI copy:** short and plain. Don't over-explain or add privacy and marketing lines. When simplifying, change the wording, not the layout.
+- **UI copy:** use the design's copy as written. Where the design has none, keep it short and plain: don't over-explain or add privacy and marketing lines. When simplifying, change the wording, not the layout.
 
 ## Ask the maintainer first
 
