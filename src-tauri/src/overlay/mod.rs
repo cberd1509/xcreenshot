@@ -378,8 +378,9 @@ impl Phase {
             Some(_) => None,
             None => s.painted.first().copied(),
         };
-        let fallback = s
-            .cursor
+        // Only for a focus being made now, never while waiting for the focused display.
+        let fallback = focus
+            .and(s.cursor)
             .filter(|c| Some(*c) != focus && s.painted.contains(c));
         Some(Paint {
             focus,
@@ -636,12 +637,9 @@ pub(crate) mod tests {
         assert_eq!(shows[1].1.region, Some(rect(1.0, 0.0, 1.0, 1.0)));
         let first = p.painted(1, 1).unwrap();
         assert_eq!(first.focus, None, "waits for display 2");
-        assert_eq!(
-            first.fallback,
-            Some(1),
-            "the cursor's display, if 2 can't be focused"
-        );
+        assert_eq!(first.fallback, None, "nothing is focused until 2 paints");
         let second = p.painted(1, 2).unwrap();
+        // The cursor's display, if 2 can't be focused.
         assert_eq!((second.focus, second.fallback), (Some(2), Some(1)));
 
         // Another arrangement: nothing restored, the cursor's display has focus.

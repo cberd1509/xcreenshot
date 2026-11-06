@@ -27,7 +27,7 @@ Press a shortcut, drag, annotate, done. Nothing ever leaves your computer.
 ## Features
 
 - **One shortcut.** <kbd>⌃</kbd> <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>S</kbd> on macOS, <kbd>PrtSc</kbd> on Windows (<kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>PrtSc</kbd> if Snipping Tool uses <kbd>PrtSc</kbd>). Change it anytime.
-- **Drag to capture.** Select any part of the screen, across multiple monitors and Retina displays, pixel-exact. The last region comes back selected; press Enter to take it again.
+- **Drag to capture.** Select any part of the screen, across multiple monitors and Retina displays, pixel-exact.
 - **Exact sizes.** Type a width and height, or lock the aspect ratio.
 - **Remember region.** Reopen with your last selection, ready to go.
 - **Annotate in place.** Arrows, lines, rectangles, circles, pen, highlighter, text and blur, in any color.

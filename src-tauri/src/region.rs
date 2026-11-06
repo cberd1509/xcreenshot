@@ -177,27 +177,22 @@ impl Order {
             .fetch_max(self.issued.load(Ordering::SeqCst), Ordering::SeqCst);
     }
 
-    /// Whether save `seq` is newer than any written or forgotten; if so, older ones are dropped
-    /// from now on. Called under the prefs lock, so the check and the write go together.
-    fn admit(&self, seq: u64) -> bool {
-        // The lock orders this with other saves and with `forget`.
-        if seq <= self.floor.load(Ordering::SeqCst) {
-            return false;
-        }
-        self.floor.store(seq, Ordering::SeqCst);
-        true
+    /// Whether save `seq` is newer than any written or forgotten.
+    fn admits(&self, seq: u64) -> bool {
+        seq > self.floor.load(Ordering::SeqCst)
+    }
+
+    /// Save `seq` was written: older ones are dropped from now on.
+    fn written(&self, seq: u64) {
+        self.floor.fetch_max(seq, Ordering::SeqCst);
     }
 }
 
-/// The saved regions, read when the overlay opens: none while the setting is off. Never waits
-/// for a change being saved.
-pub fn load<R: Runtime>(app: &AppHandle<R>) -> Vec<Region> {
+/// The saved regions, read when the overlay opens, or `None` while the setting is off (then
+/// the session remembers nothing either). Never waits for a change being saved.
+pub fn load<R: Runtime>(app: &AppHandle<R>) -> Option<Vec<Region>> {
     let prefs = prefs::peek(app);
-    if prefs.remember_region {
-        prefs.regions
-    } else {
-        Vec::new()
-    }
+    prefs.remember_region.then_some(prefs.regions)
 }
 
 /// Saves `region`, numbered `seq` by [`ORDER`] (see [`remember`]). Writes the file, so call it
@@ -217,13 +212,18 @@ fn save_to(
     order: &Order,
 ) -> Result<(), &'static str> {
     const UNCHANGED: &str = "unchanged";
+    // Under the prefs lock, which orders this with other saves and with `forget`.
     let change = |p: &mut Prefs| {
-        (order.admit(seq) && remember(p, region))
+        (order.admits(seq) && remember(p, region))
             .then_some(())
             .ok_or(UNCHANGED)
     };
     match prefs::modify(storage, change) {
-        Ok(_) | Err(UNCHANGED) => Ok(()),
+        Ok(_) => {
+            order.written(seq);
+            Ok(())
+        }
+        Err(UNCHANGED) => Ok(()),
         Err(e) => Err(e),
     }
 }
@@ -439,6 +439,20 @@ pub(crate) mod tests {
         );
         assert_eq!(storage.load().regions, [region("new", monitor(1))]);
         assert_eq!(storage.saves.get(), 1);
+    }
+
+    #[test]
+    fn a_failed_write_does_not_drop_older_saves() {
+        let order = Order::new();
+        let (older, newer) = (order.next(), order.next());
+        let failing = FakeStorage::failing();
+        assert!(save_to(&failing, region("new", monitor(1)), newer, &order).is_err());
+        let storage = FakeStorage::default();
+        assert_eq!(
+            save_to(&storage, region("old", monitor(1)), older, &order),
+            Ok(())
+        );
+        assert_eq!(storage.load().regions, [region("old", monitor(1))]);
     }
 
     #[test]

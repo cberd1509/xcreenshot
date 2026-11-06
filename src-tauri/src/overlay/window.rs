@@ -102,8 +102,8 @@ pub(crate) trait Screen: Send + 'static {
     fn capture(&self, ids: &[u32]) -> Result<Vec<DisplayFrame>, CaptureError>;
     /// The cursor in the displays' OS units (points on macOS, pixels on Windows).
     fn cursor<R: Runtime>(&self, app: &AppHandle<R>) -> Option<(f64, f64)>;
-    /// The remembered regions (see `region`).
-    fn regions<R: Runtime>(&self, app: &AppHandle<R>) -> Vec<Region>;
+    /// The remembered regions, or `None` while the setting is off (see `region::load`).
+    fn regions<R: Runtime>(&self, app: &AppHandle<R>) -> Option<Vec<Region>>;
 }
 
 /// The real screen, through `capture`.
@@ -137,7 +137,7 @@ impl Screen for Os {
         Some((p.x / scale, p.y / scale))
     }
 
-    fn regions<R: Runtime>(&self, app: &AppHandle<R>) -> Vec<Region> {
+    fn regions<R: Runtime>(&self, app: &AppHandle<R>) -> Option<Vec<Region>> {
         region::load(app)
     }
 }
@@ -190,7 +190,7 @@ fn start_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) -> Option<u64
         // Read last, just before the session opens, so it follows the current setting. Not if
         // a display failed: see `Phase::open`.
         let complete = frames.as_ref().is_ok_and(|f| captured_all(&listed, f));
-        let regions = complete.then(|| screen.regions(&worker));
+        let regions = complete.then(|| screen.regions(&worker)).flatten();
         finish(
             &worker,
             session,
@@ -625,15 +625,20 @@ pub(crate) fn overlay_painted<R: Runtime>(
 
 /// Focuses `display`'s window; if that fails, logs it and tries `fallback`'s.
 fn focus<R: Runtime>(app: &AppHandle<R>, display: Option<u32>, fallback: Option<u32>) {
-    for d in display.into_iter().chain(fallback) {
+    let Some(display) = display else { return };
+    let focus_one = |d: u32| {
         let focused = app
             .get_webview_window(&label(d))
             .ok_or_else(|| "no window".to_owned())
             .and_then(|w| w.set_focus().map_err(|e| e.to_string()));
-        match focused {
-            Ok(()) => return,
-            Err(e) => log::warn!("could not focus overlay {d}: {e}"),
-        }
+        focused
+            .inspect_err(|e| log::warn!("could not focus overlay {d}: {e}"))
+            .is_ok()
+    };
+    if !focus_one(display)
+        && let Some(fallback) = fallback
+    {
+        focus_one(fallback);
     }
 }
 
@@ -691,8 +696,8 @@ pub(super) mod tests {
             None
         }
 
-        fn regions<R: Runtime>(&self, _: &AppHandle<R>) -> Vec<Region> {
-            self.regions.clone()
+        fn regions<R: Runtime>(&self, _: &AppHandle<R>) -> Option<Vec<Region>> {
+            Some(self.regions.clone())
         }
     }
 

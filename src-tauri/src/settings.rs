@@ -99,10 +99,9 @@ impl Change {
             }
             Change::RememberRegion(on) => {
                 prefs.remember_region = on;
-                // Off forgets the regions too, and any still being saved.
+                // Off forgets the regions too (and, once saved, any still being saved).
                 if !on {
                     prefs.regions.clear();
-                    crate::region::ORDER.forget();
                 }
             }
             Change::Magnifier(on) => prefs.magnifier = on,
@@ -259,7 +258,11 @@ fn set_with<R: Runtime>(
         snipping: print_screen::SNIPPING_TOOL,
     };
     prefs::with_store(app, |store| {
+        let was_on = Prefs::load(store).remember_region;
         let prefs = transact(store, change, &os)?;
+        if was_on && !prefs.remember_region {
+            crate::region::ORDER.forget();
+        }
         let settings = Settings::new(&prefs, VERSION.fetch_add(1, Ordering::AcqRel) + 1);
         // Still holding the lock, so pages get the changes in order.
         if let Err(e) = app.emit(CHANGED, &settings) {
