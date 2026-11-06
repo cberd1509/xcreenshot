@@ -2,7 +2,7 @@
 //! Needs Screen Recording permission for the terminal on macOS.
 
 use std::time::Instant;
-use xcreenshot_lib::capture::{self, CaptureError, PngSpeed};
+use xcreenshot_lib::capture::{self, CaptureError, Rect};
 
 fn main() -> Result<(), CaptureError> {
     if !capture::has_permission() {
@@ -21,25 +21,27 @@ fn main() -> Result<(), CaptureError> {
         if run == 1 {
             for f in &frames {
                 println!(
-                    "  display {} at ({}, {}), {}x{} pt, scale {}, {}x{} px",
-                    f.id,
-                    f.x,
-                    f.y,
-                    f.width,
-                    f.height,
-                    f.scale_factor,
-                    f.image.width(),
-                    f.image.height()
+                    "  display {}: logical {:?}, physical {:?}, scale {}",
+                    f.id, f.logical, f.physical, f.scale_factor
                 );
-                for speed in [PngSpeed::Fast, PngSpeed::Small] {
-                    let t = Instant::now();
-                    let png = capture::encode_png(&f.image, speed)?;
-                    println!(
-                        "  PNG {speed:?}: {} KB in {:?}",
-                        png.len() / 1024,
-                        t.elapsed()
-                    );
-                }
+                assert_eq!(f.image.dimensions(), (f.physical.width, f.physical.height));
+                let half = Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: f64::from(f.logical.width) / 2.0,
+                    height: f64::from(f.logical.height) / 2.0,
+                };
+                let t = Instant::now();
+                let crop = capture::crop(f, half)?;
+                let cropped = t.elapsed();
+                let png = capture::encode_png(&crop)?;
+                println!(
+                    "  crop {}x{} px in {cropped:?}, PNG {} KB in {:?}",
+                    crop.width(),
+                    crop.height(),
+                    png.len() / 1024,
+                    t.elapsed() - cropped
+                );
             }
         }
     }
