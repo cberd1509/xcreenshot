@@ -47,6 +47,8 @@ pub struct Overlay {
     phase: Mutex<Phase>,
     /// The displays whose overlay window is on screen, as Rust last showed or hid them.
     shown: Mutex<Vec<u32>>,
+    /// Fired when the phase returns to Idle; the update restart waits for it.
+    pub(crate) idle: tokio::sync::Notify,
 }
 
 impl Overlay {
@@ -166,6 +168,7 @@ fn start_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) -> Option<u64
             log::error!("could not list displays: {e}");
         }
         *phase(app) = Phase::Idle;
+        app.state::<Overlay>().idle.notify_waiters();
         return None;
     };
     // Before the capture, so the pages learn whether Rust owns Esc.
@@ -276,6 +279,8 @@ pub fn close<R: Runtime>(app: &AppHandle<R>) {
     {
         let _ = app.hide();
     }
+    // Last, so a waiting update restart sees the overlay gone.
+    app.state::<Overlay>().idle.notify_waiters();
 }
 
 /// Hides every overlay window, keeping the session (the Save dialog hides them this way).
@@ -791,7 +796,9 @@ pub(super) mod tests {
     fn hotkey_is_ignored_while_the_overlay_is_open() {
         let app = app();
         let h = app.handle();
+        assert!(!super::super::is_busy(h));
         let (session, release) = press(h, &[1]);
+        assert!(super::super::is_busy(h));
         assert_eq!(start_with(h, fake(true, &[1]).0), None, "while capturing");
         release.send(true).unwrap();
         wait_until("the session to open", || is_open(h, session));

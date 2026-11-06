@@ -48,7 +48,7 @@ The icon sources are `assets/icon.svg` and `assets/tray.svg` (menu bar). After c
 
 ## Guidelines
 
-- **Privacy first.** No telemetry, analytics or network calls. The only exception is the update check.
+- **Privacy first.** No telemetry, analytics or network calls. The only exception is updates: the daily `latest.json` check and the update download.
 - **Keep it simple.** Capture is drag-only. New features should fit the existing flow and not add settings unless needed.
 - Keep UI copy short and plain.
 - Pick an issue from the [project board](https://github.com/users/cberd1509/projects/1), or open one before starting big changes.

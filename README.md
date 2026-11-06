@@ -77,7 +77,7 @@ On first launch, macOS asks for **Screen Recording** permission. xcreenshot walk
 
 ## Privacy
 
-Your screenshots stay on your computer. xcreenshot has no accounts, no analytics and no telemetry, and it never uploads anything. The only network request is the update check, which you can turn off in Settings. See [PRIVACY.md](PRIVACY.md).
+Your screenshots stay on your computer. xcreenshot has no accounts, no analytics and no telemetry, and it never uploads anything. The only network requests are update checks and downloads from GitHub Releases; a switch to turn them off is coming with Settings. See [PRIVACY.md](PRIVACY.md).
 
 ## Build from source
 
@@ -90,6 +90,8 @@ pnpm install
 pnpm tauri dev      # run in development
 pnpm tauri build    # build the app
 ```
+
+Release builds sign updates, so `pnpm tauri build` needs the signing key. To build without it, see [docs/updates.md](docs/updates.md#signing).
 
 ## Contributing
 
