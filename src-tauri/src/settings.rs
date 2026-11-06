@@ -97,7 +97,13 @@ impl Change {
                 let default = print_screen::use_default(os.shortcuts, os.registered, os.snipping)?;
                 prefs.shortcut = default.to_owned();
             }
-            Change::RememberRegion(on) => prefs.remember_region = on,
+            Change::RememberRegion(on) => {
+                prefs.remember_region = on;
+                // Off forgets the regions too (and, once saved, any still being saved).
+                if !on {
+                    prefs.regions.clear();
+                }
+            }
             Change::Magnifier(on) => prefs.magnifier = on,
             Change::OpenAtLogin(on) => login::set(os.login, prefs, on)?,
             Change::CheckForUpdates(on) => prefs.check_for_updates = on,
@@ -252,7 +258,11 @@ fn set_with<R: Runtime>(
         snipping: print_screen::SNIPPING_TOOL,
     };
     prefs::with_store(app, |store| {
+        let was_on = Prefs::load(store).remember_region;
         let prefs = transact(store, change, &os)?;
+        if was_on && !prefs.remember_region {
+            crate::region::ORDER.forget();
+        }
         let settings = Settings::new(&prefs, VERSION.fetch_add(1, Ordering::AcqRel) + 1);
         // Still holding the lock, so pages get the changes in order.
         if let Err(e) = app.emit(CHANGED, &settings) {
@@ -374,6 +384,24 @@ mod tests {
         assert!(!s.remember_region && s.magnifier && !s.check_for_updates && !s.open_at_login);
         fakes.apply(&mut p, "openAtLogin", json!(true)).unwrap();
         assert!(fakes.login.on.get() && p.open_at_login && p.login_item_added);
+    }
+
+    #[test]
+    fn turning_remember_region_off_forgets_the_regions() {
+        let fakes = Fakes::new();
+        let region = crate::region::Region {
+            arrangement: "a".into(),
+            display: crate::region::tests::monitor(1),
+            rect: crate::region::tests::rect(1.0, 2.0, 3.0, 4.0),
+        };
+        let mut p = Prefs {
+            regions: vec![region.clone()],
+            ..Prefs::default()
+        };
+        fakes.apply(&mut p, "rememberRegion", json!(true)).unwrap();
+        assert_eq!(p.regions, [region], "on keeps them");
+        fakes.apply(&mut p, "rememberRegion", json!(false)).unwrap();
+        assert!(!p.remember_region && p.regions.is_empty());
     }
 
     #[test]

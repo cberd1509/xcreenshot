@@ -13,8 +13,9 @@
 //! Rust holds Esc exactly when [`Phase::wants_escape`] says so: [`sync_escape`] runs after every
 //! phase change. Window and shortcut calls stay on the main thread.
 
-use super::{FrameInfo, Phase, diff, display_at, display_id, label};
+use super::{FrameInfo, Phase, captured_all, diff, display_at, display_id, label};
 use crate::capture::{self, Bounds, CaptureError, Display, DisplayFrame};
+use crate::region::{self, Region};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -101,6 +102,8 @@ pub(crate) trait Screen: Send + 'static {
     fn capture(&self, ids: &[u32]) -> Result<Vec<DisplayFrame>, CaptureError>;
     /// The cursor in the displays' OS units (points on macOS, pixels on Windows).
     fn cursor<R: Runtime>(&self, app: &AppHandle<R>) -> Option<(f64, f64)>;
+    /// The remembered regions, or `None` while the setting is off (see `region::load`).
+    fn regions<R: Runtime>(&self, app: &AppHandle<R>) -> Option<Vec<Region>>;
 }
 
 /// The real screen, through `capture`.
@@ -132,6 +135,10 @@ impl Screen for Os {
             1.0
         };
         Some((p.x / scale, p.y / scale))
+    }
+
+    fn regions<R: Runtime>(&self, app: &AppHandle<R>) -> Option<Vec<Region>> {
+        region::load(app)
     }
 }
 
@@ -180,7 +187,19 @@ fn start_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) -> Option<u64
         let focus = screen
             .cursor(&worker)
             .and_then(|(x, y)| display_at(&listed, x, y));
-        finish(&worker, session, frames, focus, escape_shortcut, WATCHDOG);
+        // Read last, just before the session opens, so it follows the current setting. Not if
+        // a display failed: see `Phase::open`.
+        let complete = frames.as_ref().is_ok_and(|f| captured_all(&listed, f));
+        let regions = complete.then(|| screen.regions(&worker)).flatten();
+        finish(
+            &worker,
+            session,
+            frames,
+            focus,
+            escape_shortcut,
+            regions.as_deref(),
+            WATCHDOG,
+        );
     });
     if let Err(e) = place(app, &displays) {
         log::error!("could not place the overlay windows: {e}");
@@ -197,6 +216,7 @@ fn finish<R: Runtime>(
     frames: Result<Vec<DisplayFrame>, CaptureError>,
     focus: Option<u32>,
     escape_shortcut: bool,
+    regions: Option<&[Region]>,
     watchdog: Duration,
 ) {
     let frames = match frames {
@@ -207,7 +227,7 @@ fn finish<R: Runtime>(
         }
     };
     // `None`: Esc closed the overlay during the capture.
-    let Some(shows) = phase(app).open(session, frames, focus, escape_shortcut) else {
+    let Some(shows) = phase(app).open(session, frames, focus, escape_shortcut, regions) else {
         return;
     };
     on_main(app, |app| {
@@ -597,11 +617,28 @@ pub(crate) fn overlay_painted<R: Runtime>(
         log::error!("could not show the overlay: {e}");
         return close(app);
     }
-    if let Some(focus) = paint.focus.and_then(|f| app.get_webview_window(&label(f))) {
-        let _ = focus.set_focus();
-    }
+    focus(app, paint.focus, paint.fallback);
     if let Some((total, capture)) = paint.first {
         log::info!("overlay painted {total:.0} ms after the hotkey (capture {capture:.0} ms)");
+    }
+}
+
+/// Focuses `display`'s window; if that fails, logs it and tries `fallback`'s.
+fn focus<R: Runtime>(app: &AppHandle<R>, display: Option<u32>, fallback: Option<u32>) {
+    let Some(display) = display else { return };
+    let focus_one = |d: u32| {
+        let focused = app
+            .get_webview_window(&label(d))
+            .ok_or_else(|| "no window".to_owned())
+            .and_then(|w| w.set_focus().map_err(|e| e.to_string()));
+        focused
+            .inspect_err(|e| log::warn!("could not focus overlay {d}: {e}"))
+            .is_ok()
+    };
+    if !focus_one(display)
+        && let Some(fallback) = fallback
+    {
+        focus_one(fallback);
     }
 }
 
@@ -626,6 +663,7 @@ pub(super) mod tests {
         permitted: bool,
         ids: Vec<u32>,
         release: mpsc::Receiver<bool>,
+        regions: Vec<Region>,
     }
 
     impl Screen for Fake {
@@ -657,6 +695,10 @@ pub(super) mod tests {
         fn cursor<R: Runtime>(&self, _: &AppHandle<R>) -> Option<(f64, f64)> {
             None
         }
+
+        fn regions<R: Runtime>(&self, _: &AppHandle<R>) -> Option<Vec<Region>> {
+            Some(self.regions.clone())
+        }
     }
 
     fn fake(permitted: bool, ids: &[u32]) -> (Fake, mpsc::Sender<bool>) {
@@ -667,6 +709,7 @@ pub(super) mod tests {
                 permitted,
                 ids,
                 release,
+                regions: Vec::new(),
             },
             tx,
         )
@@ -834,12 +877,35 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn a_remembered_region_opens_selected_on_its_display() {
+        use crate::region::{Monitor, arrangement, tests::rect};
+        let app = app();
+        let h = app.handle();
+        let monitors = [Monitor::of(&frame(1, 4, 2)), Monitor::of(&frame(2, 4, 2))];
+        let remembered = Region {
+            arrangement: arrangement(&monitors),
+            display: monitors[1],
+            rect: rect(0.5, 0.0, 1.0, 1.0),
+        };
+        let (mut screen, release) = fake(true, &[1, 2]);
+        screen.regions = vec![remembered];
+        let session = start_with(h, screen).unwrap();
+        release.send(true).unwrap();
+        wait_until("the session to open", || is_open(h, session));
+        assert_eq!(phase(h).pending_frame(1).unwrap().region, None);
+        assert_eq!(
+            phase(h).pending_frame(2).unwrap().region,
+            Some(rect(0.5, 0.0, 1.0, 1.0))
+        );
+    }
+
+    #[test]
     fn a_failure_from_an_older_capture_is_ignored() {
         let app = app();
         let h = app.handle();
         let session = open(h, &[1]);
         let failed = Err(CaptureError::NoDisplays);
-        finish(h, session + 100, failed, None, true, WATCHDOG);
+        finish(h, session + 100, failed, None, true, None, WATCHDOG);
         assert!(is_open(h, session));
     }
 

@@ -39,6 +39,8 @@
     logicalHeight: number
     /** Whether Rust owns Esc. If not, the page forwards its own Esc key to Rust. */
     escapeShortcut: boolean
+    /** The remembered region on this display (logical px), selected from the start. */
+    region: Rect | null
   }
   /** Sent with `overlay:escape`; answered with the same token. */
   type EscapeEvent = { session: number; token: number }
@@ -90,6 +92,8 @@
   let annotator = $state<ReturnType<typeof Annotator>>()
   /** The newest selection event seen, its `stamp`. */
   let seen = 0
+  /** The selection is the remembered region, untouched: Esc closes rather than clears it. */
+  let restored = false
 
   /**
    * Whether annotations show in the selection. Only then does a press outside it keep them
@@ -114,6 +118,7 @@
   )
 
   function reset() {
+    restored = false
     selection = null
     drag = null
     editing = false
@@ -154,6 +159,11 @@
       context.putImageData(new ImageData(pixels, info.width, info.height), 0, 0)
       frame = { width: info.width, height: info.height }
       display = { width: info.logicalWidth, height: info.logicalHeight }
+      // Remember region: the same state as just after a drag. Rust clamped it to the display.
+      if (info.region) {
+        select(info.region)
+        restored = true
+      }
       await invoke('overlay_painted', { session: info.session })
     } catch (e) {
       // Never leave the user on a dead overlay.
@@ -169,6 +179,7 @@
   function select(next: Rect | null) {
     const rect = next && !isEmpty(toPhysical(next, scale, frame)) ? next : null
     const active = rect !== null
+    restored = false
     if (active !== (selection !== null)) {
       seen = Math.max(Date.now(), seen + 1)
       const event: Selected = { label: view.label, active, session: current, stamp: seen }
@@ -191,6 +202,7 @@
   function undoOne(): boolean {
     if (editing) editing = false
     else if (annotator?.escape()) return true
+    else if (restored) return false
     else if (selection || drag) clear()
     else return false
     return true
