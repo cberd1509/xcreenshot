@@ -118,7 +118,7 @@ a{color:#09090b}a:visited{color:#09090b}
       <ol style="flex: 999 1 480px; margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0; border-top: 1px solid #e4e4e7;">
         <li style="padding: 18px 0; display: flex; gap: 16px; border-bottom: 1px solid #e4e4e7; font-size: 15px; line-height: 24px;"><span style="width: 24px; flex-shrink: 0; font-family: 'JetBrains Mono', ui-monospace, monospace; font-weight: 700; color: #09090b;">01</span><span>It isn't out yet. On <a href="https://github.com/cberd1509/xcreenshot" style="color: #09090b; font-weight: 600; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px;">GitHub</a>, click <b style="font-weight: 600;">Watch › Custom › Releases</b> to get an email when it is.</span></li>
         <li style="padding: 18px 0; display: flex; gap: 16px; border-bottom: 1px solid #e4e4e7; font-size: 15px; line-height: 24px;"><span style="width: 24px; flex-shrink: 0; font-family: 'JetBrains Mono', ui-monospace, monospace; font-weight: 700; color: #09090b;">02</span><span>Once it's out: download the installer from Releases and run it.</span></li>
-        <li style="padding: 18px 0; display: flex; gap: 16px; border-bottom: 1px solid #e4e4e7; font-size: 15px; line-height: 24px;"><span style="width: 24px; flex-shrink: 0; font-family: 'JetBrains Mono', ui-monospace, monospace; font-weight: 700; color: #09090b;">03</span><span>Press <span class="kbd" style="height: 22px; font-size: 12px;">Ctrl</span> <span class="kbd" style="height: 22px; font-size: 12px;">Shift</span> <span class="kbd" style="height: 22px; font-size: 12px;">PrtSc</span> to take a screenshot.</span></li>
+        <li style="padding: 18px 0; display: flex; gap: 16px; border-bottom: 1px solid #e4e4e7; font-size: 15px; line-height: 24px;"><span style="width: 24px; flex-shrink: 0; font-family: 'JetBrains Mono', ui-monospace, monospace; font-weight: 700; color: #09090b;">03</span><span>Press <span class="kbd" style="height: 22px; font-size: 12px;">PrtSc</span> to take a screenshot, or <span class="kbd" style="height: 22px; font-size: 12px;">Ctrl</span> <span class="kbd" style="height: 22px; font-size: 12px;">Shift</span> <span class="kbd" style="height: 22px; font-size: 12px;">PrtSc</span> if Snipping Tool already uses PrtSc.</span></li>
       </ol>
     </sc-if>
   </section>
@@ -129,9 +129,9 @@ a{color:#09090b}a:visited{color:#09090b}
       <h2 style="margin: 0; font-size: 32px; font-weight: 300; letter-spacing: -0.02em;"><span style="font-weight: 800;">Small</span> on purpose</h2>
       <p style="margin: 0; font-size: 15px; line-height: 24px; color: #52525b;">A handful of settings: your shortcut, whether it remembers the last region, a magnifier for exact pixels, and whether it opens at login.</p>
     </div>
-    <div style="flex: 999 1 480px; min-width: 0; aspect-ratio: 880 / 680; position: relative; overflow: hidden; border-radius: 12px; border: 1px solid #e4e4e7; box-shadow: 0 24px 48px -16px rgba(0,0,0,0.16);">
-      <div style="position: absolute; left: 0; top: 0; width: 880px; height: 680px; transform: scale(0.68); transform-origin: 0 0;">
-        <dc-import name="Settings" hint-size="880px,680px"></dc-import>
+    <div style="flex: 999 1 480px; min-width: 0; aspect-ratio: 880 / 800; position: relative; overflow: hidden; border-radius: 12px; border: 1px solid #e4e4e7; box-shadow: 0 24px 48px -16px rgba(0,0,0,0.16);">
+      <div style="position: absolute; left: 0; top: 0; width: 880px; height: 800px; transform: scale(0.68); transform-origin: 0 0;">
+        <dc-import name="Settings" hint-size="880px,800px"></dc-import>
       </div>
     </div>
   </section>
@@ -163,7 +163,7 @@ class Component extends DCLogic {
       winTab: mac ? 'height: 32px; padding: 0 14px; display: inline-flex; align-items: center; border-radius: 6px; color: #09090b; font-size: 13px; font-weight: 500; text-decoration: none;' : 'height: 32px; padding: 0 14px; display: inline-flex; align-items: center; border-radius: 6px; background: #09090b; color: #ffffff; font-size: 13px; font-weight: 600; text-decoration: none;',
       mac,
       other: !mac,
-      shortcut: mac ? ['⌃', '⇧', '⌘', 'S'] : ['Ctrl', 'Shift', 'PrtSc'],
+      shortcut: mac ? ['⌃', '⇧', '⌘', 'S'] : ['PrtSc'],
       mod: mac ? '⌘' : 'Ctrl',
       undo: mac ? '⌘Z' : 'Ctrl+Z',
     };
