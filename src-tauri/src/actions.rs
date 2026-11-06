@@ -47,9 +47,20 @@ impl Action {
         }
     }
 
-    /// Whether a separator follows this item in the menu bar.
-    pub fn separator_after(self) -> bool {
-        matches!(self, Action::Capture | Action::CheckForUpdates)
+    /// The menu bar rows, `None` for a separator. "Restart to update" is only there once an
+    /// update is downloaded, right under "Check for updates…".
+    pub fn menu_rows(update_ready: bool) -> Vec<Option<Action>> {
+        let mut rows = Vec::new();
+        for action in Action::MENU {
+            if action == Action::RestartToUpdate && !update_ready {
+                continue;
+            }
+            if matches!(action, Action::OpenSettings | Action::Quit) {
+                rows.push(None);
+            }
+            rows.push(Some(action));
+        }
+        rows
     }
 
     pub fn from_id(id: &str) -> Option<Action> {
@@ -161,13 +172,31 @@ mod tests {
         assert_eq!(Action::CheckForUpdates.accelerator("F13"), None);
     }
 
-    /// The tray is built from `MENU` alone, separators included.
     #[test]
-    fn separators_group_capture_and_the_app_items() {
-        let after: Vec<_> = Action::MENU
-            .into_iter()
-            .filter(|a| a.separator_after())
-            .collect();
-        assert_eq!(after, [Action::Capture, Action::CheckForUpdates]);
+    fn separators_group_capture_the_app_items_and_quit() {
+        use Action::*;
+        assert_eq!(
+            Action::menu_rows(false),
+            [
+                Some(Capture),
+                None,
+                Some(OpenSettings),
+                Some(CheckForUpdates),
+                None,
+                Some(Quit)
+            ]
+        );
+        assert_eq!(
+            Action::menu_rows(true),
+            [
+                Some(Capture),
+                None,
+                Some(OpenSettings),
+                Some(CheckForUpdates),
+                Some(RestartToUpdate),
+                None,
+                Some(Quit)
+            ]
+        );
     }
 }

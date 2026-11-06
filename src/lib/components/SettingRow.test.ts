@@ -17,6 +17,12 @@ describe('SettingRow', () => {
     expect(screen.getByText('Zoom in.')).toBeInTheDocument()
   })
 
+  it('shows lines under the row', () => {
+    const below = createRawSnippet(() => ({ render: () => '<p>Saved.</p>' }))
+    render(SettingRow, { title: 'Magnifier', children: control, below })
+    expect(screen.getByText('Saved.')).toBeInTheDocument()
+  })
+
   it('renders a plain title and no description otherwise', () => {
     render(SettingRow, { title: 'Take a screenshot', children: control })
     const title = screen.getByText('Take a screenshot')

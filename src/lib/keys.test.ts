@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { comboFromEvent, comboProblem, shortcutKeys, toAccelerator } from './keys'
+import { comboFromEvent, comboProblem, shortcutKeys, spokenKeys, toAccelerator } from './keys'
 
 const key = (code: string, mods: Partial<KeyboardEvent> = {}) => ({
   code,
@@ -8,6 +8,15 @@ const key = (code: string, mods: Partial<KeyboardEvent> = {}) => ({
   shiftKey: false,
   metaKey: false,
   ...mods,
+})
+
+describe('spokenKeys', () => {
+  it('names the keys in words', () => {
+    expect(spokenKeys('Control+Shift+Super+S', true)).toBe('Control Shift Command S')
+    expect(spokenKeys('Alt+CmdOrCtrl+K', true)).toBe('Option Command K')
+    expect(spokenKeys('Alt+Super+F5', false)).toBe('Alt Win F5')
+    expect(spokenKeys('CmdOrCtrl+K', false)).toBe('Control K')
+  })
 })
 
 describe('shortcutKeys', () => {

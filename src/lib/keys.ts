@@ -41,6 +41,20 @@ export function shortcutKeys(accelerator: string, mac = isMac): string[] {
   })
 }
 
+const macNames: Record<string, string> = { Alt: 'Option', Super: 'Command', CmdOrCtrl: 'Command' }
+
+/** The accelerator as words, for screen readers: "Control Shift Command S". */
+export function spokenKeys(accelerator: string, mac = isMac): string {
+  return accelerator
+    .split('+')
+    .map((k) => {
+      if (mac && k in macNames) return macNames[k]
+      if (k === 'Super') return 'Win'
+      return k === 'CmdOrCtrl' ? 'Control' : k
+    })
+    .join(' ')
+}
+
 /** The keys held in a key event, in accelerator order. */
 export type Combo = { modifiers: string[]; key: string | null }
 

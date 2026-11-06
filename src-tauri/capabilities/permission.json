@@ -1,10 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "permission",
-  "description": "Screen Recording steps window: status, open System Settings, restart, shortcut",
+  "description": "Screen Recording steps window: status, pane name, open System Settings, restart, shortcut, close (Later)",
   "windows": ["permission"],
   "permissions": [
+    "core:window:allow-close",
     "allow-permission-granted",
+    "allow-permission-pane",
     "allow-open-permission-settings",
     "allow-restart-app",
     "allow-capture-shortcut"
