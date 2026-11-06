@@ -31,9 +31,6 @@ pub struct Prefs {
     /// The capture shortcut, an accelerator like `Control+Shift+Super+S`.
     #[serde(default = "default_shortcut", deserialize_with = "lenient_shortcut")]
     pub shortcut: String,
-    /// The user picked the shortcut in Settings ("Reset to default" clears it).
-    #[serde(default, deserialize_with = "lenient")]
-    pub shortcut_chosen: bool,
     /// Start the selection from the last region.
     #[serde(default = "on", deserialize_with = "lenient_on")]
     pub remember_region: bool,
@@ -58,7 +55,6 @@ impl Default for Prefs {
         Self {
             last_save_dir: None,
             shortcut: default_shortcut(),
-            shortcut_chosen: false,
             remember_region: on(),
             magnifier: false,
             open_at_login: on(),
@@ -395,7 +391,7 @@ pub(crate) mod tests {
             json!({ "shortcut": 1, "rememberRegion": "yes", "magnifier": null }),
             json!({ "shortcut": "Control+Nope", "openAtLogin": 0, "checkForUpdates": [] }),
             json!({ "shortcut": "S", "loginItemAdded": "no" }),
-            json!({ "shortcutChosen": "yes", "printScreenNoticeShown": 1 }),
+            json!({ "printScreenNoticeShown": 1 }),
             json!({}),
             json!({ "unknown": true }),
             json!("not an object"),
@@ -418,7 +414,7 @@ pub(crate) mod tests {
         let p = Prefs::default();
         assert_eq!(p.shortcut, shortcut::DEFAULT);
         assert!(p.remember_region && !p.magnifier && p.open_at_login && p.check_for_updates);
-        assert!(!p.login_item_added && !p.shortcut_chosen && !p.print_screen_notice_shown);
+        assert!(!p.login_item_added && !p.print_screen_notice_shown);
     }
 
     #[test]
@@ -446,7 +442,6 @@ pub(crate) mod tests {
         let prefs = Prefs {
             last_save_dir: None,
             shortcut: "Alt+Shift+F5".into(),
-            shortcut_chosen: true,
             remember_region: false,
             magnifier: true,
             open_at_login: false,

@@ -1,11 +1,12 @@
-//! Windows 11 can give PrintScreen to Snipping Tool ("Use the Print screen key to open screen
-//! capture" in Settings > Accessibility > Keyboard). Then the default capture shortcut never
-//! reaches the app, so at startup it falls back to [`FALLBACK`] and tells the user once. It
-//! does the same if another app already has PrintScreen.
+//! The Windows default capture shortcut is bare PrintScreen, but Windows 11 can give that key
+//! to Snipping Tool ("Use the Print screen key to open screen capture" in Settings >
+//! Accessibility > Keyboard), and another app can hold it. Then the default is [`FALLBACK`]:
+//! at startup, on "Reset to default", and the recorder refuses PrintScreen while Snipping Tool
+//! has it. So the saved shortcut is always one that works.
 //!
 //! The setting is `HKCU\Control Panel\Keyboard\PrintScreenKeyForSnippingEnabled` (DWORD,
-//! 1 = on). Windows 11 treats a missing value as on. The registry read is [`setting`]; the
-//! decision is [`decide`], pure and tested.
+//! 1 = on). A missing value is on in Windows 11 (build 22000 and later) and off in Windows 10.
+//! The registry reads are the `os` module; the decisions here are pure and tested.
 
 use crate::prefs::Prefs;
 use crate::shortcut::{self, Registered, Registrar};
@@ -16,17 +17,22 @@ use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut};
 
 /// Used instead of bare PrintScreen when it won't reach the app.
 pub const FALLBACK: &str = "Control+Shift+PrintScreen";
+/// The recorder's error for PrintScreen while Snipping Tool has it.
+pub const TAKEN_BY_SNIPPING_TOOL: &str =
+    "Snipping Tool uses PrintScreen. Turn that off in Windows Settings, or pick another shortcut.";
 const OK: &str = "OK";
 const OPEN_SETTINGS: &str = "Open Settings";
+/// First Windows 11 build: a missing setting is on from here.
+const WINDOWS_11: u32 = 22000;
 
-/// What to do with a capture shortcut of bare PrintScreen.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Decision {
-    /// It reaches the app: keep it.
-    Keep,
-    /// Use [`FALLBACK`]; `save` it as the shortcut when the user never chose one.
-    Fallback { save: bool, reason: Reason },
-}
+/// Whether Snipping Tool has PrintScreen, read when needed. `None` where there is no Snipping
+/// Tool (outside Windows): PrintScreen is then never replaced.
+pub type SnippingTool = Option<fn() -> bool>;
+
+#[cfg(target_os = "windows")]
+pub const SNIPPING_TOOL: SnippingTool = Some(os::has_print_screen);
+#[cfg(not(target_os = "windows"))]
+pub const SNIPPING_TOOL: SnippingTool = None;
 
 /// Why PrintScreen won't reach the app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,28 +57,39 @@ impl Reason {
     }
 }
 
-/// `setting` is `PrintScreenKeyForSnippingEnabled` (`None` if missing), `registered` whether
-/// PrintScreen registered, and `chosen` whether the user picked the shortcut in Settings.
-///
-/// A missing setting counts as on (the Windows 11 default), except for a PrintScreen the user
-/// chose: the recorder got the key, so Snipping Tool doesn't have it (Windows 10 leaves it off).
-pub fn decide(setting: Option<u32>, registered: bool, chosen: bool) -> Decision {
-    let snipping = match setting {
-        Some(value) => value != 0,
-        None => !chosen,
-    };
-    let save = !chosen;
-    match (snipping, registered) {
-        (true, _) => Decision::Fallback {
-            save,
-            reason: Reason::SnippingTool,
-        },
-        (false, false) => Decision::Fallback {
-            save,
-            reason: Reason::InUse,
-        },
-        (false, true) => Decision::Keep,
+/// Why PrintScreen won't reach the app, or `None` if it will. `snipping` is whether Snipping
+/// Tool has it; `registered` whether registering it worked.
+pub fn decide(snipping: bool, registered: bool) -> Option<Reason> {
+    if snipping {
+        Some(Reason::SnippingTool)
+    } else if !registered {
+        Some(Reason::InUse)
+    } else {
+        None
     }
+}
+
+/// Whether Snipping Tool has PrintScreen, from `PrintScreenKeyForSnippingEnabled` (`None` if
+/// missing) and the Windows build (`None` if unknown, taken as recent).
+#[cfg_attr(
+    not(any(target_os = "windows", test)),
+    expect(dead_code, reason = "used by the Windows os module")
+)]
+fn snipping_owns(setting: Option<u32>, build: Option<u32>) -> bool {
+    match setting {
+        Some(value) => value != 0,
+        None => build.is_none_or(|b| b >= WINDOWS_11),
+    }
+}
+
+/// The build number from the registry's `CurrentBuildNumber` (UTF-16, may end in NULs).
+#[cfg_attr(
+    not(any(target_os = "windows", test)),
+    expect(dead_code, reason = "used by the Windows os module")
+)]
+fn parse_build(utf16: &[u16]) -> Option<u32> {
+    let len = utf16.iter().position(|&c| c == 0).unwrap_or(utf16.len());
+    String::from_utf16(&utf16[..len]).ok()?.trim().parse().ok()
 }
 
 /// Whether `accelerator` is the bare PrintScreen key.
@@ -82,40 +99,82 @@ pub fn is_print_screen(accelerator: &str) -> bool {
         .is_ok_and(|s| s.matches(Modifiers::empty(), Code::PrintScreen))
 }
 
-/// The shortcut "Reset to default" picks: [`shortcut::DEFAULT`], or [`FALLBACK`] when the
-/// default is PrintScreen and Snipping Tool has it.
-pub fn default_shortcut(setting: Option<u32>) -> &'static str {
-    if is_print_screen(shortcut::DEFAULT) && setting != Some(0) {
+fn has_print_screen(snipping: SnippingTool) -> bool {
+    snipping.is_some_and(|read| read())
+}
+
+/// The default capture shortcut: [`shortcut::DEFAULT`], or [`FALLBACK`] when that is
+/// PrintScreen and Snipping Tool has it or it can't be registered.
+pub fn default_shortcut(snipping: bool, can_register: bool) -> &'static str {
+    default_from(shortcut::DEFAULT, snipping, can_register)
+}
+
+fn default_from(base: &'static str, snipping: bool, can_register: bool) -> &'static str {
+    if is_print_screen(base) && decide(snipping, can_register).is_some() {
         FALLBACK
     } else {
-        shortcut::DEFAULT
+        base
     }
 }
 
-/// Startup, after registering `prefs.shortcut` (`registered` says if it worked): swaps a bare
-/// PrintScreen that won't reach the app for [`FALLBACK`]. Saves it in `prefs` if the user never
-/// chose a shortcut. Returns the reason to tell the user, once (it marks the notice shown).
-/// `setting` reads the Snipping Tool setting; `None` where there is no Snipping Tool.
-pub fn fall_back(
+/// The recorder picked `accelerator`: refuses PrintScreen while Snipping Tool has it.
+pub fn check_pick(accelerator: &str, snipping: SnippingTool) -> Result<(), &'static str> {
+    if is_print_screen(accelerator) && has_print_screen(snipping) {
+        return Err(TAKEN_BY_SNIPPING_TOOL);
+    }
+    Ok(())
+}
+
+/// "Reset to default": registers the default shortcut (see [`default_shortcut`]) in place of
+/// the current one and returns it.
+pub fn use_default(
+    shortcuts: &impl Registrar,
+    current: &Registered,
+    snipping: SnippingTool,
+) -> Result<&'static str, &'static str> {
+    use_default_from(default_shortcut, shortcuts, current, snipping)
+}
+
+/// [`use_default`] with the default from `default` (as [`default_shortcut`]).
+fn use_default_from(
+    default: fn(bool, bool) -> &'static str,
+    shortcuts: &impl Registrar,
+    current: &Registered,
+    snipping: SnippingTool,
+) -> Result<&'static str, &'static str> {
+    // No Snipping Tool: the plain default, even if PrintScreen is taken.
+    let Some(read) = snipping else {
+        let base = default(false, true);
+        return shortcut::swap(shortcuts, current, base).map(|()| base);
+    };
+    let snipping = read();
+    let first = default(snipping, true);
+    match shortcut::swap(shortcuts, current, first) {
+        Err(shortcut::IN_USE) if default(snipping, false) != first => {
+            shortcut::swap(shortcuts, current, FALLBACK).map(|()| FALLBACK)
+        }
+        result => result.map(|()| first),
+    }
+}
+
+/// Startup, after registering `prefs.shortcut` (`registered` says if it worked): replaces a
+/// PrintScreen that won't reach the app with [`FALLBACK`], in `prefs` too so Settings shows the
+/// shortcut that works. Returns the reason to tell the user, once (it marks the notice shown).
+pub fn at_startup(
     shortcuts: &impl Registrar,
     current: &Registered,
     prefs: &mut Prefs,
     registered: bool,
-    setting: Option<impl FnOnce() -> Option<u32>>,
+    snipping: SnippingTool,
 ) -> Option<Reason> {
-    let setting = setting.filter(|_| is_print_screen(&prefs.shortcut))?;
-    let Decision::Fallback { save, reason } = decide(setting(), registered, prefs.shortcut_chosen)
-    else {
-        return None;
-    };
+    let read = snipping.filter(|_| is_print_screen(&prefs.shortcut))?;
+    let reason = decide(read(), registered)?;
     log::warn!("PrintScreen won't reach xcreenshot ({reason:?}); using {FALLBACK}");
     if let Err(e) = shortcut::swap(shortcuts, current, FALLBACK) {
         log::warn!("could not use {FALLBACK}: {e}");
         return None;
     }
-    if save {
-        prefs.shortcut = FALLBACK.to_owned();
-    }
+    prefs.shortcut = FALLBACK.to_owned();
     (!std::mem::replace(&mut prefs.print_screen_notice_shown, true)).then_some(reason)
 }
 
@@ -142,77 +201,109 @@ fn wants_settings(answer: &MessageDialogResult) -> bool {
     matches!(answer, MessageDialogResult::Custom(label) if label == OPEN_SETTINGS)
 }
 
-/// `PrintScreenKeyForSnippingEnabled`, or `None` if it is missing. `Some(0)` (off) outside
-/// Windows, which has no Snipping Tool.
 #[cfg(target_os = "windows")]
-pub fn setting() -> Option<u32> {
-    use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
-    use windows::core::w;
+mod os {
+    use std::ffi::c_void;
+    use windows::Win32::System::Registry::{
+        HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, REG_ROUTINE_FLAGS, RRF_RT_REG_DWORD,
+        RRF_RT_REG_SZ, RegGetValueW,
+    };
+    use windows::core::{PCWSTR, w};
 
-    let mut data = 0u32;
-    let mut size = size_of::<u32>() as u32;
-    // SAFETY: `data` is a u32 and `size` says so; RegGetValueW writes at most that.
-    let status = unsafe {
-        RegGetValueW(
+    pub fn has_print_screen() -> bool {
+        super::snipping_owns(setting(), build())
+    }
+
+    fn setting() -> Option<u32> {
+        let mut data = 0u32;
+        read(
             HKEY_CURRENT_USER,
             w!("Control Panel\\Keyboard"),
             w!("PrintScreenKeyForSnippingEnabled"),
             RRF_RT_REG_DWORD,
-            None,
-            Some((&raw mut data).cast()),
-            Some(&raw mut size),
-        )
-    };
-    status.ok().ok().map(|()| data)
-}
+            (&raw mut data).cast(),
+            size_of::<u32>(),
+        )?;
+        Some(data)
+    }
 
-#[cfg(not(target_os = "windows"))]
-pub fn setting() -> Option<u32> {
-    Some(0)
+    fn build() -> Option<u32> {
+        let mut buf = [0u16; 16];
+        read(
+            HKEY_LOCAL_MACHINE,
+            w!("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"),
+            w!("CurrentBuildNumber"),
+            RRF_RT_REG_SZ,
+            buf.as_mut_ptr().cast(),
+            size_of_val(&buf),
+        )?;
+        super::parse_build(&buf)
+    }
+
+    fn read(
+        key: HKEY,
+        subkey: PCWSTR,
+        value: PCWSTR,
+        kind: REG_ROUTINE_FLAGS,
+        data: *mut c_void,
+        len: usize,
+    ) -> Option<()> {
+        let mut size = len as u32;
+        // SAFETY: `data` points to `len` writable bytes and `size` says so; RegGetValueW
+        // writes at most that (strings come back NUL-terminated).
+        let status = unsafe {
+            RegGetValueW(
+                key,
+                subkey,
+                value,
+                kind,
+                None,
+                Some(data),
+                Some(&raw mut size),
+            )
+        };
+        status.ok().ok()
+    }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::shortcut::tests::FakeRegistrar;
 
     const PRINT_SCREEN: &str = "PrintScreen";
+    pub const ON: SnippingTool = Some(|| true);
+    pub const OFF: SnippingTool = Some(|| false);
 
     #[test]
-    fn keeps_print_screen_only_when_it_registered_and_snipping_tool_is_off() {
-        use Reason::{InUse, SnippingTool};
-        let fallback = |save, reason| Decision::Fallback { save, reason };
-        assert_eq!(decide(Some(0), true, false), Decision::Keep);
-        assert_eq!(decide(Some(0), true, true), Decision::Keep);
-        for (setting, registered, reason) in [
-            (Some(1), true, SnippingTool),
-            (Some(2), true, SnippingTool),
-            (None, true, SnippingTool),
-            (Some(1), false, SnippingTool),
-            (None, false, SnippingTool),
-            // Snipping Tool is off: another app has PrintScreen.
-            (Some(0), false, InUse),
-        ] {
-            assert_eq!(
-                decide(setting, registered, false),
-                fallback(true, reason),
-                "{setting:?} {registered}"
-            );
+    fn print_screen_works_only_when_it_registered_and_snipping_tool_is_off() {
+        assert_eq!(decide(false, true), None);
+        assert_eq!(decide(true, true), Some(Reason::SnippingTool));
+        assert_eq!(decide(true, false), Some(Reason::SnippingTool));
+        assert_eq!(decide(false, false), Some(Reason::InUse));
+    }
+
+    #[test]
+    fn a_missing_setting_is_on_from_windows_11() {
+        for build in [None, Some(19045), Some(22000), Some(26100)] {
+            assert!(snipping_owns(Some(1), build));
+            assert!(!snipping_owns(Some(0), build));
         }
-        // A chosen PrintScreen falls back for the run only, and a missing setting doesn't
-        // count against it.
-        for (setting, registered, reason) in [
-            (Some(1), true, SnippingTool),
-            (Some(0), false, InUse),
-            (None, false, InUse),
-        ] {
-            assert_eq!(
-                decide(setting, registered, true),
-                fallback(false, reason),
-                "{setting:?} {registered}"
-            );
-        }
-        assert_eq!(decide(None, true, true), Decision::Keep, "Windows 10");
+        assert!(!snipping_owns(None, Some(19045)), "Windows 10");
+        assert!(!snipping_owns(None, Some(21999)));
+        assert!(snipping_owns(None, Some(22000)), "Windows 11");
+        assert!(snipping_owns(None, Some(26100)));
+        assert!(snipping_owns(None, None), "unknown build: recent");
+    }
+
+    #[test]
+    fn parses_the_registry_build() {
+        let utf16 = |s: &str| s.encode_utf16().collect::<Vec<_>>();
+        assert_eq!(parse_build(&utf16("26100\0\0\0")), Some(26100));
+        assert_eq!(parse_build(&utf16(" 19045 ")), Some(19045));
+        assert_eq!(parse_build(&utf16("")), None);
+        assert_eq!(parse_build(&utf16("x\0")), None);
+        assert_eq!(parse_build(&[0xD800]), None, "not UTF-16");
     }
 
     #[test]
@@ -241,124 +332,183 @@ mod tests {
     }
 
     #[test]
-    fn reset_skips_print_screen_only_where_it_is_the_default() {
-        assert_eq!(default_shortcut(Some(0)), shortcut::DEFAULT);
-        let snipping = if is_print_screen(shortcut::DEFAULT) {
-            FALLBACK
-        } else {
-            shortcut::DEFAULT
-        };
-        assert_eq!(default_shortcut(Some(1)), snipping);
-        assert_eq!(default_shortcut(None), snipping);
+    fn the_default_skips_a_print_screen_that_wont_work() {
+        assert_eq!(default_from(PRINT_SCREEN, false, true), PRINT_SCREEN);
+        assert_eq!(default_from(PRINT_SCREEN, true, true), FALLBACK);
+        assert_eq!(default_from(PRINT_SCREEN, false, false), FALLBACK);
+        // macOS: never PrintScreen, nothing to skip.
+        assert_eq!(default_from("Alt+S", true, false), "Alt+S");
+        // The production default goes the same way.
+        assert_eq!(default_shortcut(false, true), shortcut::DEFAULT);
+        let skipped = default_from(shortcut::DEFAULT, true, true);
+        assert_eq!(default_shortcut(true, true), skipped);
     }
 
     #[test]
-    #[cfg(not(target_os = "windows"))]
-    fn snipping_tool_is_off_outside_windows() {
-        assert_eq!(setting(), Some(0));
+    fn the_recorder_refuses_print_screen_only_while_snipping_tool_has_it() {
+        assert_eq!(check_pick(PRINT_SCREEN, ON), Err(TAKEN_BY_SNIPPING_TOOL));
+        assert_eq!(check_pick(PRINT_SCREEN, OFF), Ok(()));
+        assert_eq!(check_pick(PRINT_SCREEN, None), Ok(()), "no Snipping Tool");
+        assert_eq!(check_pick(FALLBACK, ON), Ok(()));
     }
 
-    fn print_screen_prefs(chosen: bool) -> Prefs {
+    /// The default as on Windows, whatever this platform is.
+    fn windows_default(snipping: bool, can_register: bool) -> &'static str {
+        default_from(PRINT_SCREEN, snipping, can_register)
+    }
+
+    fn holding(accelerator: &str) -> (FakeRegistrar, Registered) {
+        let current = Registered::default();
+        current.set(accelerator, true);
+        (FakeRegistrar::holding(accelerator), current)
+    }
+
+    #[test]
+    fn reset_picks_print_screen_or_the_fallback() {
+        let (shortcuts, current) = holding("Alt+S");
+        assert_eq!(
+            use_default_from(windows_default, &shortcuts, &current, OFF),
+            Ok(PRINT_SCREEN)
+        );
+        assert_eq!(shortcuts.held(), [PRINT_SCREEN]);
+
+        let (shortcuts, current) = holding("Alt+S");
+        assert_eq!(
+            use_default_from(windows_default, &shortcuts, &current, ON),
+            Ok(FALLBACK)
+        );
+        assert_eq!(shortcuts.held(), [FALLBACK]);
+
+        // Another app has PrintScreen.
+        let (mut shortcuts, current) = holding("Alt+S");
+        shortcuts.taken.insert(PRINT_SCREEN.into());
+        assert_eq!(
+            use_default_from(windows_default, &shortcuts, &current, OFF),
+            Ok(FALLBACK)
+        );
+        assert_eq!(current.active().as_deref(), Some(FALLBACK));
+
+        // Both taken: the old one stays.
+        let (mut shortcuts, current) = holding("Alt+S");
+        shortcuts
+            .taken
+            .extend([PRINT_SCREEN.into(), FALLBACK.into()]);
+        assert_eq!(
+            use_default_from(windows_default, &shortcuts, &current, OFF),
+            Err(shortcut::IN_USE)
+        );
+        assert_eq!(current.active().as_deref(), Some("Alt+S"));
+    }
+
+    #[test]
+    fn reset_without_snipping_tool_is_the_plain_default() {
+        let (shortcuts, current) = holding("Alt+S");
+        assert_eq!(
+            use_default_from(windows_default, &shortcuts, &current, None),
+            Ok(PRINT_SCREEN)
+        );
+        // The production wiring: this platform's default.
+        let (shortcuts, current) = holding("Alt+S");
+        let expected = default_shortcut(has_print_screen(SNIPPING_TOOL), true);
+        assert_eq!(
+            use_default(&shortcuts, &current, SNIPPING_TOOL),
+            Ok(expected)
+        );
+    }
+
+    fn print_screen_prefs() -> Prefs {
         Prefs {
             shortcut: PRINT_SCREEN.into(),
-            shortcut_chosen: chosen,
             ..Prefs::default()
         }
     }
 
-    /// Registers PrintScreen like startup does, then falls back if needed.
+    /// Registers the saved shortcut like startup does, then replaces it if needed.
     fn start(
         shortcuts: &FakeRegistrar,
         prefs: &mut Prefs,
-        setting: Option<u32>,
+        snipping: SnippingTool,
     ) -> (Registered, Option<Reason>) {
         let current = Registered::default();
         let registered = shortcuts.register(&prefs.shortcut).is_ok();
         current.set(&prefs.shortcut, registered);
-        let tell = fall_back(shortcuts, &current, prefs, registered, Some(|| setting));
+        let tell = at_startup(shortcuts, &current, prefs, registered, snipping);
         (current, tell)
     }
 
     #[test]
-    fn snipping_tool_moves_the_default_to_the_fallback_and_tells_once() {
+    fn snipping_tool_moves_print_screen_to_the_fallback_and_tells_once() {
         let shortcuts = FakeRegistrar::default();
-        let mut prefs = print_screen_prefs(false);
-        let (current, tell) = start(&shortcuts, &mut prefs, None);
+        let mut prefs = print_screen_prefs();
+        let (current, tell) = start(&shortcuts, &mut prefs, ON);
         assert_eq!(tell, Some(Reason::SnippingTool));
         assert_eq!(shortcuts.held(), [FALLBACK], "PrintScreen let go");
         assert_eq!(current.active().as_deref(), Some(FALLBACK));
         assert_eq!(prefs.shortcut, FALLBACK, "saved");
         assert!(prefs.print_screen_notice_shown);
 
-        // Reset to PrintScreen later: it falls back again without telling.
+        // PrintScreen again later (an old file): replaced without telling.
         let shortcuts = FakeRegistrar::default();
         prefs.shortcut = PRINT_SCREEN.into();
-        let (_, tell) = start(&shortcuts, &mut prefs, Some(1));
+        let (_, tell) = start(&shortcuts, &mut prefs, ON);
         assert_eq!(tell, None);
         assert_eq!(shortcuts.held(), [FALLBACK]);
     }
 
     #[test]
-    fn a_taken_print_screen_falls_back_too() {
+    fn a_taken_print_screen_is_replaced_and_blames_another_app() {
         let mut shortcuts = FakeRegistrar::default();
         shortcuts.taken.insert(PRINT_SCREEN.into());
-        let mut prefs = print_screen_prefs(false);
-        let (current, tell) = start(&shortcuts, &mut prefs, Some(0));
-        assert_eq!(tell, Some(Reason::InUse), "Snipping Tool is off");
+        let mut prefs = print_screen_prefs();
+        let (current, tell) = start(&shortcuts, &mut prefs, OFF);
+        assert_eq!(tell, Some(Reason::InUse));
         assert_eq!(current.active().as_deref(), Some(FALLBACK));
         assert_eq!(prefs.shortcut, FALLBACK);
     }
 
     #[test]
-    fn a_chosen_print_screen_falls_back_for_this_run_only() {
+    fn a_working_print_screen_or_another_shortcut_is_left_alone() {
         let shortcuts = FakeRegistrar::default();
-        let mut prefs = print_screen_prefs(true);
-        let (current, tell) = start(&shortcuts, &mut prefs, Some(1));
-        assert_eq!(tell, Some(Reason::SnippingTool));
-        assert_eq!(current.active().as_deref(), Some(FALLBACK));
-        assert_eq!(prefs.shortcut, PRINT_SCREEN, "the user's choice is kept");
-    }
-
-    #[test]
-    fn print_screen_that_works_or_another_shortcut_is_left_alone() {
-        let shortcuts = FakeRegistrar::default();
-        let mut prefs = print_screen_prefs(false);
-        let (current, tell) = start(&shortcuts, &mut prefs, Some(0));
+        let mut prefs = print_screen_prefs();
+        let (current, tell) = start(&shortcuts, &mut prefs, OFF);
         assert_eq!(tell, None);
         assert_eq!(current.active().as_deref(), Some(PRINT_SCREEN));
-        assert_eq!(prefs, print_screen_prefs(false));
+        assert_eq!(prefs, print_screen_prefs());
 
-        // Another shortcut: the setting is not even read.
+        // Another shortcut: Snipping Tool is not even checked.
         let mut prefs = Prefs {
             shortcut: "Alt+S".into(),
             ..Prefs::default()
         };
         let before = prefs.clone();
-        let tell = fall_back(
+        let tell = at_startup(
             &shortcuts,
             &current,
             &mut prefs,
             true,
-            Some(|| panic!("read the setting")),
+            Some(|| panic!("checked Snipping Tool")),
         );
         assert_eq!(tell, None);
         assert_eq!(prefs, before);
+
         // No Snipping Tool (Linux): a taken PrintScreen stays as it is.
-        let mut prefs = print_screen_prefs(false);
-        let tell = fall_back(&shortcuts, &current, &mut prefs, false, None::<fn() -> _>);
-        assert_eq!(tell, None);
-        assert_eq!(prefs, print_screen_prefs(false));
+        let mut prefs = print_screen_prefs();
+        assert_eq!(
+            at_startup(&shortcuts, &current, &mut prefs, false, None),
+            None
+        );
+        assert_eq!(prefs, print_screen_prefs());
     }
 
     #[test]
     fn a_taken_fallback_keeps_print_screen_and_tells_nothing() {
         let mut shortcuts = FakeRegistrar::default();
         shortcuts.taken.insert(FALLBACK.into());
-        let mut prefs = print_screen_prefs(false);
-        let (current, tell) = start(&shortcuts, &mut prefs, Some(1));
+        let mut prefs = print_screen_prefs();
+        let (current, tell) = start(&shortcuts, &mut prefs, ON);
         assert_eq!(tell, None);
         assert_eq!(current.active().as_deref(), Some(PRINT_SCREEN));
-        assert_eq!(prefs, print_screen_prefs(false), "tried again next launch");
+        assert_eq!(prefs, print_screen_prefs(), "tried again next launch");
     }
 
     #[test]

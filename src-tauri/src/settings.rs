@@ -67,8 +67,8 @@ struct Os<'a, G, L> {
     shortcuts: &'a G,
     registered: &'a Registered,
     login: Option<&'a L>,
-    /// The shortcut "Reset to default" picks (see [`print_screen::default_shortcut`]).
-    default_shortcut: fn() -> &'static str,
+    /// Whether Snipping Tool has PrintScreen (Windows; see [`print_screen`]).
+    snipping: print_screen::SnippingTool,
 }
 
 impl Change {
@@ -87,13 +87,15 @@ impl Change {
         os: &Os<G, L>,
     ) -> Result<(), &'static str> {
         match self {
-            Change::Shortcut(accelerator) => {
-                let chosen = accelerator.is_some();
-                let new = accelerator.unwrap_or_else(|| (os.default_shortcut)().to_owned());
+            Change::Shortcut(Some(new)) => {
                 shortcut::validate(&new)?;
+                print_screen::check_pick(&new, os.snipping)?;
                 shortcut::swap(os.shortcuts, os.registered, &new)?;
                 prefs.shortcut = new;
-                prefs.shortcut_chosen = chosen;
+            }
+            Change::Shortcut(None) => {
+                let default = print_screen::use_default(os.shortcuts, os.registered, os.snipping)?;
+                prefs.shortcut = default.to_owned();
             }
             Change::RememberRegion(on) => prefs.remember_region = on,
             Change::Magnifier(on) => prefs.magnifier = on,
@@ -146,7 +148,7 @@ fn start(
     shortcuts: &impl Registrar,
     registered: &Registered,
     login: Option<&impl LoginItem>,
-    snipping_setting: Option<impl FnOnce() -> Option<u32>>,
+    snipping: print_screen::SnippingTool,
 ) -> (Prefs, Option<print_screen::Reason>) {
     let loaded = storage.load();
     let mut prefs = loaded.clone();
@@ -161,7 +163,7 @@ fn start(
         })
         .is_ok();
     registered.set(&prefs.shortcut, ok);
-    let tell = print_screen::fall_back(shortcuts, registered, &mut prefs, ok, snipping_setting);
+    let tell = print_screen::at_startup(shortcuts, registered, &mut prefs, ok, snipping);
     let turned = login.and_then(|item| login::sync(item, &mut prefs));
     if prefs != loaded
         && let Err(e) = storage.save(&prefs)
@@ -179,14 +181,13 @@ fn start(
 /// Applies the saved settings at startup. Returns the capture shortcut, for the menu bar, and
 /// why to tell the user about the PrintScreen fallback, if at all (see [`print_screen::tell`]).
 pub fn init<R: Runtime>(app: &AppHandle<R>) -> (String, Option<print_screen::Reason>) {
-    let snipping_tool = cfg!(target_os = "windows").then_some(print_screen::setting);
-    init_with(app, app.global_shortcut(), snipping_tool)
+    init_with(app, app.global_shortcut(), print_screen::SNIPPING_TOOL)
 }
 
 fn init_with<R: Runtime>(
     app: &AppHandle<R>,
     shortcuts: &impl Registrar,
-    snipping_setting: Option<impl FnOnce() -> Option<u32>>,
+    snipping: print_screen::SnippingTool,
 ) -> (String, Option<print_screen::Reason>) {
     let login = login::item(app);
     let registered = app.state::<Registered>();
@@ -195,13 +196,7 @@ fn init_with<R: Runtime>(
         Some(store) => &**store,
         None => &prefs::Unsaved,
     };
-    let (_, tell) = start(
-        storage,
-        shortcuts,
-        &registered,
-        login.as_deref(),
-        snipping_setting,
-    );
+    let (_, tell) = start(storage, shortcuts, &registered, login.as_deref(), snipping);
     (registered.get().accelerator, tell)
 }
 
@@ -254,7 +249,7 @@ fn set_with<R: Runtime>(
         shortcuts,
         registered: &registered,
         login: login.as_deref(),
-        default_shortcut: || print_screen::default_shortcut(print_screen::setting()),
+        snipping: print_screen::SNIPPING_TOOL,
     };
     prefs::with_store(app, |store| {
         let prefs = transact(store, change, &os)?;
@@ -278,8 +273,7 @@ mod tests {
     use tauri::async_runtime::block_on;
     use tauri::test::{MockRuntime, mock_builder, mock_context, noop_assets};
 
-    /// Snipping Tool doesn't have PrintScreen.
-    const OFF: Option<fn() -> Option<u32>> = Some(|| Some(0));
+    use crate::print_screen::tests::{OFF, ON};
 
     fn change(key: &str, value: Value) -> Change {
         Change::parse(key, value).unwrap()
@@ -330,6 +324,7 @@ mod tests {
         shortcuts: FakeRegistrar,
         registered: Registered,
         login: FakeItem,
+        snipping: print_screen::SnippingTool,
     }
 
     impl Fakes {
@@ -338,6 +333,7 @@ mod tests {
                 shortcuts: FakeRegistrar::holding(shortcut::DEFAULT),
                 registered: Registered::default(),
                 login: FakeItem::default(),
+                snipping: OFF,
             };
             fakes.registered.set(shortcut::DEFAULT, true);
             fakes
@@ -348,7 +344,7 @@ mod tests {
                 shortcuts: &self.shortcuts,
                 registered: &self.registered,
                 login: Some(&self.login),
-                default_shortcut: || shortcut::DEFAULT,
+                snipping: self.snipping,
             }
         }
 
@@ -402,12 +398,52 @@ mod tests {
         assert_eq!(p.shortcut, "Alt+Shift+F5");
         assert_eq!(fakes.shortcuts.held(), ["Alt+Shift+F5"]);
         assert_eq!(fakes.registered.active().as_deref(), Some("Alt+Shift+F5"));
-        assert!(p.shortcut_chosen);
         // Reset to default.
         fakes.apply(&mut p, "shortcut", json!(null)).unwrap();
-        assert_eq!(p.shortcut, shortcut::DEFAULT);
-        assert!(!p.shortcut_chosen);
-        assert_eq!(fakes.shortcuts.held(), [shortcut::DEFAULT]);
+        assert_eq!(p.shortcut, print_screen::default_shortcut(false, true));
+        assert_eq!(fakes.shortcuts.held(), [p.shortcut.as_str()]);
+    }
+
+    #[test]
+    fn with_snipping_tool_on_reset_picks_the_default_that_works() {
+        let mut fakes = Fakes::new();
+        fakes.snipping = ON;
+        let mut p = Prefs::default();
+        fakes
+            .apply(&mut p, "shortcut", json!("Alt+Shift+F5"))
+            .unwrap();
+        fakes.apply(&mut p, "shortcut", json!(null)).unwrap();
+        // Windows: the fallback; macOS: its usual default.
+        assert_eq!(p.shortcut, print_screen::default_shortcut(true, true));
+        assert_eq!(fakes.shortcuts.held(), [p.shortcut.as_str()]);
+    }
+
+    #[test]
+    fn with_snipping_tool_on_the_recorder_refuses_print_screen() {
+        let mut fakes = Fakes::new();
+        fakes.snipping = ON;
+        let mut p = Prefs {
+            shortcut: "Alt+S".into(),
+            ..Prefs::default()
+        };
+        fakes.registered.set("Alt+S", true);
+        let fakes = Fakes {
+            shortcuts: FakeRegistrar::holding("Alt+S"),
+            ..fakes
+        };
+        let picked = fakes.apply(&mut p, "shortcut", json!(shortcut::DEFAULT));
+        if print_screen::is_print_screen(shortcut::DEFAULT) {
+            assert_eq!(picked, Err(print_screen::TAKEN_BY_SNIPPING_TOOL));
+            assert_eq!(p.shortcut, "Alt+S", "the old one stays");
+            assert_eq!(fakes.shortcuts.held(), ["Alt+S"]);
+        } else {
+            assert_eq!(picked, Ok(()));
+        }
+        // PrintScreen itself, wherever validation lets it through.
+        assert_eq!(
+            print_screen::check_pick("PrintScreen", fakes.snipping),
+            Err(print_screen::TAKEN_BY_SNIPPING_TOOL)
+        );
     }
 
     #[test]
@@ -415,7 +451,7 @@ mod tests {
         let (fakes, storage) = (Fakes::new(), storage(false));
         storage.prefs.borrow_mut().shortcut = "PrintScreen".into();
         let shortcuts = FakeRegistrar::default();
-        let on: Option<fn() -> Option<u32>> = Some(|| Some(1));
+        let on = ON;
         let (p, tell) = start(
             &storage,
             &shortcuts,
@@ -438,6 +474,27 @@ mod tests {
         );
         assert_eq!(tell, None);
         assert_eq!(storage.saves.get(), 1);
+    }
+
+    #[test]
+    fn startup_keeps_the_fallback_when_it_cannot_be_saved() {
+        let (fakes, storage) = (Fakes::new(), FakeStorage::failing());
+        storage.prefs.borrow_mut().shortcut = "PrintScreen".into();
+        let shortcuts = FakeRegistrar::default();
+        let (_, tell) = start(
+            &storage,
+            &shortcuts,
+            &fakes.registered,
+            None::<&FakeItem>,
+            ON,
+        );
+        // Told now, and again next launch (the notice wasn't saved either).
+        assert_eq!(tell, Some(print_screen::Reason::SnippingTool));
+        assert_eq!(storage.saves.get(), 1);
+        assert_eq!(
+            fakes.registered.active().as_deref(),
+            Some(print_screen::FALLBACK)
+        );
     }
 
     #[test]

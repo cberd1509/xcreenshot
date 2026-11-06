@@ -250,14 +250,13 @@ Print screen key to open screen capture"). The setting is the DWORD
 a missing value as on (from 22H2 build 22621.1928, KB5027303). Microsoft does not document the
 value; this comes from community guides and the KB5027303 notes.
 
-The Windows default shortcut is bare PrintScreen. At startup, if it fails to register or the
-setting is on (or missing), the app uses Ctrl+Shift+PrintScreen instead. It saves that as the
-shortcut only if the user never chose one in Settings, and shows a dialog once ("Open Settings"
-or OK). The dialog blames Snipping Tool only when it has the key; otherwise it says another app
-is using PrintScreen. "Reset to default" in Settings picks the same fallback while the setting is on. Windows
-10 treats a missing value as off, but the app still falls back there, which costs little:
-Ctrl+Shift+PrintScreen works, and a PrintScreen the user picks in Settings is kept when the value
-is missing (the recorder got the key, so Snipping Tool doesn't have it). The decision is `decide` in `src-tauri/src/print_screen.rs`, unit-tested on every platform.
+The Windows default shortcut is bare PrintScreen, or Ctrl+Shift+PrintScreen when PrintScreen
+won't reach the app: Snipping Tool has it (the setting is on, or missing on Windows 11, build
+22000 and later), or it fails to register. At startup a saved PrintScreen that won't work is
+replaced and saved, so Settings shows the shortcut that works, and a dialog says why once
+("Open Settings" or OK). "Reset to default" picks the same, and the recorder refuses PrintScreen
+while Snipping Tool has it. The decisions are in `src-tauri/src/print_screen.rs`, unit-tested on
+every platform; only the registry reads are Windows-only.
 
 ## Open risks
 
