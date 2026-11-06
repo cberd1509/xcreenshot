@@ -1,0 +1,70 @@
+name: Windows test build
+
+# Builds the Windows installer from any branch or commit and publishes it as a GitHub
+# pre-release, so it can be tried on a Windows machine without cloning the repo.
+# It is a test build: unsigned (SmartScreen asks once), no updater files, and never "latest",
+# so releases/latest, the macOS updater, the README and the landing page are unaffected.
+# Run it from the Actions tab or: gh workflow run windows-test.yml -f ref=<branch>
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit to build
+        required: true
+        default: main
+
+concurrency: windows-test-${{ inputs.ref }}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build and publish
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      REF: ${{ inputs.ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: src-tauri
+          key: windows-test
+
+      - name: Build the installer
+        shell: bash
+        run: pnpm tauri build --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Publish the pre-release
+        shell: bash
+        run: |
+          sha=$(git rev-parse HEAD)
+          short=${sha:0:7}
+          version=$(node -p "require('./package.json').version")
+          tag="windows-test-$short"
+          exe=$(find src-tauri/target/release/bundle/nsis -name "*-setup.exe" | head -1)
+          [ -n "$exe" ] || { echo "::error::No installer was built."; exit 1; }
+          name="xcreenshot_${version}-test-${short}_x64-setup.exe"
+          cp "$exe" "$RUNNER_TEMP/$name"
+          notes="$RUNNER_TEMP/notes.md"
+          {
+            echo "Test build of \`$REF\` at $sha, for trying xcreenshot on Windows. Not a release."
+            echo
+            echo "- Unsigned: Windows SmartScreen will ask once. Click **More info › Run anyway**."
+            echo "- It doesn't update itself. Uninstall it from Settings › Apps when you're done."
+          } > "$notes"
+          gh release delete "$tag" --yes --cleanup-tag 2> /dev/null || true
+          gh release create "$tag" "$RUNNER_TEMP/$name" \
+            --target "$sha" --prerelease --latest=false \
+            --title "Windows test build: $REF ($short)" --notes-file "$notes"
+          echo "::notice::Published $tag: https://github.com/$GH_REPO/releases/tag/$tag"

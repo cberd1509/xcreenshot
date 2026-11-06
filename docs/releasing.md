@@ -52,3 +52,18 @@ You need a paid [Apple Developer Program](https://developer.apple.com/programs/)
 Unsigned builds don't upload `latest.json`, so the in-app updater never offers an unsigned build.
 
 Either way, macOS asks for Screen Recording permission on the first capture.
+
+## Windows test builds
+
+Until Windows ships, a Windows installer for testing comes from the **Windows test build**
+workflow (`.github/workflows/windows-test.yml`). Run it from the Actions tab, or:
+
+```sh
+gh workflow run windows-test.yml -f ref=<branch>
+```
+
+It builds the NSIS installer from that branch and publishes it as a pre-release named
+`windows-test-<sha>`. A pre-release is never "latest", so `releases/latest`, the macOS updater,
+the README and the landing page are unaffected, and `updater-urls` skips it. The build is
+unsigned (SmartScreen asks once) and has no updater files. Delete old test pre-releases when
+you're done with them.

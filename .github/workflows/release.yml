@@ -265,7 +265,8 @@ jobs:
   # the few seconds between publishing and this job finishing.
   updater-urls:
     name: Point latest.json at the tag
-    if: github.event_name == 'release'
+    # Windows test builds are pre-releases with no latest.json; leave them alone.
+    if: github.event_name == 'release' && !github.event.release.prerelease
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
