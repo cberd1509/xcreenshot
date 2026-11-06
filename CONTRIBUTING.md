@@ -33,6 +33,7 @@ CI runs the same checks on macOS and Windows.
 
 - Commit messages and PR titles follow [Conventional Commits](https://www.conventionalcommits.org): `feat: …`, `fix: …`, `chore: …`, `docs: …`. A Git hook checks commit messages, and CI checks PR titles with the same rules (PRs are squash-merged, so the title becomes the commit).
 - `pnpm install` sets up the Git hooks (Husky): staged files are linted and formatted (Oxlint, Prettier, rustfmt) before each commit.
+- Before opening a PR, run `/code-review` and `/simplify` in [Claude Code](https://claude.com/claude-code) and apply their fixes. `CLAUDE.md` lists the project conventions.
 
 ## Versioning and releases
 
