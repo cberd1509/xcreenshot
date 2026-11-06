@@ -5,8 +5,6 @@ mod actions;
 pub mod capture;
 mod overlay;
 mod shortcut;
-#[cfg(test)]
-mod test_log;
 
 use actions::Action;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -35,17 +33,11 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(overlay::Overlay::default())
         .invoke_handler(tauri::generate_handler![
+            overlay::window::overlay_ready,
             overlay::window::overlay_frame,
             overlay::window::overlay_painted,
             overlay::window::close_overlay,
         ])
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event
-                && overlay::close_requested(window)
-            {
-                api.prevent_close();
-            }
-        })
         .setup(|app| {
             // Menu bar app: no Dock icon.
             #[cfg(target_os = "macos")]
@@ -68,7 +60,7 @@ pub fn run() {
             }
             overlay::prewarm(app.handle());
             #[cfg(debug_assertions)]
-            debug_capture(app.handle());
+            overlay::debug::schedule(app.handle());
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -131,7 +123,9 @@ fn handle(app: &AppHandle, action: Action) {
     match action {
         // Ignored while the overlay is open: the menu item shows the same accelerator as the
         // global shortcut, so both can fire at once.
-        Action::Capture => overlay::start_capture(app),
+        Action::Capture => {
+            overlay::start_capture(app);
+        }
         Action::OpenSettings => {
             if let Err(e) = open_settings(app) {
                 log::error!("could not open settings: {e}");
@@ -141,32 +135,8 @@ fn handle(app: &AppHandle, action: Action) {
     }
 }
 
-/// Dev builds only: `XCREENSHOT_DEBUG_CAPTURE=<n>` captures n times after startup (each one
-/// closed after 2 s), to measure hotkey-to-overlay time without pressing the hotkey.
-#[cfg(debug_assertions)]
-fn debug_capture(app: &AppHandle) {
-    let Some(n) = std::env::var("XCREENSHOT_DEBUG_CAPTURE")
-        .ok()
-        .and_then(|v| v.parse::<u32>().ok())
-    else {
-        return;
-    };
-    let app = app.clone();
-    std::thread::spawn(move || {
-        let pause = std::time::Duration::from_secs(2);
-        for _ in 0..n {
-            std::thread::sleep(pause);
-            let a = app.clone();
-            let _ = app.run_on_main_thread(move || overlay::start_capture(&a));
-            std::thread::sleep(pause);
-            let a = app.clone();
-            let _ = app.run_on_main_thread(move || overlay::close(&a));
-        }
-    });
-}
-
-/// The Settings webview is created on demand and destroyed on close,
-/// so the idle menu bar app holds no webview.
+/// The Settings webview is created on demand and destroyed on close. The only webviews kept
+/// while idle are the hidden overlay windows, prewarmed so the hotkey is fast.
 fn open_settings(app: &AppHandle) -> tauri::Result<()> {
     let window = match app.get_webview_window(SETTINGS_WINDOW) {
         Some(w) => w,

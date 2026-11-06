@@ -1,112 +1,133 @@
-import { render, screen, waitFor } from '@testing-library/svelte'
+import { cleanup, render, waitFor } from '@testing-library/svelte'
 import userEvent from '@testing-library/user-event'
-import { invoke } from '@tauri-apps/api/core'
+import { emit } from '@tauri-apps/api/event'
+import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Overlay from './Overlay.svelte'
-import { FakeImageData, packFrame } from '../test/overlay'
 
-type Handler = () => void
-const handlers = new Map<string, Handler>()
-const unlisten = vi.fn<() => void>()
-
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke: vi.fn<(cmd: string, args?: unknown) => Promise<unknown>>(),
-}))
-vi.mock('@tauri-apps/api/webviewWindow', () => ({
-  getCurrentWebviewWindow: () => ({
-    listen: (event: string, handler: Handler) => {
-      handlers.set(event, handler)
-      return Promise.resolve(unlisten)
-    },
-  }),
-}))
+type Info = { session: number; width: number; height: number }
 
 const putImageData = vi.fn<(image: ImageData, x: number, y: number) => void>()
-let frame: ArrayBuffer
+let calls: { cmd: string; args: unknown }[]
+let ready: Info | null
+let frame: (args: { session: number }) => unknown
 
-function commands(name: string) {
-  return vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === name)
+const rgba = (width: number, height: number) => new Uint8Array(width * height * 4).fill(7).buffer
+const called = (cmd: string) => calls.filter((c) => c.cmd === cmd)
+
+/** Renders and waits until the show listener is registered and the load check ran. */
+async function mount() {
+  const view = render(Overlay)
+  await waitFor(() => expect(called('overlay_ready')).toHaveLength(1))
+  return view
 }
+
+const tick = () => new Promise((r) => setTimeout(r, 0))
 
 describe('Overlay', () => {
   beforeEach(() => {
-    handlers.clear()
-    frame = new ArrayBuffer(0)
-    vi.mocked(invoke).mockImplementation((cmd) =>
-      Promise.resolve(cmd === 'overlay_frame' ? frame : undefined),
+    calls = []
+    ready = null
+    frame = () => rgba(4, 2)
+    mockWindows('overlay-1')
+    mockIPC(
+      (cmd, args) => {
+        calls.push({ cmd, args })
+        if (cmd === 'overlay_ready') return ready
+        if (cmd === 'overlay_frame') return frame(args as { session: number })
+      },
+      { shouldMockEvents: true },
     )
-    vi.stubGlobal('ImageData', FakeImageData)
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
       putImageData,
     } as unknown as CanvasRenderingContext2D)
   })
 
-  afterEach(() => {
-    vi.clearAllMocks()
-    vi.unstubAllGlobals()
+  afterEach(async () => {
+    // Unmount and let it unlisten through the mocked IPC before the mocks go away.
+    cleanup()
+    await tick()
+    clearMocks()
+    vi.restoreAllMocks()
+    putImageData.mockReset()
   })
 
-  it('draws the frame on show, dims it and reports the paint', async () => {
-    const { container } = render(Overlay)
-    // Nothing captured yet: the window stays transparent.
-    await waitFor(() => expect(commands('overlay_frame')).toHaveLength(1))
-    expect(screen.queryByTestId('dim')).not.toBeInTheDocument()
+  it('draws the frame on show, then reports the paint', async () => {
+    const { container } = await mount()
+    expect(called('overlay_frame')).toHaveLength(0)
 
-    frame = packFrame(4, 2)
-    handlers.get('overlay:show')!()
-    expect(await screen.findByTestId('dim')).toBeInTheDocument()
+    await emit('overlay:show', { session: 3, width: 4, height: 2 })
+    await waitFor(() => expect(called('overlay_painted')).toHaveLength(1))
+    expect(called('overlay_frame')[0].args).toEqual({ session: 3 })
+    expect(called('overlay_painted')[0].args).toEqual({ session: 3 })
     const canvas = container.querySelector('canvas')!
     expect([canvas.width, canvas.height]).toEqual([4, 2])
     const [image, x, y] = putImageData.mock.calls[0]
-    expect([image.width, image.height, x, y]).toEqual([4, 2, 0, 0])
-    await waitFor(() => expect(commands('overlay_painted')).toHaveLength(1))
-    expect(commands('overlay_painted')[0][1]).toEqual({
-      fetchMs: expect.any(Number),
-      drawMs: expect.any(Number),
-    })
+    expect([image.width, image.height, image.data.length, x, y]).toEqual([4, 2, 32, 0, 0])
   })
 
-  it('draws on load when the frame is already there', async () => {
-    frame = packFrame(2, 2)
-    render(Overlay)
-    expect(await screen.findByTestId('dim')).toBeInTheDocument()
-    expect(putImageData).toHaveBeenCalledOnce()
+  it('draws a frame sent while it was loading', async () => {
+    ready = { session: 5, width: 4, height: 2 }
+    await mount()
+    await waitFor(() => expect(called('overlay_painted')).toHaveLength(1))
+    // The show event for the same session does not fetch again.
+    await emit('overlay:show', ready)
+    expect(called('overlay_frame')).toHaveLength(1)
   })
 
-  it('clears the frame on hide', async () => {
-    frame = packFrame(2, 2)
-    const { container } = render(Overlay)
-    await screen.findByTestId('dim')
-    handlers.get('overlay:hide')!()
-    await waitFor(() => expect(screen.queryByTestId('dim')).not.toBeInTheDocument())
-    expect(container.querySelector('canvas')!.width).toBe(0)
+  it('accepts the frame as a byte view', async () => {
+    frame = () => new Uint8Array(rgba(4, 2))
+    await mount()
+    await emit('overlay:show', { session: 1, width: 4, height: 2 })
+    await waitFor(() => expect(called('overlay_painted')).toHaveLength(1))
   })
 
-  it('does not draw a frame that arrives after hide', async () => {
-    render(Overlay)
-    await waitFor(() => expect(commands('overlay_frame')).toHaveLength(1))
-    let respond!: (frame: ArrayBuffer) => void
-    vi.mocked(invoke).mockImplementationOnce(() => new Promise((r) => (respond = r)))
-    handlers.get('overlay:show')!()
-    handlers.get('overlay:hide')!()
-    respond(packFrame(2, 2))
-    await Promise.resolve()
-    await Promise.resolve()
+  it('does nothing when the session is already gone', async () => {
+    frame = () => new ArrayBuffer(0)
+    await mount()
+    await emit('overlay:show', { session: 1, width: 4, height: 2 })
+    await waitFor(() => expect(called('overlay_frame')).toHaveLength(1))
     expect(putImageData).not.toHaveBeenCalled()
-    expect(screen.queryByTestId('dim')).not.toBeInTheDocument()
+    expect(called('overlay_painted')).toHaveLength(0)
+    expect(called('close_overlay')).toHaveLength(0)
+  })
+
+  it('drops an older frame when a newer session arrives first', async () => {
+    let respond!: (buffer: ArrayBuffer) => void
+    frame = ({ session }) =>
+      session === 1 ? new Promise<ArrayBuffer>((r) => (respond = r)) : rgba(4, 2)
+    await mount()
+    await emit('overlay:show', { session: 1, width: 4, height: 2 })
+    await emit('overlay:show', { session: 2, width: 4, height: 2 })
+    await waitFor(() => expect(called('overlay_painted')).toHaveLength(1))
+    respond(rgba(4, 2))
+    await tick()
+    expect(called('overlay_painted').map((c) => c.args)).toEqual([{ session: 2 }])
+  })
+
+  it('closes the overlay when the frame cannot be drawn', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await mount()
+    // Wrong size for the pixels: ImageData throws.
+    await emit('overlay:show', { session: 1, width: 5, height: 5 })
+    await waitFor(() => expect(called('close_overlay')).toHaveLength(1))
+    expect(error).toHaveBeenCalled()
+    expect(called('overlay_painted')).toHaveLength(0)
   })
 
   it('closes on Esc only', async () => {
-    render(Overlay)
+    await mount()
     await userEvent.keyboard('a')
-    expect(commands('close_overlay')).toHaveLength(0)
+    expect(called('close_overlay')).toHaveLength(0)
     await userEvent.keyboard('{Escape}')
-    expect(commands('close_overlay')).toHaveLength(1)
+    expect(called('close_overlay')).toHaveLength(1)
   })
 
   it('stops listening when unmounted', async () => {
-    const { unmount } = render(Overlay)
+    const { unmount } = await mount()
     unmount()
-    await waitFor(() => expect(unlisten).toHaveBeenCalledTimes(2))
+    await tick()
+    await emit('overlay:show', { session: 1, width: 4, height: 2 })
+    expect(called('overlay_frame')).toHaveLength(0)
   })
 })

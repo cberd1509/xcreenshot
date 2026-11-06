@@ -11,7 +11,6 @@
   },
   "app": {
     "windows": [],
-    "macOSPrivateApi": true,
     "security": {
       "csp": "default-src 'self'; img-src 'self' asset: blob: data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src ipc: http://ipc.localhost",
       "freezePrototype": true,

@@ -1,169 +1,215 @@
-//! Tauri glue for the overlay: prewarmed windows, the capture flow, commands and timing logs.
+//! Tauri glue for the overlay.
 //!
-//! Flow: hotkey -> capture every display -> keep the frames here -> place and show each
-//! display's window -> emit `overlay:show` -> the window fetches its frame (`overlay_frame`),
-//! draws it and reports `overlay_painted`. Esc calls `close_overlay`, which hides the windows
-//! and frees the frames.
+//! Hotkey (main thread): claim the [`Phase`], register Esc, start the capture on a worker
+//! thread and place the hidden windows while it runs. Capture done (worker): open the session
+//! and send `overlay:show` with each frame's size. Each window fetches its frame
+//! (`overlay_frame`: the raw RGBA buffer, no copy), draws it and calls `overlay_painted`, which
+//! shows that window. Esc, `close_overlay`, closing a window or the watchdog hide everything.
+//! Window and shortcut calls stay on the main thread.
 
-use super::{Guard, diff, display_id, label, pack_frame};
-use crate::capture::{self, CaptureError, DisplayFrame};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Instant;
+use super::{FrameInfo, Phase, diff, display_id, label};
+use crate::capture::{self, Bounds, CaptureError, Display, DisplayFrame};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 use tauri::ipc::Response;
+use tauri::utils::config::BackgroundThrottlingPolicy;
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
-    Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder, Window,
+    Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
+use tauri_plugin_global_shortcut::{GlobalShortcut, ShortcutState};
 
 const SHOW_EVENT: &str = "overlay:show";
-const HIDE_EVENT: &str = "overlay:hide";
+const ESCAPE: &str = "Escape";
+/// If no window paints within this time the overlay page is broken: close everything, so a
+/// hung page never locks the user out.
+const WATCHDOG: Duration = Duration::from_secs(2);
+
+static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 
 /// Overlay state, managed by the app.
 #[derive(Default)]
 pub struct Overlay {
-    guard: Guard,
-    session: Mutex<Option<Session>>,
+    phase: Mutex<Phase>,
 }
 
-/// One open overlay: the frozen frames (kept for the selection, #9) and when the hotkey fired.
-/// Frames are shared, so a fetch copies its frame without holding the lock.
-struct Session {
-    frames: Vec<Arc<DisplayFrame>>,
-    started: Instant,
+impl Overlay {
+    fn phase(&self) -> MutexGuard<'_, Phase> {
+        self.phase.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
-/// A capture: every display (windows are kept for all of them) and the frames that worked.
-struct Capture {
-    displays: Vec<u32>,
-    frames: Vec<DisplayFrame>,
+fn phase<R: Runtime>(app: &AppHandle<R>) -> MutexGuard<'_, Phase> {
+    app.state::<Overlay>().inner().phase()
 }
 
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
+/// The OS side of a capture: permission, listing displays and grabbing them. Faked in tests.
+pub(crate) trait Screen: Send + 'static {
+    /// Whether capture is allowed. May show the system prompt.
+    fn permitted(&self) -> bool;
+    fn displays(&self) -> Result<Vec<Display>, CaptureError>;
+    fn capture(&self, ids: &[u32]) -> Result<Vec<DisplayFrame>, CaptureError>;
+    /// The cursor in the displays' OS units (points on macOS, pixels on Windows).
+    fn cursor<R: Runtime>(&self, app: &AppHandle<R>) -> Option<(f64, f64)>;
 }
 
-fn ms(since: Instant) -> f64 {
-    since.elapsed().as_secs_f64() * 1000.0
+/// The real screen, through `capture`.
+struct Os;
+
+impl Screen for Os {
+    fn permitted(&self) -> bool {
+        if capture::has_permission() {
+            return true;
+        }
+        // TODO(#23): show the permission screen instead of only the system prompt.
+        let granted = capture::request_permission();
+        log::warn!("Screen Recording permission requested (granted: {granted})");
+        false
+    }
+
+    fn displays(&self) -> Result<Vec<Display>, CaptureError> {
+        capture::displays()
+    }
+
+    fn capture(&self, ids: &[u32]) -> Result<Vec<DisplayFrame>, CaptureError> {
+        capture::capture_displays(ids)
+    }
+
+    fn cursor<R: Runtime>(&self, app: &AppHandle<R>) -> Option<(f64, f64)> {
+        let p = app.cursor_position().ok()?;
+        // macOS reports points times the primary display's scale.
+        let scale = if cfg!(target_os = "macos") {
+            app.primary_monitor().ok()??.scale_factor()
+        } else {
+            1.0
+        };
+        Some((p.x / scale, p.y / scale))
+    }
 }
 
 /// Creates a hidden overlay window per display at startup, so the hotkey only has to show them.
 pub fn prewarm<R: Runtime>(app: &AppHandle<R>) {
-    prewarm_with(app, capture::display_ids());
+    prewarm_with(app, &Os);
 }
 
-fn prewarm_with<R: Runtime>(app: &AppHandle<R>, ids: Result<Vec<u32>, CaptureError>) {
-    match ids {
-        Ok(ids) => {
-            if let Err(e) = sync(app, &ids) {
-                log::error!("could not create overlay windows: {e}");
-            }
-        }
+fn prewarm_with<R: Runtime>(app: &AppHandle<R>, screen: &impl Screen) {
+    let result = screen.displays().map(|d| sync(app, &ids(&d)));
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => log::error!("could not create overlay windows: {e}"),
         Err(e) => log::error!("could not list displays for the overlay: {e}"),
     }
 }
 
-/// Hotkey handler. Captures first, before any window changes, then shows the overlay.
-pub fn start_capture<R: Runtime>(app: &AppHandle<R>) {
-    capture_with(app, grab);
+/// Hotkey handler (main thread). Returns the session id if a capture started.
+pub fn start_capture<R: Runtime>(app: &AppHandle<R>) -> Option<u64> {
+    start_with(app, Os)
 }
 
-/// The OS part of a capture: permission check, then every display.
-fn grab() -> Result<Capture, CaptureError> {
-    if !capture::has_permission() {
-        // TODO(#23): show the permission screen instead of only the system prompt.
-        let granted = capture::request_permission();
-        log::warn!("Screen Recording permission requested (granted: {granted})");
-        return Err(CaptureError::PermissionDenied);
+/// Claims the phase, starts the capture on a worker thread, then registers Esc and places the
+/// hidden windows while it runs.
+fn start_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) -> Option<u64> {
+    let session = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
+    if !phase(app).begin(session, Instant::now()) {
+        log::info!("capture ignored: the overlay is already open");
+        return None;
     }
-    let displays = capture::display_ids()?;
-    let frames = capture::capture_displays(&displays)?;
-    Ok(Capture { displays, frames })
-}
-
-fn capture_with<R: Runtime>(
-    app: &AppHandle<R>,
-    grab: impl FnOnce() -> Result<Capture, CaptureError>,
-) {
-    let started = Instant::now();
-    let state = app.state::<Overlay>();
-    if !state.guard.try_begin() {
-        return log::info!("capture ignored: the overlay is already open");
-    }
-    let capture = match grab() {
-        Ok(capture) => capture,
-        Err(e) => {
-            log::error!("capture failed: {e}");
-            return state.guard.end();
+    let displays = match screen.permitted().then(|| screen.displays()) {
+        Some(Ok(d)) => d,
+        Some(Err(e)) => {
+            log::error!("could not list displays: {e}");
+            *phase(app) = Phase::Idle;
+            return None;
+        }
+        None => {
+            *phase(app) = Phase::Idle;
+            return None;
         }
     };
-    let capture_ms = ms(started);
-    let shown = Instant::now();
-    if let Err(e) = show(app, capture, started) {
-        log::error!("could not show the overlay: {e}");
-        return close(app);
-    }
-    log::info!(
-        "overlay: capture {capture_ms:.1} ms, show {:.1} ms",
-        ms(shown)
-    );
-}
-
-/// Stores the frames, matches the windows to the displays, then places and shows the window
-/// of each captured display.
-fn show<R: Runtime>(app: &AppHandle<R>, capture: Capture, started: Instant) -> tauri::Result<()> {
-    let frames: Vec<_> = capture.frames.into_iter().map(Arc::new).collect();
-    // Stored before any window exists, so a window created just now finds its frame on load.
-    *lock(&app.state::<Overlay>().session) = Some(Session {
-        frames: frames.clone(),
-        started,
+    let worker = app.clone();
+    let ids = ids(&displays);
+    std::thread::spawn(move || {
+        let frames = screen.capture(&ids);
+        let cursor = screen.cursor(&worker);
+        finish(&worker, session, frames, cursor, WATCHDOG);
     });
-    sync(app, &capture.displays)?;
-    for (i, frame) in frames.iter().enumerate() {
-        let label = label(frame.id);
-        let Some(window) = app.get_webview_window(&label) else {
-            continue;
-        };
-        position(&window, frame)?;
-        window.show()?;
-        if i == 0 {
-            window.set_focus()?;
+    set_escape(app, true);
+    if let Err(e) = place(app, &displays) {
+        log::error!("could not place the overlay windows: {e}");
+        close(app);
+        return None;
+    }
+    Some(session)
+}
+
+/// Capture finished (worker thread). Opens the session and tells each window to draw.
+fn finish<R: Runtime>(
+    app: &AppHandle<R>,
+    session: u64,
+    frames: Result<Vec<DisplayFrame>, CaptureError>,
+    cursor: Option<(f64, f64)>,
+    watchdog: Duration,
+) {
+    let frames = match frames {
+        Ok(frames) => frames,
+        Err(e) => {
+            log::error!("capture failed: {e}");
+            return on_main(app, move |app| close_session(app, session));
         }
-        app.emit_to(label.as_str(), SHOW_EVENT, ())?;
+    };
+    // `None`: Esc closed the overlay during the capture.
+    let Some(shows) = phase(app).open(session, frames, cursor) else {
+        return;
+    };
+    for (display, info) in shows {
+        if let Err(e) = app.emit_to(label(display).as_str(), SHOW_EVENT, info) {
+            log::warn!("could not tell overlay {display} to draw: {e}");
+        }
     }
-    Ok(())
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(watchdog);
+        on_main(&app, move |app| rescue(app, session));
+    });
 }
 
-/// Covers the display, using the bounds `capture` documents as authoritative on this platform.
-fn position<R: Runtime>(window: &WebviewWindow<R>, frame: &DisplayFrame) -> tauri::Result<()> {
-    if cfg!(target_os = "windows") {
-        // Physical: logical origins of mixed-DPI monitors are only approximate. Move first,
-        // since Windows rescales a window that moves to a monitor with another DPI.
-        let b = frame.physical;
-        window.set_position(PhysicalPosition::new(b.x, b.y))?;
-        window.set_size(PhysicalSize::new(b.width, b.height))
-    } else {
-        // Logical: Tauri would convert physical bounds with the window's current scale, which is
-        // wrong when it moves to a display with another scale. macOS resizes from the
-        // bottom-left corner, so size first, then move.
-        let b = frame.logical;
-        window.set_size(LogicalSize::new(b.width, b.height))?;
-        window.set_position(LogicalPosition::new(b.x, b.y))
+fn on_main<R: Runtime>(app: &AppHandle<R>, f: impl FnOnce(&AppHandle<R>) + Send + 'static) {
+    let handle = app.clone();
+    if let Err(e) = app.run_on_main_thread(move || f(&handle)) {
+        log::error!("could not run on the main thread: {e}");
     }
 }
 
-/// Hides every overlay, frees the frames and allows the next capture. Safe to call twice.
+/// Watchdog: nothing painted, so the overlay page is broken. Close instead of hanging.
+fn rescue<R: Runtime>(app: &AppHandle<R>, session: u64) {
+    if phase(app).stalled(session) {
+        log::warn!("overlay did not paint within {WATCHDOG:?}; closing it");
+        close(app);
+    }
+}
+
+/// Closes the overlay only if `session` is still the current one.
+pub fn close_session<R: Runtime>(app: &AppHandle<R>, session: u64) {
+    let current = phase(app).session();
+    if current == Some(session) {
+        close(app);
+    }
+}
+
+/// Hides every overlay, frees the frames, releases Esc and allows the next capture.
+/// Main thread only. Safe to call twice.
 pub fn close<R: Runtime>(app: &AppHandle<R>) {
+    *phase(app) = Phase::Idle;
+    set_escape(app, false);
     let windows = app.webview_windows();
     for (label, window) in windows.iter().filter(|(l, _)| display_id(l).is_some()) {
-        // Clears the canvas, so the next show does not flash this frame.
-        let _ = app.emit_to(label.as_str(), HIDE_EVENT, ());
         if let Err(e) = window.hide() {
-            log::warn!("could not hide {label}: {e}");
+            // A window left on screen would block input: remove it; `sync` rebuilds it.
+            log::warn!("could not hide {label}, destroying it: {e}");
+            let _ = window.destroy();
         }
     }
-    let state = app.state::<Overlay>();
-    lock(&state.session).take();
-    state.guard.end();
     // Give focus back to the app the user was in, unless Settings is open.
     #[cfg(target_os = "macos")]
     if !windows
@@ -174,28 +220,60 @@ pub fn close<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-/// Closing an overlay window (Alt+F4, Cmd+W) closes the overlay instead of destroying it.
-/// Returns whether the close was handled.
-pub fn close_requested<R: Runtime>(window: &Window<R>) -> bool {
-    if display_id(window.label()).is_none() {
-        return false;
+/// Esc belongs to the app while the overlay is open, so it works even if the page is broken.
+fn set_escape<R: Runtime>(app: &AppHandle<R>, on: bool) {
+    // Missing only in tests, where the plugin is not installed.
+    let Some(shortcuts) = app.try_state::<GlobalShortcut<R>>() else {
+        return;
+    };
+    let result = if on {
+        shortcuts.on_shortcut(ESCAPE, |app, _, event| {
+            if event.state() == ShortcutState::Pressed {
+                close(app);
+            }
+        })
+    } else if shortcuts.is_registered(ESCAPE) {
+        shortcuts.unregister(ESCAPE)
+    } else {
+        Ok(())
+    };
+    if let Err(e) = result {
+        log::warn!("could not update the Esc shortcut: {e}");
     }
-    close(window.app_handle());
-    true
 }
 
-/// Creates and destroys overlay windows so there is one per display.
+fn ids(displays: &[Display]) -> Vec<u32> {
+    displays.iter().map(|d| d.id).collect()
+}
+
+/// Matches the windows to the displays and moves each (still hidden) over its display.
+fn place<R: Runtime>(app: &AppHandle<R>, displays: &[Display]) -> tauri::Result<()> {
+    sync(app, &ids(displays))?;
+    for d in displays {
+        if let Some(window) = app.get_webview_window(&label(d.id)) {
+            position(&window, d.bounds)?;
+        }
+    }
+    Ok(())
+}
+
+fn position<R: Runtime>(window: &WebviewWindow<R>, b: Bounds) -> tauri::Result<()> {
+    if cfg!(target_os = "windows") {
+        // Pixels. Move first: Windows rescales a window that moves to a monitor with another DPI.
+        window.set_position(PhysicalPosition::new(b.x, b.y))?;
+        window.set_size(PhysicalSize::new(b.width, b.height))
+    } else {
+        // Points. macOS resizes from the bottom-left corner, so size first, then move.
+        window.set_size(LogicalSize::new(b.width, b.height))?;
+        window.set_position(LogicalPosition::new(b.x, b.y))
+    }
+}
+
+/// Creates and destroys overlay windows so there is one per display. Main thread only, so
+/// startup and the hotkey never build the same window twice.
 fn sync<R: Runtime>(app: &AppHandle<R>, displays: &[u32]) -> tauri::Result<()> {
     let windows = app.webview_windows();
     let d = diff(windows.keys().map(String::as_str), displays);
-    if d.create.is_empty() && d.destroy.is_empty() {
-        return Ok(());
-    }
-    log::info!(
-        "overlay windows: create {:?}, destroy {:?}",
-        d.create,
-        d.destroy
-    );
     for label in &d.destroy {
         if let Some(w) = windows.get(label) {
             w.destroy()?;
@@ -214,16 +292,27 @@ fn build<R: Runtime>(app: &AppHandle<R>, display: u32) -> tauri::Result<WebviewW
         .visible(false)
         .focused(false)
         .decorations(false)
-        .transparent(true)
         .shadow(false)
         .resizable(false)
         .skip_taskbar(true)
         .always_on_top(true)
-        .visible_on_all_workspaces(true);
+        .visible_on_all_workspaces(true)
+        .background_color(tauri::window::Color(0, 0, 0, 255))
+        // The page draws while its window is hidden; WebKit would otherwise throttle it.
+        .background_throttling(BackgroundThrottlingPolicy::Disabled);
     // The first click on the overlay starts the selection instead of only focusing it.
     #[cfg(target_os = "macos")]
     let builder = builder.accept_first_mouse(true);
     let window = builder.build()?;
+    // A user close (Alt+F4) closes the overlay and keeps the window for the next capture.
+    // Quitting the app does not send CloseRequested, so it is never blocked.
+    let handle = app.clone();
+    window.on_window_event(move |event| {
+        if let WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            close(&handle);
+        }
+    });
     // The mock runtime used in tests has no real NSWindow.
     #[cfg(all(target_os = "macos", not(test)))]
     macos::raise(&window);
@@ -256,48 +345,54 @@ mod macos {
     }
 }
 
-/// The calling window's frame, packed by [`pack_frame`], if there is one.
-fn frame_bytes(state: &Overlay, window_label: &str) -> Option<Vec<u8>> {
-    let id = display_id(window_label)?;
-    let (frame, started) = {
-        let session = lock(&state.session);
-        let session = session.as_ref()?;
-        let frame = session.frames.iter().find(|f| f.id == id)?;
-        (Arc::clone(frame), session.started)
-    };
-    let bytes = pack_frame(&frame);
-    log::info!(
-        "{window_label}: frame ready {:.1} ms after the hotkey",
-        ms(started)
-    );
-    Some(bytes)
+/// The calling window's frame info, if its frame is waiting. Called by a window that loads
+/// after `overlay:show` was sent (a display plugged in during the capture).
+#[tauri::command]
+pub(crate) fn overlay_ready<R: Runtime>(
+    window: WebviewWindow<R>,
+    state: tauri::State<'_, Overlay>,
+) -> Option<FrameInfo> {
+    state.phase().pending_frame(display_id(window.label())?)
 }
 
-/// Raw frame bytes for the calling overlay window (empty if there is none). Async, so it runs
-/// off the main thread and several displays fetch at once.
+/// The calling window's frame as raw RGBA, moved out of the session (no copy); empty if it
+/// was already taken or the session is gone. Async, so it runs off the main thread.
 #[tauri::command]
 pub(crate) async fn overlay_frame<R: Runtime>(
     window: WebviewWindow<R>,
     state: tauri::State<'_, Overlay>,
+    session: u64,
 ) -> Result<Response, ()> {
-    let bytes = frame_bytes(&state, window.label()).unwrap_or_default();
-    Ok(Response::new(bytes))
+    let image = display_id(window.label()).and_then(|d| state.phase().take_frame(session, d));
+    Ok(Response::new(
+        image.map(|i| i.into_raw()).unwrap_or_default(),
+    ))
 }
 
-/// The overlay drew its frame. Logs hotkey-to-painted time.
+/// The window drew its frame: show it (only if its session is still open), focus the
+/// display under the cursor, and log the time on the first paint.
 #[tauri::command]
 pub(crate) fn overlay_painted<R: Runtime>(
     window: WebviewWindow<R>,
     state: tauri::State<'_, Overlay>,
-    fetch_ms: f64,
-    draw_ms: f64,
+    session: u64,
 ) {
-    if let Some(session) = lock(&state.session).as_ref() {
-        log::info!(
-            "{}: painted {:.1} ms after the hotkey (fetch {fetch_ms:.1} ms, draw {draw_ms:.1} ms)",
-            window.label(),
-            ms(session.started)
-        );
+    let Some(display) = display_id(window.label()) else {
+        return;
+    };
+    let Some(paint) = state.phase().painted(session, display) else {
+        return;
+    };
+    let app = window.app_handle();
+    if let Err(e) = window.show() {
+        log::error!("could not show the overlay: {e}");
+        return close(app);
+    }
+    if let Some(focus) = paint.focus.and_then(|f| app.get_webview_window(&label(f))) {
+        let _ = focus.set_focus();
+    }
+    if let Some((total, capture)) = paint.first {
+        log::info!("overlay painted {total:.0} ms after the hotkey (capture {capture:.0} ms)");
     }
 }
 
@@ -308,19 +403,74 @@ pub(crate) fn close_overlay<R: Runtime>(app: AppHandle<R>) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::os_bounds;
     use super::super::tests::frame;
     use super::*;
+    use std::sync::mpsc;
+    use tauri::ipc::{InvokeResponseBody, IpcResponse};
     use tauri::test::{MockRuntime, mock_builder, mock_context, noop_assets};
 
+    type Handle = AppHandle<MockRuntime>;
+
+    /// Displays `ids`. Its capture waits for the test: `true` captures, `false` fails.
+    struct Fake {
+        permitted: bool,
+        ids: Vec<u32>,
+        release: mpsc::Receiver<bool>,
+    }
+
+    impl Screen for Fake {
+        fn permitted(&self) -> bool {
+            self.permitted
+        }
+
+        fn displays(&self) -> Result<Vec<Display>, CaptureError> {
+            if self.ids.is_empty() {
+                return Err(CaptureError::NoDisplays);
+            }
+            Ok(self
+                .ids
+                .iter()
+                .map(|&id| Display {
+                    id,
+                    bounds: os_bounds(&frame(id, 4, 2)),
+                })
+                .collect())
+        }
+
+        fn capture(&self, ids: &[u32]) -> Result<Vec<DisplayFrame>, CaptureError> {
+            match self.release.recv() {
+                Ok(true) => Ok(ids.iter().map(|&id| frame(id, 4, 2)).collect()),
+                _ => Err(CaptureError::EmptyImage),
+            }
+        }
+
+        fn cursor<R: Runtime>(&self, _: &AppHandle<R>) -> Option<(f64, f64)> {
+            None
+        }
+    }
+
+    fn fake(permitted: bool, ids: &[u32]) -> (Fake, mpsc::Sender<bool>) {
+        let (tx, release) = mpsc::channel();
+        let ids = ids.to_vec();
+        (
+            Fake {
+                permitted,
+                ids,
+                release,
+            },
+            tx,
+        )
+    }
+
     fn app() -> tauri::App<MockRuntime> {
-        crate::test_log::init();
         mock_builder()
             .manage(Overlay::default())
             .build(mock_context(noop_assets()))
             .unwrap()
     }
 
-    fn overlay_labels(app: &AppHandle<MockRuntime>) -> Vec<String> {
+    fn overlay_labels(app: &Handle) -> Vec<String> {
         let mut labels: Vec<_> = app
             .webview_windows()
             .into_keys()
@@ -330,95 +480,188 @@ mod tests {
         labels
     }
 
-    /// Presses the hotkey with fake displays, all captured.
-    fn open(app: &AppHandle<MockRuntime>, ids: &[u32]) {
-        capture_with(app, || {
-            Ok(Capture {
-                displays: ids.to_vec(),
-                frames: ids.iter().map(|&id| frame(id, 4, 2)).collect(),
-            })
-        });
-        assert!(app.state::<Overlay>().guard.is_open());
+    fn wait_until(what: &str, done: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !done() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(2));
+        }
     }
 
-    fn packed(id: u32) -> Option<Vec<u8>> {
-        Some(pack_frame(&frame(id, 4, 2)))
+    fn is_open(app: &Handle, session: u64) -> bool {
+        matches!(&*phase(app), Phase::Open(_)) && phase(app).session() == Some(session)
+    }
+
+    fn is_idle(app: &Handle) -> bool {
+        matches!(*phase(app), Phase::Idle)
+    }
+
+    /// Presses the hotkey on fake displays; the capture finishes when `release` is sent.
+    fn press(app: &Handle, ids: &[u32]) -> (u64, mpsc::Sender<bool>) {
+        let (screen, release) = fake(true, ids);
+        (start_with(app, screen).unwrap(), release)
+    }
+
+    /// Presses the hotkey and lets the capture finish.
+    fn open(app: &Handle, ids: &[u32]) -> u64 {
+        let (session, release) = press(app, ids);
+        release.send(true).unwrap();
+        wait_until("the session to open", || is_open(app, session));
+        session
+    }
+
+    fn window(app: &Handle, display: u32) -> WebviewWindow<MockRuntime> {
+        app.get_webview_window(&label(display)).unwrap()
+    }
+
+    fn fetch(app: &Handle, display: u32, session: u64) -> Vec<u8> {
+        let state = app.state::<Overlay>();
+        let response =
+            tauri::async_runtime::block_on(overlay_frame(window(app, display), state, session));
+        match response.unwrap().body().unwrap() {
+            InvokeResponseBody::Raw(bytes) => bytes,
+            InvokeResponseBody::Json(json) => panic!("expected raw bytes, got {json}"),
+        }
     }
 
     #[test]
-    fn show_makes_one_window_per_display_and_keeps_the_frames() {
+    fn prewarm_creates_a_window_per_display() {
         let app = app();
         let h = app.handle();
-        open(h, &[1, 2]);
+        prewarm_with(h, &fake(true, &[]).0);
+        assert!(overlay_labels(h).is_empty());
+        prewarm_with(h, &fake(true, &[4, 5]).0);
+        assert_eq!(overlay_labels(h), ["overlay-4", "overlay-5"]);
+        assert!(is_idle(h));
+    }
+
+    #[test]
+    fn hotkey_places_a_window_per_display_then_sends_frames() {
+        let app = app();
+        let h = app.handle();
+        let (session, release) = press(h, &[1, 2]);
+        // Windows are placed while the capture runs; nothing to draw yet.
         assert_eq!(overlay_labels(h), ["overlay-1", "overlay-2"]);
-        let state = h.state::<Overlay>();
-        assert_eq!(frame_bytes(&state, "overlay-2"), packed(2));
+        assert_eq!(overlay_ready(window(h, 1), h.state()), None);
+        release.send(true).unwrap();
+        wait_until("the session to open", || is_open(h, session));
+        let info = overlay_ready(window(h, 2), h.state()).unwrap();
+        assert_eq!((info.session, info.width, info.height), (session, 4, 2));
+        assert_eq!(fetch(h, 2, session), frame(2, 4, 2).image.into_raw());
+        // Handed over once; a second fetch (load check and show both firing) gets nothing.
+        assert!(fetch(h, 2, session).is_empty());
+        assert_eq!(overlay_ready(window(h, 2), h.state()), None);
+        assert!(fetch(h, 1, session + 1).is_empty(), "other session");
     }
 
     #[test]
     fn hotkey_is_ignored_while_the_overlay_is_open() {
         let app = app();
         let h = app.handle();
+        let (session, release) = press(h, &[1]);
+        assert_eq!(start_with(h, fake(true, &[1]).0), None, "while capturing");
+        release.send(true).unwrap();
+        wait_until("the session to open", || is_open(h, session));
+        assert_eq!(start_with(h, fake(true, &[1]).0), None, "while open");
+        assert_eq!(phase(h).session(), Some(session));
+    }
+
+    #[test]
+    fn no_permission_or_no_displays_captures_nothing() {
+        let app = app();
+        let h = app.handle();
+        assert_eq!(start_with(h, fake(false, &[1]).0), None);
+        assert!(is_idle(h));
+        assert!(overlay_labels(h).is_empty(), "no window before permission");
+        assert_eq!(start_with(h, fake(true, &[]).0), None);
+        assert!(is_idle(h));
+    }
+
+    #[test]
+    fn a_failed_capture_closes_the_overlay() {
+        let app = app();
+        let h = app.handle();
+        let (_, release) = press(h, &[1]);
+        release.send(false).unwrap();
+        wait_until("the overlay to close", || is_idle(h));
         open(h, &[1]);
-        // The second press returns before capturing; the first press's frames stay.
-        capture_with(h, || panic!("captured while the overlay was open"));
-        start_capture(h);
-        let state = h.state::<Overlay>();
-        assert!(state.guard.is_open());
-        assert_eq!(frame_bytes(&state, "overlay-1"), packed(1));
     }
 
     #[test]
-    fn failed_capture_shows_nothing_and_allows_a_retry() {
+    fn a_failure_from_an_older_capture_is_ignored() {
         let app = app();
         let h = app.handle();
-        capture_with(h, || Err(CaptureError::PermissionDenied));
-        let state = h.state::<Overlay>();
-        assert!(!state.guard.is_open());
-        assert!(overlay_labels(h).is_empty());
-        open(h, &[1]);
+        let session = open(h, &[1]);
+        let failed = Err(CaptureError::NoDisplays);
+        finish(h, session + 100, failed, None, WATCHDOG);
+        assert!(is_open(h, session));
     }
 
     #[test]
-    fn a_display_that_failed_to_capture_keeps_its_window() {
+    fn painting_shows_only_the_current_session() {
         let app = app();
         let h = app.handle();
-        capture_with(h, || {
-            Ok(Capture {
-                displays: vec![1, 2],
-                frames: vec![frame(1, 4, 2)],
-            })
-        });
-        assert_eq!(overlay_labels(h), ["overlay-1", "overlay-2"]);
-        let state = h.state::<Overlay>();
-        assert_eq!(frame_bytes(&state, "overlay-1"), packed(1));
-        assert!(frame_bytes(&state, "overlay-2").is_none());
+        let session = open(h, &[1, 2]);
+        overlay_painted(window(h, 1), h.state(), session);
+        assert!(!phase(h).stalled(session));
+        close_overlay(h.clone());
+        // A late paint from the closed session must not reopen anything.
+        overlay_painted(window(h, 2), h.state(), session);
+        assert!(is_idle(h));
     }
 
     #[test]
-    fn prewarm_creates_a_hidden_window_per_display() {
+    fn closing_frees_the_frames_and_allows_the_next_capture() {
         let app = app();
         let h = app.handle();
-        prewarm_with(h, Err(CaptureError::NoDisplays));
-        assert!(overlay_labels(h).is_empty());
-        prewarm_with(h, Ok(vec![4, 5]));
-        assert_eq!(overlay_labels(h), ["overlay-4", "overlay-5"]);
-        assert!(!h.state::<Overlay>().guard.is_open());
-    }
-
-    #[test]
-    fn close_frees_the_frames_and_allows_the_next_capture() {
-        let app = app();
-        let h = app.handle();
-        open(h, &[1]);
+        let session = open(h, &[1]);
         close(h);
-        let state = h.state::<Overlay>();
-        assert!(!state.guard.is_open());
-        assert!(frame_bytes(&state, "overlay-1").is_none());
+        assert!(fetch(h, 1, session).is_empty());
         // The windows stay, hidden, for the next capture.
         assert_eq!(overlay_labels(h), ["overlay-1"]);
+        open(h, &[1]);
+    }
+
+    #[test]
+    fn a_capture_finished_after_esc_shows_nothing() {
+        let app = app();
+        let h = app.handle();
+        let (session, release) = press(h, &[1]);
         close(h);
-        assert!(!state.guard.is_open());
+        release.send(true).unwrap();
+        // The worker finishes on its own; give it time, then check nothing opened.
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(is_idle(h));
+        assert_eq!(overlay_ready(window(h, 1), h.state()), None);
+        close_session(h, session);
+        assert!(is_idle(h));
+    }
+
+    #[test]
+    fn close_session_leaves_a_newer_session_alone() {
+        let app = app();
+        let h = app.handle();
+        let session = open(h, &[1]);
+        close_session(h, session + 1);
+        assert!(is_open(h, session));
+        close_session(h, session);
+        assert!(is_idle(h));
+    }
+
+    #[test]
+    fn watchdog_closes_an_overlay_that_never_painted() {
+        let app = app();
+        let h = app.handle();
+        let session = open(h, &[1, 2]);
+        rescue(h, session + 1);
+        assert!(is_open(h, session), "other session");
+        rescue(h, session);
+        assert!(is_idle(h));
+
+        let session = open(h, &[1]);
+        overlay_painted(window(h, 1), h.state(), session);
+        rescue(h, session);
+        assert!(is_open(h, session), "painted in time");
     }
 
     #[test]
@@ -436,45 +679,33 @@ mod tests {
         // which windows get destroyed is covered by the `diff` tests.
         assert!(overlay_labels(h).contains(&"overlay-3".to_owned()));
         assert!(h.get_webview_window("settings").is_some());
-        close(h);
     }
 
     #[test]
-    fn frame_bytes_is_empty_without_a_matching_frame() {
-        let app = app();
+    fn esc_is_held_only_while_the_overlay_is_open() {
+        let app = mock_builder()
+            .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+            .manage(Overlay::default())
+            .build(mock_context(noop_assets()))
+            .unwrap();
         let h = app.handle();
-        let state = h.state::<Overlay>();
-        assert!(frame_bytes(&state, "overlay-1").is_none());
-        open(h, &[1]);
-        assert!(frame_bytes(&state, "overlay-7").is_none());
-        assert!(frame_bytes(&state, "settings").is_none());
+        let shortcuts = h.state::<GlobalShortcut<MockRuntime>>();
+        let session = open(h, &[1]);
+        assert!(shortcuts.is_registered(ESCAPE));
+        close_session(h, session);
+        assert!(!shortcuts.is_registered(ESCAPE));
     }
 
     #[test]
-    fn commands_serve_the_calling_window() {
+    fn calls_from_other_windows_are_ignored() {
         let app = app();
         let h = app.handle();
-        open(h, &[1]);
-        let window = h.get_webview_window("overlay-1").unwrap();
-        let response =
-            tauri::async_runtime::block_on(overlay_frame(window.clone(), h.state::<Overlay>()));
-        assert!(response.is_ok());
-        overlay_painted(window, h.state::<Overlay>(), 12.0, 3.0);
-        close_overlay(h.clone());
-        assert!(!h.state::<Overlay>().guard.is_open());
-    }
-
-    #[test]
-    fn closing_an_overlay_window_closes_the_overlay() {
-        let app = app();
-        let h = app.handle();
-        open(h, &[1]);
-        let overlay = h.get_webview_window("overlay-1").unwrap().as_ref().window();
-        assert!(close_requested(&overlay));
-        assert!(!h.state::<Overlay>().guard.is_open());
+        let session = open(h, &[1]);
         let settings = WebviewWindowBuilder::new(h, "settings", WebviewUrl::default())
             .build()
             .unwrap();
-        assert!(!close_requested(&settings.as_ref().window()));
+        assert_eq!(overlay_ready(settings.clone(), h.state()), None);
+        overlay_painted(settings, h.state(), session);
+        assert!(phase(h).stalled(session));
     }
 }
