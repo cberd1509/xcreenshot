@@ -6,6 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setSetting, settings } from '$lib/settings.svelte'
 import { box, fakeContext } from '../test/canvas'
 import { stages } from '../test/konva'
+import { OUTPUT_HEADER } from './annotate/output'
+
+type Invoke = (
+  cmd: string,
+  body: unknown,
+  options?: { headers?: Record<string, string> },
+) => Promise<unknown>
 import Overlay from './Overlay.svelte'
 
 /** The platform the overlay sees (`isMac`). */
@@ -36,6 +43,9 @@ let selected: { label: string; active: boolean; fresh: boolean }[]
 
 const rgba = (width: number, height: number) => new Uint8Array(width * height * 4).fill(7).buffer
 const called = (cmd: string) => calls.filter((c) => c.cmd === cmd)
+/** Copy and save requests: their header (parsed) and raw body. */
+let sent: { cmd: string; header: unknown; body: unknown }[]
+const output = (cmd: string, i: number) => sent.filter((c) => c.cmd === cmd)[i]?.header
 const tick = () => new Promise((r) => setTimeout(r, 0))
 const small = (session: number): Info => ({
   session,
@@ -122,6 +132,15 @@ describe('Overlay', () => {
       },
       { shouldMockEvents: true },
     )
+    // The mock drops request headers: record them on the way.
+    sent = []
+    const internals = Reflect.get(window, '__TAURI_INTERNALS__') as { invoke: Invoke }
+    const inner = internals.invoke
+    internals.invoke = (cmd, body, options) => {
+      const header = options?.headers?.[OUTPUT_HEADER]
+      if (header) sent.push({ cmd, header: JSON.parse(header), body })
+      return inner(cmd, body, options)
+    }
     context = fakeContext()
     await listen<{ label: string; active: boolean; fresh: boolean }>('overlay:selected', (e) =>
       selected.push(e.payload),
@@ -463,12 +482,16 @@ describe('Overlay', () => {
       expect(called('overlay_copy')).toHaveLength(0)
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       await userEvent.keyboard('{Enter}')
-      expect(called('overlay_copy')[0].args).toEqual({ session: 9, rect: rect200 })
+      await waitFor(() =>
+        expect(output('overlay_copy', 0)).toEqual({ session: 9, rect: rect200, annotations: null }),
+      )
       await waitFor(async () => {
         await userEvent.keyboard(ctrl('c'))
         expect(called('overlay_copy')).toHaveLength(2)
       })
-      expect(called('overlay_copy')[1].args).toEqual({ session: 9, rect: rect200 })
+      await waitFor(() =>
+        expect(output('overlay_copy', 1)).toEqual({ session: 9, rect: rect200, annotations: null }),
+      )
     })
 
     it('saves the pixel rect on Ctrl+S', async () => {
@@ -477,7 +500,9 @@ describe('Overlay', () => {
       expect(called('overlay_save')).toHaveLength(0)
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       await userEvent.keyboard(ctrl('s'))
-      expect(called('overlay_save')[0].args).toEqual({ session: 9, rect: rect200 })
+      await waitFor(() =>
+        expect(output('overlay_save', 0)).toEqual({ session: 9, rect: rect200, annotations: null }),
+      )
       expect(called('overlay_copy')).toHaveLength(0)
     })
 
@@ -499,7 +524,7 @@ describe('Overlay', () => {
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       // Russian layout: the C key types "с", the S key "ы".
       fireEvent.keyDown(window, { key: 'ы', code: 'KeyS', ctrlKey: true })
-      expect(called('overlay_save')).toHaveLength(1)
+      await waitFor(() => expect(called('overlay_save')).toHaveLength(1))
       fireEvent.keyDown(window, { key: 'с', code: 'KeyD', ctrlKey: true })
       expect(called('overlay_copy')).toHaveLength(0)
     })
@@ -715,6 +740,32 @@ describe('Overlay', () => {
       await annotated()
       await emit('overlay:show', { ...info, session: 10 })
       await waitFor(() => expect(shapes()).toHaveLength(0))
+    })
+
+    it('sends the annotations with a copy', async () => {
+      await annotated()
+      await userEvent.keyboard('{Enter}')
+      await waitFor(() => expect(sent).toHaveLength(1))
+      const [{ cmd, header, body }] = sent
+      expect(cmd).toBe('overlay_copy')
+      // The rect from (20, 20) to (60, 50), its stroke included, at 2x, inside the crop.
+      expect(header).toEqual({
+        session: 9,
+        rect: rect200,
+        annotations: { x: 12, y: 12, width: 96, height: 76, blurs: [] },
+      })
+      expect(body).toBeInstanceOf(Uint8Array)
+    })
+
+    it('copies and saves from the toolbar', async () => {
+      await annotated()
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(called('overlay_save')).toHaveLength(1))
+      await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
+      await waitFor(() => expect(called('overlay_copy')).toHaveLength(1))
+      // Share comes later.
+      await userEvent.click(screen.getByRole('button', { name: 'Share' }))
+      expect(sent).toHaveLength(2)
     })
 
     it('turns options on and off in the settings', async () => {

@@ -22,6 +22,7 @@
     type Size,
   } from './geometry'
   import Annotator from './annotate/Annotator.svelte'
+  import { outputRequest } from './annotate/output'
   import Magnifier from './Magnifier.svelte'
   import Selection from './Selection.svelte'
   import SizeBadge from './SizeBadge.svelte'
@@ -188,14 +189,17 @@
 
   /**
    * Copies (closing the overlay) or saves (Rust hides the windows while the Save dialog is
-   * open, then closes, or shows them again on cancel). On failure the overlay stays open and
-   * says so.
+   * open, then closes, or shows them again on cancel), annotations included. On failure the
+   * overlay stays open and says so.
    */
   async function finish(command: 'overlay_copy' | 'overlay_save', rect: Rect) {
     if (busy) return
     busy = true
     try {
-      await invoke(command, { session: current, rect })
+      const session = current
+      const marks = await annotator?.exportAnnotations(rect, scale.x)
+      const { body, headers } = outputRequest(session, rect, marks)
+      await invoke(command, body, { headers })
     } catch (e) {
       console.error(`${command} failed`, e)
       show(command === 'overlay_copy' ? "Couldn't copy" : "Couldn't save")
@@ -344,7 +348,11 @@
     {display}
     {scale}
     options={{ rememberRegion: settings.rememberRegion, magnifier: settings.magnifier }}
-    actions={{ option: setSetting }}
+    actions={{
+      copy: () => physical && void finish('overlay_copy', physical),
+      save: () => physical && void finish('overlay_save', physical),
+      option: setSetting,
+    }}
   />
   {#if physical}
     <Selection rect={selection!} />

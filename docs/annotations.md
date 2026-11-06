@@ -72,8 +72,26 @@ type AnnotationExport = {
 - `blurs` are rects in physical px relative to the crop, rounded outwards to whole pixels and
   clipped to it.
 
-Rust then, on the cropped frame:
+## Copy and save request
 
-1. pixelates each rect in `blurs`;
-2. draws `rgba` at (`x`, `y`) with source-over blending;
-3. encodes the PNG and copies, saves or shares it.
+Copy (Enter, ⌘C), Save (⌘S) and the toolbar's Copy and Save buttons export the annotations for
+the selection's physical rect and send one raw IPC request (`overlay/annotate/output.ts`):
+
+```ts
+invoke('overlay_copy' | 'overlay_save', body, { headers: { 'x-xcreenshot-output': json } })
+```
+
+- `body` is the `rgba` bytes as a `Uint8Array` (empty without a layer). It reaches Rust as
+  `InvokeBody::Raw`, never as JSON.
+- `json` is `{ session, rect, annotations }`: `rect` is the selection in physical px, and
+  `annotations` is `null` or `{ x, y, width, height, blurs }` from the export above.
+
+Rust (`overlay/compose.rs`) checks the body is exactly `width × height × 4` bytes, crops the
+frame, then:
+
+1. pixelates each rect in `blurs`, destructively, in blocks of at least 16 px (larger for large
+   rects), so nothing under a blur survives (issue #16);
+2. draws the layer at (`x`, `y`) with straight-alpha source-over, clipped to the crop;
+3. encodes the PNG and copies or saves it.
+
+Share (#19) will send the same request.

@@ -14,6 +14,7 @@
 //! On failure the command returns the error and the page says so; the overlay is never left
 //! without a way out. The OS side is behind [`Clipboard`] and [`Saver`], faked in tests.
 
+use super::compose::{self, Marks, Output};
 use super::display_id;
 use super::window::{Overlay, close, close_session, hide, on_main, phase, reshow, sync_escape};
 use crate::capture::{self, CaptureError, PixelRect};
@@ -25,19 +26,24 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use tauri::async_runtime::spawn_blocking;
+use tauri::ipc::Request;
 use tauri::{AppHandle, Manager, Runtime, State, WebviewWindow};
 
-/// Copies the selection to the clipboard and closes the overlay. An empty rect is an error and
-/// closes nothing.
+/// Copies the selection, with its annotations, to the clipboard and closes the overlay. An
+/// empty rect is an error and closes nothing. The request is raw: see [`compose`].
 #[tauri::command]
 pub(crate) async fn overlay_copy<R: Runtime>(
     window: WebviewWindow<R>,
     state: State<'_, Overlay>,
-    session: u64,
-    rect: PixelRect,
+    request: Request<'_>,
 ) -> Result<(), CaptureError> {
+    let Output {
+        session,
+        rect,
+        marks,
+    } = compose::parse(request.body(), request.headers())?;
     let clipboard = output::os_clipboard(window.app_handle());
-    copy_with(&window, &state, session, rect, clipboard).await
+    copy_with(&window, &state, session, rect, marks, clipboard).await
 }
 
 async fn copy_with<R: Runtime>(
@@ -45,6 +51,7 @@ async fn copy_with<R: Runtime>(
     state: &Overlay,
     session: u64,
     rect: PixelRect,
+    marks: Marks,
     clipboard: Clipboard,
 ) -> Result<(), CaptureError> {
     let started = Instant::now();
@@ -52,7 +59,7 @@ async fn copy_with<R: Runtime>(
         return Ok(());
     };
     let copied = spawn_blocking(move || {
-        let image = capture::crop_pixels(&frame, rect)?;
+        let image = annotated(&frame, rect, &marks)?;
         clipboard(&image)?;
         Ok(image.dimensions())
     })
@@ -80,28 +87,52 @@ fn selected_frame<R: Runtime>(
     Some((display, phase.image(session, display)?))
 }
 
-/// Asks where to save the selection, writes it and closes the overlay. Returns once that is
-/// done: `Ok` when saved or cancelled, the error if the file could not be written.
+/// The selection cropped from the frame, with its annotations on it.
+fn annotated(frame: &RgbaImage, rect: PixelRect, marks: &Marks) -> Result<RgbaImage, CaptureError> {
+    let mut image = capture::crop_pixels(frame, rect)?;
+    compose::apply(&mut image, marks);
+    Ok(image)
+}
+
+/// Asks where to save the selection, with its annotations, writes it and closes the overlay.
+/// Returns once that is done: `Ok` when saved or cancelled, the error if the file could not be
+/// written. The request is raw: see [`compose`].
 #[tauri::command]
 pub(crate) async fn overlay_save<R: Runtime>(
     window: WebviewWindow<R>,
     state: State<'_, Overlay>,
-    session: u64,
-    rect: PixelRect,
+    request: Request<'_>,
 ) -> Result<(), CaptureError> {
+    let Output {
+        session,
+        rect,
+        marks,
+    } = compose::parse(request.body(), request.headers())?;
     let app = window.app_handle().clone();
     let paths = app.path();
     let default_dir = output::default_dir(paths.desktop_dir().ok(), paths.picture_dir().ok());
     let now = chrono::Local::now().naive_local();
     let saver = OsSaver(app);
-    save_with(&window, &state, session, rect, saver, now, default_dir).await
+    save_with(
+        &window,
+        &state,
+        session,
+        rect,
+        marks,
+        saver,
+        now,
+        default_dir,
+    )
+    .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn save_with<R: Runtime>(
     window: &WebviewWindow<R>,
     state: &Overlay,
     session: u64,
     rect: PixelRect,
+    marks: Marks,
     saver: impl Saver,
     now: NaiveDateTime,
     default_dir: Option<PathBuf>,
@@ -110,7 +141,7 @@ async fn save_with<R: Runtime>(
         return Ok(());
     };
     // Checked before anything hides, so an empty selection just stays.
-    let image = capture::crop_pixels(&frame, rect)?;
+    let image = annotated(&frame, rect, &marks)?;
     drop(frame);
     if !state.phase().begin_save(session) {
         return Ok(());
@@ -309,7 +340,8 @@ mod tests {
         c: Clipboard,
     ) -> Result<(), CaptureError> {
         let state = h.state::<Overlay>();
-        tauri::async_runtime::block_on(copy_with(w, &state, session, rect, c))
+        let marks = Marks::default();
+        tauri::async_runtime::block_on(copy_with(w, &state, session, rect, marks, c))
     }
 
     fn copy(h: &Handle, session: u64, rect: PixelRect, c: Clipboard) -> Result<(), CaptureError> {
@@ -426,11 +458,55 @@ mod tests {
         saver: &Arc<FakeSaver>,
         default: &Path,
     ) -> Result<(), CaptureError> {
+        save_marked(h, session, rect, Marks::default(), saver, default)
+    }
+
+    fn save_marked(
+        h: &Handle,
+        session: u64,
+        rect: PixelRect,
+        marks: Marks,
+        saver: &Arc<FakeSaver>,
+        default: &Path,
+    ) -> Result<(), CaptureError> {
         let state = h.state::<Overlay>();
         let w = window(h, 1);
         let default = Some(default.to_owned());
         let saver = Arc::clone(saver);
-        tauri::async_runtime::block_on(save_with(&w, &state, session, rect, saver, now(), default))
+        let saving = save_with(&w, &state, session, rect, marks, saver, now(), default);
+        tauri::async_runtime::block_on(saving)
+    }
+
+    /// A white dot at (0, 0) of the crop, and the rest of a 2x2 crop blurred.
+    fn marks() -> Marks {
+        let dot = RgbaImage::from_pixel(1, 1, image::Rgba([255, 255, 255, 255]));
+        Marks {
+            layer: Some((0, 0, dot)),
+            blurs: vec![px(0, 0, 2, 2)],
+        }
+    }
+
+    /// `expected(1, 0, 2, 2)` with `marks()` on it.
+    fn marked() -> RgbaImage {
+        let mut image = expected(1, 0, 2, 2);
+        compose::apply(&mut image, &marks());
+        image
+    }
+
+    #[test]
+    fn copy_puts_the_annotations_on_the_crop() {
+        let app = app();
+        let h = app.handle();
+        let session = shown(h, &[1]);
+        let (c, images) = clipboard(false);
+        let state = h.state::<Overlay>();
+        let w = window(h, 1);
+        let copying = copy_with(&w, &state, session, px(1, 0, 2, 2), marks(), c);
+        assert_eq!(tauri::async_runtime::block_on(copying), Ok(()));
+        let copied = images.lock().unwrap()[0].clone();
+        assert_eq!(copied, marked());
+        assert_eq!(*copied.get_pixel(0, 0), image::Rgba([255, 255, 255, 255]));
+        assert_ne!(copied, expected(1, 0, 2, 2));
     }
 
     #[test]
@@ -462,6 +538,20 @@ mod tests {
         assert_eq!(*saver.remembered.lock().unwrap(), [dir.path().to_owned()]);
         wait_until("the overlay to close", || is_idle(h));
         assert!(!esc_held(h));
+    }
+
+    #[test]
+    fn save_writes_the_annotations_with_the_blur_baked_in() {
+        let app = app_with_escape();
+        let h = app.handle();
+        let dir = tempfile::tempdir().unwrap();
+        let session = shown(h, &[1]);
+        let path = dir.path().join("marked.png");
+        let saver = Arc::new(FakeSaver::answering(&[Some(&path)]));
+        let saved = save_marked(h, session, px(1, 0, 2, 2), marks(), &saver, dir.path());
+        assert_eq!(saved, Ok(()));
+        assert_clean_png(&fs::read(&path).unwrap(), &marked());
+        wait_until("the overlay to close", || is_idle(h));
     }
 
     #[test]
