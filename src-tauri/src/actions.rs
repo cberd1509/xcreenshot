@@ -11,28 +11,28 @@ impl Action {
     /// Menu bar items, in display order.
     pub const MENU: [Action; 3] = [Action::Capture, Action::OpenSettings, Action::Quit];
 
-    pub fn id(self) -> &'static str {
+    /// Menu id, label and fixed keyboard shortcut (Capture's comes from the user's setting).
+    fn spec(self) -> (&'static str, &'static str, Option<&'static str>) {
         match self {
-            Action::Capture => "capture",
-            Action::OpenSettings => "settings",
-            Action::Quit => "quit",
+            Action::Capture => ("capture", "Capture", None),
+            Action::OpenSettings => ("settings", "Settings…", Some("CmdOrCtrl+,")),
+            Action::Quit => ("quit", "Quit xcreenshot", Some("CmdOrCtrl+Q")),
         }
+    }
+
+    pub fn id(self) -> &'static str {
+        self.spec().0
     }
 
     pub fn label(self) -> &'static str {
-        match self {
-            Action::Capture => "Capture",
-            Action::OpenSettings => "Settings…",
-            Action::Quit => "Quit xcreenshot",
-        }
+        self.spec().1
     }
 
-    /// Keyboard shortcut shown next to the menu item, if any.
-    pub fn menu_accelerator(self) -> Option<&'static str> {
+    /// Shortcut shown next to the menu item.
+    pub fn accelerator(self, capture: &str) -> Option<&str> {
         match self {
-            Action::Capture => None, // set from the user's capture shortcut
-            Action::OpenSettings => Some("CmdOrCtrl+,"),
-            Action::Quit => Some("CmdOrCtrl+Q"),
+            Action::Capture => Some(capture),
+            _ => self.spec().2,
         }
     }
 
@@ -49,21 +49,14 @@ mod tests {
     fn ids_round_trip() {
         for action in Action::MENU {
             assert_eq!(Action::from_id(action.id()), Some(action));
+            assert!(!action.label().is_empty());
         }
-    }
-
-    #[test]
-    fn unknown_id_is_ignored() {
         assert_eq!(Action::from_id("nope"), None);
     }
 
     #[test]
-    fn labels_and_accelerators() {
-        assert_eq!(Action::Capture.label(), "Capture");
-        assert_eq!(Action::OpenSettings.label(), "Settings…");
-        assert_eq!(Action::Quit.label(), "Quit xcreenshot");
-        assert_eq!(Action::Capture.menu_accelerator(), None);
-        assert_eq!(Action::OpenSettings.menu_accelerator(), Some("CmdOrCtrl+,"));
-        assert_eq!(Action::Quit.menu_accelerator(), Some("CmdOrCtrl+Q"));
+    fn capture_uses_the_user_shortcut() {
+        assert_eq!(Action::Capture.accelerator("F13"), Some("F13"));
+        assert_eq!(Action::Quit.accelerator("F13"), Some("CmdOrCtrl+Q"));
     }
 }

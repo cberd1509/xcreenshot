@@ -6,7 +6,7 @@ mod shortcut;
 use actions::Action;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Emitter, Manager, WindowEvent};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 const SETTINGS_WINDOW: &str = "settings";
@@ -14,65 +14,77 @@ const SETTINGS_WINDOW: &str = "settings";
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Must be first: a second launch focuses the running app instead.
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            handle(app, Action::OpenSettings)
+        }))
+        // Local log file only (nothing is sent anywhere); stderr is invisible in Windows release builds.
         .plugin(
-            tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
-                    if event.state() == ShortcutState::Pressed {
-                        handle(app, Action::Capture);
-                    }
-                })
+            tauri_plugin_log::Builder::new()
+                .target(tauri_plugin_log::Target::new(
+                    tauri_plugin_log::TargetKind::LogDir { file_name: None },
+                ))
+                .level(log::LevelFilter::Info)
                 .build(),
         )
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             // Menu bar app: no Dock icon.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            let accelerator = shortcut::default_accelerator();
-            build_tray(app.handle(), accelerator)?;
-            if let Err(e) = shortcut::parse(accelerator)
-                .and_then(|s| app.global_shortcut().register(s).map_err(|e| e.to_string()))
+            build_tray(app.handle(), shortcut::DEFAULT)?;
+            if let Err(e) = app
+                .global_shortcut()
+                .on_shortcut(shortcut::DEFAULT, |app, _, event| {
+                    if event.state() == ShortcutState::Pressed {
+                        handle(app, Action::Capture);
+                    }
+                })
             {
                 // Another app may own the shortcut; the menu bar item still works.
-                eprintln!("could not register capture shortcut: {e}");
+                log::warn!(
+                    "could not register capture shortcut {}: {e}",
+                    shortcut::DEFAULT
+                );
             }
             Ok(())
         })
-        .on_window_event(|window, event| {
-            // Closing Settings hides it; the app keeps running in the menu bar.
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+        .build(tauri::generate_context!())
+        .expect("error while building xcreenshot")
+        .run(|app, event| {
+            // Opening the app again (Finder, Spotlight) shows Settings.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                handle(app, Action::OpenSettings);
             }
-        })
-        .run(tauri::generate_context!())
-        .expect("error while running xcreenshot");
+            let _ = (app, event);
+        });
 }
 
 fn build_tray(app: &AppHandle, capture_accelerator: &str) -> tauri::Result<()> {
     let item = |a: Action| {
-        let accel = a.menu_accelerator().or(match a {
-            Action::Capture => Some(capture_accelerator),
-            _ => None,
-        });
-        MenuItem::with_id(app, a.id(), a.label(), true, accel)
+        MenuItem::with_id(
+            app,
+            a.id(),
+            a.label(),
+            true,
+            a.accelerator(capture_accelerator),
+        )
     };
-    let [capture, settings, quit] = Action::MENU.map(item);
     let menu = Menu::with_items(
         app,
         &[
-            &capture?,
+            &item(Action::Capture)?,
             &PredefinedMenuItem::separator(app)?,
-            &settings?,
+            &item(Action::OpenSettings)?,
             &PredefinedMenuItem::separator(app)?,
-            &quit?,
+            &item(Action::Quit)?,
         ],
     )?;
     TrayIconBuilder::with_id("main")
-        .icon(tauri::image::Image::from_bytes(include_bytes!(
-            "../icons/tray-template@2x.png"
-        ))?)
-        .icon_as_template(true)
+        .icon(tray_icon())
+        .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("xcreenshot")
         .menu(&menu)
         .show_menu_on_left_click(true)
@@ -85,18 +97,46 @@ fn build_tray(app: &AppHandle, capture_accelerator: &str) -> tauri::Result<()> {
     Ok(())
 }
 
+/// macOS recolors the black template icon for the menu bar; other platforms get the color app icon.
+fn tray_icon() -> tauri::image::Image<'static> {
+    if cfg!(target_os = "macos") {
+        tauri::include_image!("icons/tray-template@2x.png")
+    } else {
+        tauri::include_image!("icons/32x32.png")
+    }
+}
+
 fn handle(app: &AppHandle, action: Action) {
     match action {
-        // The capture overlay comes in #8; for now, tell the frontend.
-        Action::Capture => {
-            let _ = app.emit("capture-requested", ());
-        }
+        Action::Capture => start_capture(app),
         Action::OpenSettings => {
-            if let Some(w) = app.get_webview_window(SETTINGS_WINDOW) {
-                let _ = w.show();
-                let _ = w.set_focus();
+            if let Err(e) = open_settings(app) {
+                log::error!("could not open settings: {e}");
             }
         }
         Action::Quit => app.exit(0),
     }
+}
+
+/// The capture overlay comes in #8. It must ignore requests while one is open: the menu
+/// item shows the same accelerator as the global shortcut, so both can fire at once.
+fn start_capture(_app: &AppHandle) {
+    log::info!("capture requested");
+}
+
+/// The Settings webview is created on demand and destroyed on close,
+/// so the idle menu bar app holds no webview.
+fn open_settings(app: &AppHandle) -> tauri::Result<()> {
+    let window = match app.get_webview_window(SETTINGS_WINDOW) {
+        Some(w) => w,
+        None => WebviewWindowBuilder::new(app, SETTINGS_WINDOW, WebviewUrl::default())
+            .title("xcreenshot Settings")
+            .inner_size(880.0, 640.0)
+            .min_inner_size(640.0, 480.0)
+            .center()
+            .build()?,
+    };
+    window.unminimize()?;
+    window.show()?;
+    window.set_focus()
 }
