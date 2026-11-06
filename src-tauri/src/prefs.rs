@@ -19,12 +19,33 @@ use tauri_plugin_store::{Store, StoreExt};
 const FILE: &str = "prefs.json";
 const KEY: &str = "prefs";
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Prefs {
     /// The folder of the last screenshot saved; the Save dialog opens there.
     #[serde(default, deserialize_with = "lenient")]
     pub last_save_dir: Option<String>,
+    /// Automatic update checks. On by default.
+    #[serde(default = "on", deserialize_with = "lenient_on")]
+    pub check_for_updates: bool,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self {
+            last_save_dir: None,
+            check_for_updates: on(),
+        }
+    }
+}
+
+fn on() -> bool {
+    true
+}
+
+/// A switch that is on unless it is stored as `false`.
+fn lenient_on<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    Ok(lenient::<D, Option<bool>>(d)?.unwrap_or_else(on))
 }
 
 /// A field that does not parse keeps its default instead of failing the whole struct.
@@ -201,7 +222,10 @@ mod tests {
         prefs.save(&*s).unwrap();
         let written: Value =
             serde_json::from_slice(&fs::read(dir.path().join(FILE)).unwrap()).unwrap();
-        assert_eq!(written, json!({ "prefs": { "lastSaveDir": "/saved" } }));
+        assert_eq!(
+            written,
+            json!({ "prefs": { "lastSaveDir": "/saved", "checkForUpdates": true } })
+        );
         assert_eq!(
             Prefs::load(&*s).last_save_dir(),
             Some(PathBuf::from("/saved"))
@@ -216,6 +240,8 @@ mod tests {
         for bad in [
             json!({ "lastSaveDir": 42 }),
             json!({ "lastSaveDir": ["/a"] }),
+            json!({ "checkForUpdates": "no" }),
+            json!({ "checkForUpdates": null }),
             json!({}),
             json!({ "unknown": true }),
             json!("not an object"),
@@ -224,6 +250,13 @@ mod tests {
             s.set(KEY, bad.clone());
             assert_eq!(Prefs::load(&*s), Prefs::default(), "{bad}");
         }
+    }
+
+    #[test]
+    fn update_checks_default_to_on_and_can_be_turned_off() {
+        assert!(Prefs::default().check_for_updates);
+        let off: Prefs = serde_json::from_value(json!({ "checkForUpdates": false })).unwrap();
+        assert!(!off.check_for_updates);
     }
 
     #[cfg(unix)]

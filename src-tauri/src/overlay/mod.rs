@@ -32,6 +32,12 @@ pub fn display_id(label: &str) -> Option<u32> {
     label.strip_prefix(LABEL_PREFIX)?.parse().ok()
 }
 
+/// Whether a capture is running or the overlay is open. Read-only; the update prompt waits
+/// for this to clear so it never interrupts a capture.
+pub fn is_busy<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
+    window::phase(app).session().is_some()
+}
+
 /// Overlay windows to create and destroy so there is exactly one per display.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct WindowDiff {

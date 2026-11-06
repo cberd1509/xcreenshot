@@ -8,6 +8,7 @@ mod overlay;
 mod permission;
 mod prefs;
 mod shortcut;
+mod updates;
 mod windows;
 
 use actions::Action;
@@ -35,7 +36,8 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        // Used from Rust only: the pages get no dialog or store permissions.
+        // Used from Rust only: the pages get no updater, dialog or store permissions.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::new().build());
     // macOS writes the clipboard itself (`output::write_png`).
@@ -84,6 +86,7 @@ pub fn run() {
             }
             overlay::prewarm(app.handle());
             permission::on_startup(app.handle());
+            updates::start(app.handle(), offer_update);
             #[cfg(debug_assertions)]
             overlay::debug::schedule(app.handle());
             Ok(())
@@ -101,25 +104,7 @@ pub fn run() {
 }
 
 fn build_tray(app: &AppHandle, capture_accelerator: &str) -> tauri::Result<()> {
-    let item = |a: Action| {
-        MenuItem::with_id(
-            app,
-            a.id(),
-            a.label(),
-            true,
-            a.accelerator(capture_accelerator),
-        )
-    };
-    let menu = Menu::with_items(
-        app,
-        &[
-            &item(Action::Capture)?,
-            &PredefinedMenuItem::separator(app)?,
-            &item(Action::OpenSettings)?,
-            &PredefinedMenuItem::separator(app)?,
-            &item(Action::Quit)?,
-        ],
-    )?;
+    let menu = tray_menu(app, capture_accelerator, None)?;
     TrayIconBuilder::with_id("main")
         .icon(tray_icon())
         .icon_as_template(cfg!(target_os = "macos"))
@@ -133,6 +118,43 @@ fn build_tray(app: &AppHandle, capture_accelerator: &str) -> tauri::Result<()> {
         })
         .build(app)?;
     Ok(())
+}
+
+/// The menu bar items. "Restart to update" is only there once an update is downloaded.
+fn tray_menu(
+    app: &AppHandle,
+    capture_accelerator: &str,
+    update: Option<&str>,
+) -> tauri::Result<Menu<tauri::Wry>> {
+    let item = |a: Action| {
+        let label = match (a, update) {
+            (Action::RestartToUpdate, Some(version)) => format!("{} (v{version})", a.label()),
+            _ => a.label().to_owned(),
+        };
+        MenuItem::with_id(app, a.id(), label, true, a.accelerator(capture_accelerator))
+    };
+    let menu = Menu::new(app)?;
+    for action in Action::MENU {
+        if action == Action::RestartToUpdate && update.is_none() {
+            continue;
+        }
+        menu.append(&item(action)?)?;
+        if action.separator_after() {
+            menu.append(&PredefinedMenuItem::separator(app)?)?;
+        }
+    }
+    Ok(menu)
+}
+
+/// Adds "Restart to update (vX)" once an update is downloaded.
+fn offer_update(app: &AppHandle, version: &str) {
+    let menu = tray_menu(app, shortcut::DEFAULT, Some(version));
+    if let Err(e) = menu.and_then(|m| match app.tray_by_id("main") {
+        Some(tray) => tray.set_menu(Some(m)),
+        None => Ok(()),
+    }) {
+        log::error!("could not add the restart item: {e}");
+    }
 }
 
 /// macOS recolors the black template icon for the menu bar; other platforms get the color app icon.
@@ -156,6 +178,8 @@ fn handle(app: &AppHandle, action: Action) {
                 log::error!("could not open settings: {e}");
             }
         }
+        Action::CheckForUpdates => updates::check_now(app),
+        Action::RestartToUpdate => updates::restart_now(app),
         Action::Quit => app.exit(0),
     }
 }
