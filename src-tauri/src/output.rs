@@ -5,6 +5,9 @@
 
 /// Annotations on the copied or saved image.
 pub mod compose;
+/// The Windows clipboard formats.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) mod win_clipboard;
 
 use crate::capture::{CaptureError, Density};
 use chrono::NaiveDateTime;
@@ -112,12 +115,12 @@ pub fn write_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
 pub type Clipboard = Box<dyn Fn(&RgbaImage, Density) -> Result<(), CaptureError> + Send + Sync>;
 
 /// The real clipboard. macOS: a PNG with its density, plus TIFF on request (`macos::write`),
-/// written on the main thread. Windows: the clipboard plugin, which adds the PNG and bitmap
-/// formats, both without a density (#78).
+/// written on the main thread. Windows: a PNG and a bitmap, both with the density
+/// (`win_clipboard`). Elsewhere: the clipboard plugin, without a density.
 pub fn os_clipboard<R: Runtime>(app: &AppHandle<R>) -> Clipboard {
-    let app = app.clone();
     #[cfg(target_os = "macos")]
     {
+        let app = app.clone();
         png_clipboard(move |png| {
             let (tx, rx) = std::sync::mpsc::channel();
             app.run_on_main_thread(move || {
@@ -129,8 +132,17 @@ pub fn os_clipboard<R: Runtime>(app: &AppHandle<R>) -> Clipboard {
                 .map_err(|e| CaptureError::Clipboard(e.to_string()))?
         })
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
+        // Written from this thread: no app handle needed.
+        let _ = app;
+        Box::new(|image, density| {
+            win_clipboard::os::write(&win_clipboard::contents(image, density)?)
+        })
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let app = app.clone();
         Box::new(move |image, _density| {
             use tauri_plugin_clipboard_manager::ClipboardExt;
             let image = tauri::image::Image::new(image.as_raw(), image.width(), image.height());

@@ -59,12 +59,12 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::new().build());
-    // macOS writes the clipboard itself (`output::write_png`) and uses SMAppService for the
-    // login item (`login`).
+    // macOS and Windows write the clipboard themselves (`output::os_clipboard`), and macOS
+    // uses SMAppService for the login item (`login`).
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let builder = builder.plugin(tauri_plugin_clipboard_manager::init());
     #[cfg(not(target_os = "macos"))]
-    let builder = builder
-        .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_autostart::Builder::new().build());
+    let builder = builder.plugin(tauri_plugin_autostart::Builder::new().build());
     #[cfg(target_os = "macos")]
     let builder = builder.manage(login::System::default());
     builder
