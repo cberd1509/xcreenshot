@@ -68,6 +68,7 @@ describe('concat', () => {
         { file: '/t/1.jpg', time: 10.25 },
       ],
       11,
+      0.01,
     )
     expect(list).toBe(
       [
@@ -82,9 +83,9 @@ describe('concat', () => {
     )
   })
 
-  it('never gives a negative duration, and lists nothing without frames', () => {
-    expect(concat([{ file: 'a.jpg', time: 5 }], 4)).toContain('duration 0.000')
-    expect(concat([], 1)).toBe('ffconcat version 1.0\n')
+  it('shows every frame for at least the minimum, and lists nothing without frames', () => {
+    expect(concat([{ file: 'a.jpg', time: 5 }], 4, 1 / 60)).toContain('duration 0.017')
+    expect(concat([], 1, 0.01)).toBe('ffconcat version 1.0\n')
   })
 })
 

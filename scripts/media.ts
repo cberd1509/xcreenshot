@@ -41,14 +41,15 @@ export function steps(from: Point, to: Point, fps: number): number {
 export type Shot = { file: string; time: number }
 
 /**
- * An ffconcat list that shows each frame until the next one came, and the last until `end`. The
- * browser sends a frame only when the page changes, so still moments cost one frame.
+ * An ffconcat list that shows each frame until the next one came, and the last until `end`, each
+ * for at least `minimum` seconds. The browser sends a frame only when the page changes, so still
+ * moments cost one frame.
  */
-export function concat(shots: Shot[], end: number): string {
+export function concat(shots: Shot[], end: number, minimum: number): string {
   const lines = ['ffconcat version 1.0']
   shots.forEach(({ file, time }, i) => {
     const next = shots[i + 1]?.time ?? end
-    lines.push(`file '${file}'`, `duration ${Math.max(0, next - time).toFixed(3)}`)
+    lines.push(`file '${file}'`, `duration ${Math.max(minimum, next - time).toFixed(3)}`)
   })
   // The concat demuxer only honors the last duration when the file is listed again.
   if (shots.length) lines.push(`file '${shots.at(-1)!.file}'`)

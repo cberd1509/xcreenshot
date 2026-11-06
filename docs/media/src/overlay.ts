@@ -80,8 +80,9 @@ const CROSS = {
   y: 12,
   svg: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path d="M12 1v22M1 12h22" stroke="#fff" stroke-width="3.5"/><path d="M12 1v22M1 12h22" stroke="#000" stroke-width="1.5"/></svg>`,
 }
-const cursor = document.createElement('div')
+const cursor = document.createElement('img')
 cursor.id = 'demo-cursor'
+cursor.alt = ''
 document.body.append(cursor)
 let shape: typeof ARROW | null = null
 
@@ -90,7 +91,7 @@ function pointAt(x: number, y: number) {
   const next = under && getComputedStyle(under).cursor === 'crosshair' ? CROSS : ARROW
   if (next !== shape) {
     shape = next
-    cursor.innerHTML = next.svg
+    cursor.src = `data:image/svg+xml,${encodeURIComponent(next.svg)}`
   }
   cursor.style.transform = `translate(${x - next.x}px, ${y - next.y}px)`
 }
@@ -113,7 +114,10 @@ Object.assign(window, {
     /** Shows an accelerator being pressed, e.g. "Super+C" (none: hides it). */
     keys: (accelerator = '') => {
       const labels = shortcutKeys(accelerator, true)
-      if (labels.length) keys.innerHTML = labels.map((k) => `<kbd>${k}</kbd>`).join('')
+      if (labels.length)
+        keys.replaceChildren(
+          ...labels.map((label) => Object.assign(document.createElement('kbd'), { textContent: label })),
+        )
       keys.style.opacity = labels.length ? '1' : '0'
     },
   },

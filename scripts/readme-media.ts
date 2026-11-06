@@ -2,11 +2,20 @@
 // the screen. The overlay shows a made-up desktop (docs/media/src/desktop.html) as its frame.
 // Usage: pnpm readme-media
 // Needs ffmpeg on PATH and Playwright's Chromium (`pnpm exec playwright install chromium`).
-// Writes docs/media/overlay.png, docs/media/settings.png and docs/media/demo.gif.
+// Writes docs/media/overlay.png, docs/media/settings.png and docs/media/demo.gif, all at once
+// when every step worked. One run at a time.
 /// <reference lib="dom" />
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import {
+  closeSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium, type Browser, type BrowserContextOptions, type Page } from 'playwright'
@@ -16,6 +25,9 @@ import { concat, gifArgs, path, size, steps, type Shot } from './media.ts'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const out = join(root, 'docs/media')
+const MEDIA = ['overlay.png', 'settings.png', 'demo.gif']
+/** Scratch space on the repo's disk, so finished files move into docs/media in one rename. */
+const cache = join(root, 'node_modules/.cache/readme-media')
 const viewport = { width: 1440, height: 900 }
 /** A Retina Mac: the app shows Mac keys, and ⌘C copies. */
 const mac: BrowserContextOptions = {
@@ -23,6 +35,8 @@ const mac: BrowserContextOptions = {
   userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/158',
 }
 const GIF = { width: 1280, fps: 15 }
+/** Chromium sends at most this many screencast frames a second. */
+const CAPTURE_FPS = 60
 /** Pointer moves per second while recording. */
 const FPS = 20
 
@@ -46,13 +60,13 @@ class Hand {
 
   async move(to: Point, slow = 1) {
     const n = this.paced ? Math.round(steps(this.at, to, FPS) * slow) : 1
-    const start = Date.now()
+    const start = performance.now()
     // One move after another, on the clock however long each takes.
     for (const [i, p] of path(this.at, to, n).entries()) {
       // oxlint-disable-next-line no-await-in-loop
       await this.page.mouse.move(p.x, p.y)
       // oxlint-disable-next-line no-await-in-loop
-      await this.pause(start + ((i + 1) * 1000) / FPS - Date.now())
+      await this.pause(start + ((i + 1) * 1000) / FPS - performance.now())
     }
     this.at = to
   }
@@ -170,7 +184,7 @@ async function annotate(hand: Hand, p: ReturnType<typeof plan>) {
   await hand.drag(p.blur.from, p.blur.to)
 }
 
-async function still(browser: Browser, base: string, frame: Buffer, spots: Spots) {
+async function still(browser: Browser, base: string, frame: Buffer, spots: Spots, dir: string) {
   const { context, page } = await overlay(browser, base, frame)
   await demo(page, 'cursor', false)
   await open(page)
@@ -185,11 +199,11 @@ async function still(browser: Browser, base: string, frame: Buffer, spots: Spots
   await hand.tool('Select')
   await hand.move({ x: 1400, y: 40 })
   await sleep(500)
-  await page.screenshot({ path: join(out, 'overlay.png') })
+  await page.screenshot({ path: join(dir, 'overlay.png') })
   await context.close()
 }
 
-async function settings(browser: Browser, base: string) {
+async function settings(browser: Browser, base: string, dir: string) {
   const page = await browser.newPage({
     // The Settings window's size (src-tauri/src/lib.rs).
     viewport: { width: 880, height: 640 },
@@ -197,12 +211,14 @@ async function settings(browser: Browser, base: string) {
     colorScheme: 'light',
   })
   await page.goto(`${base}docs/media/src/settings.html`)
+  // The shortcut's key caps and the version load separately.
+  await page.getByText('⌘', { exact: true }).first().waitFor()
   await page
     .getByText(/^Version \d/)
     .first()
     .waitFor()
   await page.evaluate(() => document.fonts.ready)
-  await page.screenshot({ path: join(out, 'settings.png') })
+  await page.screenshot({ path: join(dir, 'settings.png') })
   await page.close()
 }
 
@@ -221,10 +237,10 @@ async function recording(browser: Browser, base: string, frame: Buffer, spots: S
     onFrame: ({ data }) => {
       const file = join(dir, `${String(shots.length).padStart(5, '0')}.jpg`)
       writeFileSync(file, data)
-      shots.push({ file, time: Date.now() / 1000 })
+      shots.push({ file, time: performance.now() / 1000 })
     },
   })
-  const start = Date.now()
+  const start = performance.now()
   await sleep(400)
   await demo(page, 'keys', 'Control+Shift+Super+S')
   await sleep(450)
@@ -243,37 +259,49 @@ async function recording(browser: Browser, base: string, frame: Buffer, spots: S
   await hand.move({ x: hand.at.x + 40, y: hand.at.y + 30 })
   await demo(page, 'keys')
   await sleep(700)
-  const end = Date.now()
+  const end = performance.now()
   await page.screencast.stop()
   await context.close()
   const list = join(dir, 'frames.txt')
-  writeFileSync(list, concat(shots, end / 1000))
+  writeFileSync(list, concat(shots, end / 1000, 1 / CAPTURE_FPS))
   return { list, duration: (end - start) / 1000 }
 }
 
-const server = await createServer({
-  root,
-  logLevel: 'warn',
-  server: { port: 5180, strictPort: false },
-})
-await server.listen()
-const base = server.resolvedUrls!.local[0]
-const browser = await chromium.launch().catch(async (e: unknown) => {
-  await server.close()
-  throw e
-})
-const dir = mkdtempSync(join(tmpdir(), 'readme-media-'))
+mkdirSync(cache, { recursive: true })
+const lock = join(cache, 'lock')
 try {
-  const { frame, spots } = await desktop(browser, base)
-  await still(browser, base, frame, spots)
-  await settings(browser, base)
-  const { list, duration } = await recording(browser, base, frame, spots, dir)
-  execFileSync('ffmpeg', gifArgs({ input: list, output: join(out, 'demo.gif'), ...GIF }))
-  console.log(`demo.gif: ${duration.toFixed(1)} s at ${GIF.fps} fps`)
-  for (const name of ['overlay.png', 'settings.png', 'demo.gif'])
-    console.log(`${name}: ${size(statSync(join(out, name)).size)}`)
+  closeSync(openSync(lock, 'wx'))
+} catch {
+  throw new Error(`Another run holds ${lock}. If none is running, delete it.`)
+}
+const dir = mkdtempSync(join(cache, 'run-'))
+try {
+  const server = await createServer({
+    root,
+    logLevel: 'warn',
+    server: { port: 5180, strictPort: false },
+  })
+  await server.listen()
+  try {
+    const base = server.resolvedUrls!.local[0]
+    const browser = await chromium.launch()
+    try {
+      const { frame, spots } = await desktop(browser, base)
+      await still(browser, base, frame, spots, dir)
+      await settings(browser, base, dir)
+      const { list, duration } = await recording(browser, base, frame, spots, dir)
+      execFileSync('ffmpeg', gifArgs({ input: list, output: join(dir, 'demo.gif'), ...GIF }))
+      console.log(`demo.gif: ${duration.toFixed(1)} s at ${GIF.fps} fps`)
+    } finally {
+      await browser.close()
+    }
+  } finally {
+    await server.close()
+  }
+  // Every file is ready: replace the old set.
+  for (const name of MEDIA) renameSync(join(dir, name), join(out, name))
+  for (const name of MEDIA) console.log(`${name}: ${size(statSync(join(out, name)).size)}`)
 } finally {
-  await browser.close()
-  await server.close()
   rmSync(dir, { recursive: true, force: true })
+  rmSync(lock, { force: true })
 }

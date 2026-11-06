@@ -79,7 +79,7 @@ On first launch, macOS asks for **Screen Recording** permission. xcreenshot walk
 
 ## Privacy
 
-Your screenshots stay on your computer. xcreenshot has no accounts, no analytics and no telemetry, and it never uploads anything. The only network requests are update checks and downloads from GitHub Releases, and you can turn them off in Settings. See [PRIVACY.md](PRIVACY.md).
+Your screenshots stay on your computer. xcreenshot has no accounts, no analytics and no telemetry, and it never uploads anything. The only network requests are update checks and downloads from GitHub Releases. Automatic update checks can be turned off in Settings. See [PRIVACY.md](PRIVACY.md).
 
 ## Build from source
 
