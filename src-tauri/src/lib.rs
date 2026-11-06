@@ -11,6 +11,7 @@ mod overlay;
 mod permission;
 mod prefs;
 mod print_screen;
+mod region;
 mod settings;
 /// Public so the overlay (and later commands) can call it; see `docs/share.md`.
 pub mod share;

@@ -13,6 +13,9 @@
 //!
 //! On failure the command returns the error and the page says so; the overlay is never left
 //! without a way out. The OS side is behind [`Clipboard`] and [`Saver`], faked in tests.
+//!
+//! A copy or save that worked remembers the selection (see `region`), after the clipboard
+//! write or the file, on another thread.
 
 use super::display_id;
 use super::window::{Overlay, close, close_if, hide, on_main, phase, reshow, sync_escape};
@@ -20,6 +23,7 @@ use crate::capture::{self, CaptureError, PixelRect, clamp_rect};
 use crate::output::compose::{self, Layer, Marks};
 use crate::output::{self, Clipboard, Target};
 use crate::prefs;
+use crate::region::{self, Region};
 use chrono::NaiveDateTime;
 use image::{ImageBuffer, RgbaImage};
 use serde::Deserialize;
@@ -124,8 +128,18 @@ pub(crate) async fn overlay_copy<R: Runtime>(
     request: Request<'_>,
 ) -> Result<(), CaptureError> {
     let out = parse(request.body(), request.headers())?;
-    let clipboard = output::os_clipboard(window.app_handle());
-    copy_with(&window, &state, &out, clipboard).await
+    let app = window.app_handle();
+    let clipboard = output::os_clipboard(app);
+    copy_with(&window, &state, &out, clipboard, remember_in(app)).await
+}
+
+/// Keeps the region of a copy that worked. Faked in tests.
+pub(crate) type Remember = Box<dyn FnOnce(Region) + Send>;
+
+/// Saves the region to the prefs on a blocking thread, so nothing waits for the file.
+fn remember_in<R: Runtime>(app: &AppHandle<R>) -> Remember {
+    let app = app.clone();
+    Box::new(move |r| drop(spawn_blocking(move || region::save(&app, r))))
 }
 
 async fn copy_with<R: Runtime>(
@@ -133,10 +147,11 @@ async fn copy_with<R: Runtime>(
     state: &Overlay,
     out: &Output<'_>,
     clipboard: Clipboard,
+    remember: Remember,
 ) -> Result<(), CaptureError> {
     let started = Instant::now();
     let session = out.session;
-    let Some((_, frame, saves)) = selected_frame(window, state, session) else {
+    let Some((_, frame, saves, region)) = selected_frame(window, state, out) else {
         return Ok(());
     };
     // Cropped and annotated here: the annotations are read in place from the request.
@@ -151,6 +166,7 @@ async fn copy_with<R: Runtime>(
     let (width, height) = copied.inspect_err(|e| log::warn!("copy failed: {e}"))?;
     let ms = started.elapsed().as_secs_f64() * 1000.0;
     log::info!("copied {width}x{height} px in {ms:.0} ms");
+    remember(region);
     // Only if nothing happened meanwhile: a save started (even cancelled) keeps the overlay.
     on_main(window.app_handle(), move |app| {
         close_if(app, |phase| phase.copy_may_close(session, saves));
@@ -158,17 +174,21 @@ async fn copy_with<R: Runtime>(
     Ok(())
 }
 
-/// The calling window's display, its original frame and the session's save count, or `None`
-/// if the session or window is not an open overlay, or the Save dialog is open.
+/// The calling window's display, its original frame, the session's save count and the region
+/// to remember, or `None` if the session or window is not an open overlay, or the Save dialog
+/// is open.
 fn selected_frame<R: Runtime>(
     window: &WebviewWindow<R>,
     state: &Overlay,
-    session: u64,
-) -> Option<(u32, Arc<RgbaImage>, u32)> {
+    out: &Output,
+) -> Option<(u32, Arc<RgbaImage>, u32, Region)> {
+    let session = out.session;
     let display = display_id(window.label())?;
     let mut phase = state.phase();
     let saves = phase.saves(session)?;
-    Some((display, phase.image(session, display)?, saves))
+    let image = phase.image(session, display)?;
+    let region = phase.region(session, display, out.rect)?;
+    Some((display, image, saves, region))
 }
 
 /// The selection cropped from the frame, with its annotations on it.
@@ -205,7 +225,7 @@ async fn save_with<R: Runtime>(
     default_dir: Option<PathBuf>,
 ) -> Result<(), CaptureError> {
     let session = out.session;
-    let Some((display, frame, _)) = selected_frame(window, state, session) else {
+    let Some((display, frame, _, region)) = selected_frame(window, state, out) else {
         return Ok(());
     };
     // Checked before anything hides, so an empty selection just stays.
@@ -246,9 +266,13 @@ async fn save_with<R: Runtime>(
     // Always written once a path is picked: the crop is already taken. The windows are hidden
     // meanwhile, so writing before closing costs nothing visible, and a failure can bring the
     // overlay back to say so.
-    let written = spawn_blocking(move || write(&image, &path, &*saver))
-        .await
-        .unwrap_or_else(|e| Err(CaptureError::Write(e.to_string())));
+    let written = spawn_blocking(move || {
+        write(&image, &path, &*saver)?;
+        saver.remember_region(region);
+        Ok(())
+    })
+    .await
+    .unwrap_or_else(|e| Err(CaptureError::Write(e.to_string())));
     let failed = written.is_err();
     on_main(&app, move |app| {
         let Some(displays) = phase(app).end_save(session) else {
@@ -319,6 +343,8 @@ pub(crate) trait Saver: Send + Sync + 'static {
     /// The folder of the last save, from the prefs.
     fn last_dir(&self) -> Option<PathBuf>;
     fn remember_dir(&self, dir: &Path);
+    /// Keeps the region of a save that worked (already off the main thread).
+    fn remember_region(&self, region: Region);
 }
 
 // ---- OS calls only below. ----
@@ -366,6 +392,10 @@ impl<R: Runtime> Saver for OsSaver<R> {
             log::warn!("could not remember the save folder: {e}");
         }
     }
+
+    fn remember_region(&self, r: Region) {
+        region::save(&self.0, r);
+    }
 }
 
 #[cfg(test)]
@@ -406,6 +436,19 @@ mod tests {
         })
     }
 
+    /// Records the regions it is given.
+    fn remembering() -> (Remember, Arc<Mutex<Vec<Region>>>) {
+        let regions = Arc::new(Mutex::new(Vec::new()));
+        let record = Arc::clone(&regions);
+        let remember: Remember = Box::new(move |r| record.lock().unwrap().push(r));
+        (remember, regions)
+    }
+
+    /// Ignores the region.
+    fn forget() -> Remember {
+        Box::new(drop)
+    }
+
     fn copy_in<R: Runtime>(
         w: &WebviewWindow<R>,
         h: &AppHandle<R>,
@@ -415,7 +458,7 @@ mod tests {
     ) -> Result<(), CaptureError> {
         let state = h.state::<Overlay>();
         let out = plain(session, rect);
-        tauri::async_runtime::block_on(copy_with(w, &state, &out, c))
+        tauri::async_runtime::block_on(copy_with(w, &state, &out, c, forget()))
     }
 
     fn copy(h: &Handle, session: u64, rect: PixelRect, c: Clipboard) -> Result<(), CaptureError> {
@@ -431,6 +474,29 @@ mod tests {
         assert_eq!(copy(h, session, px(1, 0, 2, 2), c), Ok(()));
         assert_eq!(*images.lock().unwrap(), [expected(1, 0, 2, 2)]);
         assert!(is_idle(h));
+    }
+
+    #[test]
+    fn a_copy_remembers_its_region_only_once_on_the_clipboard() {
+        let app = app();
+        let h = app.handle();
+        let session = shown(h, &[1]);
+        let state = h.state::<Overlay>();
+        let w = window(h, 1);
+        let out = plain(session, px(1, 0, 2, 2));
+        let (c, _) = clipboard(true);
+        let (remember, regions) = remembering();
+        let failed = tauri::async_runtime::block_on(copy_with(&w, &state, &out, c, remember));
+        assert!(failed.is_err());
+        assert!(regions.lock().unwrap().is_empty(), "the copy failed");
+        let (c, _) = clipboard(false);
+        let (remember, regions) = remembering();
+        let copied = tauri::async_runtime::block_on(copy_with(&w, &state, &out, c, remember));
+        assert_eq!(copied, Ok(()));
+        let regions = regions.lock().unwrap();
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].display.id, 1);
+        assert_eq!(regions[0].rect, region::tests::rect(0.5, 0.0, 1.0, 1.0));
     }
 
     #[test]
@@ -506,6 +572,7 @@ mod tests {
         /// What `during` returned each time the dialog was "open".
         during_results: Mutex<Vec<bool>>,
         remembered: Mutex<Vec<PathBuf>>,
+        regions: Mutex<Vec<Region>>,
         /// Runs while the dialog is "open".
         during: Option<Box<dyn Fn() -> bool + Send + Sync>>,
     }
@@ -534,6 +601,10 @@ mod tests {
 
         fn remember_dir(&self, dir: &Path) {
             self.remembered.lock().unwrap().push(dir.to_owned());
+        }
+
+        fn remember_region(&self, region: Region) {
+            self.regions.lock().unwrap().push(region);
         }
     }
 
@@ -609,7 +680,7 @@ mod tests {
             marks: marks(),
             ..plain(session, px(1, 0, 2, 2))
         };
-        let copying = copy_with(&w, &state, &out, c);
+        let copying = copy_with(&w, &state, &out, c, forget());
         assert_eq!(tauri::async_runtime::block_on(copying), Ok(()));
         let copied = images.lock().unwrap()[0].clone();
         assert_eq!(copied, marked());
@@ -644,6 +715,10 @@ mod tests {
         );
         assert_clean_png(&fs::read(&path).unwrap(), &expected(1, 0, 3, 2));
         assert_eq!(*saver.remembered.lock().unwrap(), [dir.path().to_owned()]);
+        let regions = saver.regions.lock().unwrap();
+        assert_eq!(regions.len(), 1, "the region is remembered");
+        assert_eq!(regions[0].rect, region::tests::rect(0.5, 0.0, 1.5, 1.0));
+        drop(regions);
         wait_until("the overlay to close", || is_idle(h));
         assert!(!esc_held(h));
     }
@@ -727,6 +802,7 @@ mod tests {
             Ok(())
         );
         assert!(saver.remembered.lock().unwrap().is_empty());
+        assert!(saver.regions.lock().unwrap().is_empty(), "cancelled");
         assert!(is_open(h, session));
         assert!(!phase(h).saving());
         assert_eq!(
@@ -756,6 +832,7 @@ mod tests {
         assert_eq!(on_screen(h), [1], "shown again to say so");
         assert!(esc_held(h));
         assert!(saver.remembered.lock().unwrap().is_empty());
+        assert!(saver.regions.lock().unwrap().is_empty(), "not written");
     }
 
     #[test]

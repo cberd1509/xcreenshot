@@ -39,6 +39,8 @@
     logicalHeight: number
     /** Whether Rust owns Esc. If not, the page forwards its own Esc key to Rust. */
     escapeShortcut: boolean
+    /** The remembered region on this display (logical px), selected from the start. */
+    region: Rect | null
   }
   /** Sent with `overlay:escape`; answered with the same token. */
   type EscapeEvent = { session: number; token: number }
@@ -154,6 +156,8 @@
       context.putImageData(new ImageData(pixels, info.width, info.height), 0, 0)
       frame = { width: info.width, height: info.height }
       display = { width: info.logicalWidth, height: info.logicalHeight }
+      // Remember region: the same state as just after a drag. Rust clamped it to the display.
+      if (info.region) select(info.region)
       await invoke('overlay_painted', { session: info.session })
     } catch (e) {
       // Never leave the user on a dead overlay.

@@ -6,6 +6,7 @@
 //! reader and writer: the pages get no store permission; they read and change settings through
 //! `settings`. A file from before a field existed loads with that field's default.
 
+use crate::region::Region;
 use crate::shortcut;
 use chrono::NaiveDateTime;
 use serde::de::DeserializeOwned;
@@ -22,7 +23,7 @@ use tauri_plugin_store::{Store, StoreExt};
 const FILE: &str = "prefs.json";
 const KEY: &str = "prefs";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Prefs {
     /// The folder of the last screenshot saved; the Save dialog opens there.
@@ -48,6 +49,9 @@ pub struct Prefs {
     /// The user was told PrintScreen went to Snipping Tool (Windows; see `print_screen`).
     #[serde(default, deserialize_with = "lenient")]
     pub print_screen_notice_shown: bool,
+    /// The last region per display arrangement, newest first (see `region`).
+    #[serde(default, deserialize_with = "lenient")]
+    pub regions: Vec<Region>,
 }
 
 impl Default for Prefs {
@@ -61,6 +65,7 @@ impl Default for Prefs {
             check_for_updates: on(),
             login_item_added: false,
             print_screen_notice_shown: false,
+            regions: Vec::new(),
         }
     }
 }
@@ -194,6 +199,14 @@ impl Storage for Unsaved {
 /// saved, so the file is never read half-written.
 pub fn load<R: Runtime>(app: &AppHandle<R>) -> Prefs {
     let _changing = CHANGING.lock().unwrap_or_else(PoisonError::into_inner);
+    open(app)
+        .map(|store| Prefs::load(&store))
+        .unwrap_or_default()
+}
+
+/// The saved prefs without waiting for a change being saved, for the capture hotkey. The store
+/// is read from memory: a change saving meanwhile is either all there or not at all.
+pub fn peek<R: Runtime>(app: &AppHandle<R>) -> Prefs {
     open(app)
         .map(|store| Prefs::load(&store))
         .unwrap_or_default()
@@ -448,6 +461,7 @@ pub(crate) mod tests {
             check_for_updates: false,
             login_item_added: true,
             print_screen_notice_shown: true,
+            regions: Vec::new(),
         };
         prefs.save(&*s).unwrap();
         assert_eq!(Prefs::load(&*s), prefs);

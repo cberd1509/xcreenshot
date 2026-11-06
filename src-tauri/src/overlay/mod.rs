@@ -15,7 +15,8 @@ pub(crate) mod window;
 
 pub use window::{Overlay, global_escape, prewarm, start_capture};
 
-use crate::capture::{Display, DisplayFrame};
+use crate::capture::{Display, DisplayFrame, PixelRect};
+use crate::region::{self, LogicalRect, Region, Screen};
 use image::RgbaImage;
 use std::sync::Arc;
 use std::time::Instant;
@@ -83,7 +84,7 @@ pub fn display_at(displays: &[Display], x: f64, y: f64) -> Option<u32> {
 /// What the overlay window needs to draw a frame; sent with `overlay:show`. The page maps its
 /// logical (CSS) px to the frame's pixels with `width / logical_width`, the same scale Rust
 /// uses, and sends the crop as a pixel rect.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FrameInfo {
     pub session: u64,
@@ -94,6 +95,8 @@ pub struct FrameInfo {
     /// Whether Rust owns Esc (the global shortcut registered). If not, the page forwards its
     /// own Esc key to Rust instead.
     pub escape_shortcut: bool,
+    /// The remembered region on this display, in logical px: the page starts with it selected.
+    pub region: Option<LogicalRect>,
 }
 
 /// The overlay's whole state. One capture at a time: the hotkey is ignored unless `Idle`.
@@ -125,6 +128,8 @@ pub struct Session {
     saves: u32,
     /// Whether Rust held Esc when the session opened (see [`Phase::wants_escape`]).
     escape_shortcut: bool,
+    /// The displays' [`region::arrangement`], to remember the region under.
+    arrangement: String,
 }
 
 /// One Esc press, until a page handles it or every shown page says it had nothing to undo.
@@ -139,6 +144,7 @@ struct EscapeWait {
 #[derive(Debug)]
 struct Slot {
     display: u32,
+    screen: Screen,
     info: FrameInfo,
     image: Arc<RgbaImage>,
     sent: bool,
@@ -171,7 +177,8 @@ impl Phase {
 
     /// The capture finished. Opens the session if this capture is still current (Esc may have
     /// closed it) and returns each display's frame info to send. `focus` is the display under
-    /// the cursor; it gets keyboard focus if it was captured. `escape_shortcut` tells the pages
+    /// the cursor; it gets keyboard focus if it was captured, unless a display starts with a
+    /// remembered region from `regions`, which then does. `escape_shortcut` tells the pages
     /// whether Rust owns Esc.
     pub fn open(
         &mut self,
@@ -179,6 +186,7 @@ impl Phase {
         frames: Vec<DisplayFrame>,
         focus: Option<u32>,
         escape_shortcut: bool,
+        regions: &[Region],
     ) -> Option<Vec<(u32, FrameInfo)>> {
         let Phase::Capturing {
             session: id,
@@ -190,10 +198,12 @@ impl Phase {
         if id != session {
             return None;
         }
-        let focus = focus.filter(|&d| frames.iter().any(|f| f.id == d));
+        let screens: Vec<Screen> = frames.iter().map(Screen::of).collect();
+        let arrangement = region::arrangement(&screens);
         let slots: Vec<Slot> = frames
             .into_iter()
-            .map(|f| {
+            .zip(screens)
+            .map(|(f, screen)| {
                 let (width, height) = f.image.dimensions();
                 let info = FrameInfo {
                     session,
@@ -202,15 +212,21 @@ impl Phase {
                     logical_width: f.logical.width,
                     logical_height: f.logical.height,
                     escape_shortcut,
+                    region: region::find(regions, &arrangement, &screen),
                 };
                 Slot {
                     display: f.id,
+                    screen,
                     info,
                     image: Arc::new(f.image),
                     sent: false,
                 }
             })
             .collect();
+        let restored = slots.iter().find(|s| s.info.region.is_some());
+        let focus = restored
+            .map(|s| s.display)
+            .or_else(|| focus.filter(|&d| slots.iter().any(|s| s.display == d)));
         let shows = slots.iter().map(|s| (s.display, s.info)).collect();
         *self = Phase::Open(Session {
             id: session,
@@ -223,6 +239,7 @@ impl Phase {
             saving: false,
             saves: 0,
             escape_shortcut,
+            arrangement,
         });
         Some(shows)
     }
@@ -268,6 +285,17 @@ impl Phase {
         }
         slot.sent = true;
         Some(Arc::clone(&slot.image))
+    }
+
+    /// The region to remember for a selection of `rect` (frame px) on `display`.
+    pub fn region(&mut self, session: u64, display: u32, rect: PixelRect) -> Option<Region> {
+        let s = self.current(session)?;
+        let slot = s.slots.iter().find(|slot| slot.display == display)?;
+        Some(Region {
+            arrangement: s.arrangement.clone(),
+            display: slot.screen,
+            rect: slot.screen.to_logical(rect),
+        })
     }
 
     /// A display's original frame, to crop outside the lock.
@@ -454,7 +482,7 @@ pub(crate) mod tests {
     fn open(focus: Option<u32>) -> Phase {
         let mut p = Phase::default();
         assert!(p.begin(7, Instant::now()));
-        p.open(7, vec![frame(1, 4, 2), frame(2, 4, 2)], focus, true)
+        p.open(7, vec![frame(1, 4, 2), frame(2, 4, 2)], focus, true, &[])
             .unwrap();
         p
     }
@@ -501,7 +529,7 @@ pub(crate) mod tests {
         assert!(p.begin(1, Instant::now()));
         assert!(!p.begin(2, Instant::now()), "pressed while capturing");
         assert_eq!(p.session(), Some(1));
-        p.open(1, vec![frame(1, 4, 2)], None, true).unwrap();
+        p.open(1, vec![frame(1, 4, 2)], None, true, &[]).unwrap();
         assert!(!p.begin(3, Instant::now()), "pressed while open");
         assert_eq!(p.session(), Some(1));
     }
@@ -511,10 +539,10 @@ pub(crate) mod tests {
         let mut p = Phase::default();
         assert!(p.begin(1, Instant::now()));
         p = Phase::Idle; // Esc during the capture
-        assert_eq!(p.open(1, vec![frame(1, 4, 2)], None, true), None);
+        assert_eq!(p.open(1, vec![frame(1, 4, 2)], None, true, &[]), None);
         assert!(p.begin(2, Instant::now()));
         assert_eq!(
-            p.open(1, vec![frame(1, 4, 2)], None, true),
+            p.open(1, vec![frame(1, 4, 2)], None, true, &[]),
             None,
             "older capture"
         );
@@ -526,7 +554,7 @@ pub(crate) mod tests {
         let mut p = Phase::default();
         p.begin(4, Instant::now());
         let shows = p
-            .open(4, vec![frame(1, 4, 2), frame(2, 6, 8)], None, true)
+            .open(4, vec![frame(1, 4, 2), frame(2, 6, 8)], None, true, &[])
             .unwrap();
         let info = |width, height| FrameInfo {
             session: 4,
@@ -535,6 +563,7 @@ pub(crate) mod tests {
             logical_width: width / 2,
             logical_height: height / 2,
             escape_shortcut: true,
+            region: None,
         };
         assert_eq!(shows, [(1, info(4, 2)), (2, info(6, 8))]);
         assert_eq!(p.pending_frame(2), Some(info(6, 8)));
@@ -544,9 +573,58 @@ pub(crate) mod tests {
             json,
             serde_json::json!({
                 "session": 4, "width": 4, "height": 2, "logicalWidth": 2, "logicalHeight": 1,
-                "escapeShortcut": true
+                "escapeShortcut": true, "region": null
             })
         );
+    }
+
+    #[test]
+    fn a_remembered_region_is_sent_to_its_display_which_gets_focus() {
+        use crate::region::{arrangement, tests::rect};
+        let frames = || vec![frame(1, 4, 2), frame(2, 4, 2)];
+        let screens: Vec<Screen> = frames().iter().map(Screen::of).collect();
+        let key = arrangement(&screens);
+        let on_two = Region {
+            arrangement: key.clone(),
+            display: screens[1],
+            rect: rect(1.0, 0.0, 5.0, 1.0),
+        };
+        let mut p = Phase::default();
+        p.begin(1, Instant::now());
+        let shows = p
+            .open(1, frames(), Some(1), true, std::slice::from_ref(&on_two))
+            .unwrap();
+        assert_eq!(shows[0].1.region, None, "other displays start empty");
+        // Clamped to the display (2 logical px wide).
+        assert_eq!(shows[1].1.region, Some(rect(1.0, 0.0, 1.0, 1.0)));
+        assert_eq!(p.painted(1, 1).unwrap().focus, None, "waits for display 2");
+        assert_eq!(p.painted(1, 2).unwrap().focus, Some(2));
+
+        // Another arrangement: nothing restored, the cursor's display has focus.
+        let other = Region {
+            arrangement: "elsewhere".into(),
+            ..on_two
+        };
+        let mut p = Phase::default();
+        p.begin(2, Instant::now());
+        let shows = p.open(2, frames(), Some(1), true, &[other]).unwrap();
+        assert!(shows.iter().all(|(_, info)| info.region.is_none()));
+        assert_eq!(p.painted(2, 1).unwrap().focus, Some(1));
+    }
+
+    #[test]
+    fn the_region_to_remember_is_the_selection_in_logical_px() {
+        let mut p = open(None);
+        let region = p.region(7, 2, px(1, 0, 2, 2)).unwrap();
+        let screens: Vec<Screen> = [frame(1, 4, 2), frame(2, 4, 2)]
+            .iter()
+            .map(Screen::of)
+            .collect();
+        assert_eq!(region.arrangement, region::arrangement(&screens));
+        assert_eq!(region.display, screens[1]);
+        assert_eq!(region.rect, region::tests::rect(0.5, 0.0, 1.0, 1.0));
+        assert_eq!(p.region(6, 2, px(0, 0, 1, 1)), None, "other session");
+        assert_eq!(p.region(7, 9, px(0, 0, 1, 1)), None, "unknown display");
     }
 
     #[test]
@@ -706,7 +784,7 @@ pub(crate) mod tests {
         assert!(!p.wants_escape());
         p.begin(1, Instant::now());
         assert!(p.wants_escape());
-        p.open(1, vec![frame(1, 4, 2)], None, false).unwrap();
+        p.open(1, vec![frame(1, 4, 2)], None, false, &[]).unwrap();
         assert!(!p.wants_escape(), "the pages forward Esc");
         assert!(open(None).wants_escape());
     }

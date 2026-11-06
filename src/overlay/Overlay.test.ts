@@ -31,6 +31,7 @@ type Info = {
   logicalWidth: number
   logicalHeight: number
   escapeShortcut: boolean
+  region?: { x: number; y: number; width: number; height: number } | null
 }
 type At = { x: number; y: number }
 
@@ -501,6 +502,48 @@ describe('Overlay', () => {
       await other(true, { stamp: mine + 2 })
       await tick()
       expect(selection()).not.toBeNull()
+    })
+
+    describe('remembered region', () => {
+      const region = { x: 10, y: 10, width: 100, height: 50 }
+
+      async function restored() {
+        frame = () => rgba(info.width, info.height)
+        await mount()
+        await emit('overlay:show', { ...info, region })
+        await waitFor(() => expect(called('overlay_painted')).toHaveLength(1))
+      }
+
+      it('opens with the region selected, as after a drag', async () => {
+        await restored()
+        expect(rect()).toEqual([10, 10, 100, 50])
+        expect(screen.getByTestId('size-badge')).toHaveTextContent('200 × 100')
+        expect(selected).toEqual([
+          { label: 'overlay-1', active: true, session: 9, stamp: expect.any(Number) },
+        ])
+      })
+
+      it('copies it right away on Enter', async () => {
+        await restored()
+        await userEvent.keyboard('{Enter}')
+        await waitFor(() =>
+          expect(output('overlay_copy', 0)).toEqual({ session: 9, rect: rect200, blurs: [] }),
+        )
+      })
+
+      it('is replaced by a new drag', async () => {
+        await restored()
+        drag({ x: 500, y: 500 }, { x: 520, y: 530 })
+        expect(rect()).toEqual([500, 500, 20, 30])
+      })
+
+      it('starts empty without one', async () => {
+        frame = () => rgba(info.width, info.height)
+        await mount()
+        await emit('overlay:show', { ...info, region: null })
+        await waitFor(() => expect(called('overlay_painted')).toHaveLength(1))
+        expect(selection()).toBeNull()
+      })
     })
 
     it('copies the pixel rect on Enter and Ctrl+C', async () => {
