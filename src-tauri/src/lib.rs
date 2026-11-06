@@ -5,6 +5,8 @@ mod actions;
 pub mod capture;
 mod overlay;
 mod shortcut;
+#[cfg(test)]
+mod test_log;
 
 use actions::Action;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -127,7 +129,9 @@ fn tray_icon() -> tauri::image::Image<'static> {
 
 fn handle(app: &AppHandle, action: Action) {
     match action {
-        Action::Capture => start_capture(app),
+        // Ignored while the overlay is open: the menu item shows the same accelerator as the
+        // global shortcut, so both can fire at once.
+        Action::Capture => overlay::start_capture(app),
         Action::OpenSettings => {
             if let Err(e) = open_settings(app) {
                 log::error!("could not open settings: {e}");
@@ -135,12 +139,6 @@ fn handle(app: &AppHandle, action: Action) {
         }
         Action::Quit => app.exit(0),
     }
-}
-
-/// Shows the overlay. Ignored while one is open: the menu item shows the same accelerator as
-/// the global shortcut, so both can fire at once.
-fn start_capture(app: &AppHandle) {
-    overlay::start_capture(app);
 }
 
 /// Dev builds only: `XCREENSHOT_DEBUG_CAPTURE=<n>` captures n times after startup (each one
@@ -159,7 +157,7 @@ fn debug_capture(app: &AppHandle) {
         for _ in 0..n {
             std::thread::sleep(pause);
             let a = app.clone();
-            let _ = app.run_on_main_thread(move || start_capture(&a));
+            let _ = app.run_on_main_thread(move || overlay::start_capture(&a));
             std::thread::sleep(pause);
             let a = app.clone();
             let _ = app.run_on_main_thread(move || overlay::close(&a));

@@ -179,7 +179,12 @@ pub fn encode_png(image: &RgbaImage) -> Result<Vec<u8>, CaptureError> {
 /// macOS call [`has_permission`] first, since without it the OS may return wallpaper-only
 /// frames that look valid.
 pub fn capture_all() -> Result<Vec<DisplayFrame>, CaptureError> {
-    keep_captured(capture_each(&display_ids()?, capture_display))
+    capture_displays(&display_ids()?)
+}
+
+/// Like [`capture_all`], for displays already listed with [`display_ids`].
+pub fn capture_displays(ids: &[u32]) -> Result<Vec<DisplayFrame>, CaptureError> {
+    keep_captured(capture_each(ids, capture_display))
 }
 
 /// Ids of the displays [`capture_all`] captures (mirrors excluded). Lists displays only, no
@@ -267,6 +272,7 @@ mod tests {
     }
 
     fn ok_frame(id: u32, x: i32) -> Result<DisplayFrame, CaptureError> {
+        crate::test_log::init();
         let b = Bounds { x, ..bounds(2, 2) };
         to_frame(id, b, 1.0, RgbaImage::new(2, 2))
     }
@@ -323,6 +329,7 @@ mod tests {
 
     #[test]
     fn fails_only_when_nothing_was_captured() {
+        crate::test_log::init();
         assert_eq!(keep_captured(vec![]), Err(CaptureError::NoDisplays));
         let results = vec![
             Err(CaptureError::EmptyImage),

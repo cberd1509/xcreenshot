@@ -82,6 +82,20 @@ describe('Overlay', () => {
     expect(container.querySelector('canvas')!.width).toBe(0)
   })
 
+  it('does not draw a frame that arrives after hide', async () => {
+    render(Overlay)
+    await waitFor(() => expect(commands('overlay_frame')).toHaveLength(1))
+    let respond!: (frame: ArrayBuffer) => void
+    vi.mocked(invoke).mockImplementationOnce(() => new Promise((r) => (respond = r)))
+    handlers.get('overlay:show')!()
+    handlers.get('overlay:hide')!()
+    respond(packFrame(2, 2))
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(putImageData).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('dim')).not.toBeInTheDocument()
+  })
+
   it('closes on Esc only', async () => {
     render(Overlay)
     await userEvent.keyboard('a')

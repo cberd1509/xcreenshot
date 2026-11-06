@@ -6,16 +6,20 @@
 
   let canvas: HTMLCanvasElement
   let painted = $state(false)
+  // Bumped on hide, so a fetch that finishes after Esc does not draw the old frame.
+  let generation = 0
 
   // Fetches this display's frozen frame as raw RGBA and draws it at native resolution.
   async function draw() {
     const start = performance.now()
+    const drawing = generation
     const frame = readFrame(await invoke<ArrayBuffer>('overlay_frame'))
     const fetched = performance.now()
-    if (!frame) return
+    if (!frame || drawing !== generation) return
     canvas.width = frame.width
     canvas.height = frame.height
-    canvas.getContext('2d')?.putImageData(frame, 0, 0)
+    // Opaque: the frame covers the canvas, so skip alpha blending.
+    canvas.getContext('2d', { alpha: false })?.putImageData(frame, 0, 0)
     painted = true
     requestAnimationFrame(() => {
       void invoke('overlay_painted', {
@@ -27,6 +31,7 @@
 
   // Frees the frame, so the next show starts transparent instead of flashing the old one.
   function clear() {
+    generation++
     painted = false
     canvas.width = 0
     canvas.height = 0
@@ -47,7 +52,8 @@
 
 <svelte:window {onkeydown} />
 
-<canvas bind:this={canvas}></canvas>
+<!-- Empty until the first frame: an opaque canvas would show black. -->
+<canvas bind:this={canvas} width="0" height="0"></canvas>
 {#if painted}<div class="dim" data-testid="dim"></div>{/if}
 
 <style>

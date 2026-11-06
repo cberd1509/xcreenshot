@@ -1,14 +1,14 @@
 //! The frozen-frame overlay: one prewarmed window per display, shown on the capture hotkey.
 //!
-//! This file is pure logic (labels, window diffing, the re-entry guard, frame packing,
-//! placement). The Tauri calls live in `window.rs`.
+//! This file is pure logic (labels, window diffing, the re-entry guard, frame packing).
+//! The Tauri calls live in `window.rs`.
 
 /// Public to the crate so `generate_handler!` can reach the commands.
 pub(crate) mod window;
 
 pub use window::{Overlay, close, close_requested, prewarm, start_capture};
 
-use crate::capture::{Bounds, DisplayFrame};
+use crate::capture::DisplayFrame;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const LABEL_PREFIX: &str = "overlay-";
@@ -20,12 +20,9 @@ pub fn label(display: u32) -> String {
 
 /// The display id in an overlay window label, or `None` for any other window.
 pub fn display_id(label: &str) -> Option<u32> {
-    let id = label.strip_prefix(LABEL_PREFIX)?;
-    // `u32::from_str` accepts a leading `+`, which `label` never writes.
-    if id.starts_with('+') {
-        return None;
-    }
-    id.parse().ok()
+    // Only labels that `label` writes: `u32::from_str` also takes "+1" and "01".
+    let id = label.strip_prefix(LABEL_PREFIX)?.parse().ok()?;
+    (self::label(id) == label).then_some(id)
 }
 
 /// Overlay windows to create and destroy so there is exactly one per display.
@@ -47,12 +44,12 @@ pub fn diff<'a>(labels: impl IntoIterator<Item = &'a str>, displays: &[u32]) -> 
             None => {}
         }
     }
-    let mut create: Vec<u32> = displays
-        .iter()
-        .copied()
-        .filter(|id| !existing.contains(id))
-        .collect();
-    create.dedup();
+    let mut create: Vec<u32> = Vec::new();
+    for &id in displays {
+        if !existing.contains(&id) && !create.contains(&id) {
+            create.push(id);
+        }
+    }
     destroy.sort();
     WindowDiff { create, destroy }
 }
@@ -94,29 +91,10 @@ pub fn pack_frame(frame: &DisplayFrame) -> Vec<u8> {
     out
 }
 
-/// Where to put a display's overlay window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Placement {
-    /// Points. macOS: logical bounds are authoritative there, and Tauri would convert physical
-    /// bounds with the window's current scale, which is wrong when it moves to a display with
-    /// a different scale.
-    Logical(Bounds),
-    /// Pixels. Windows: logical origins of mixed-DPI monitors are only approximate.
-    Physical(Bounds),
-}
-
-/// Uses the bounds that `capture` documents as authoritative on this platform.
-pub fn placement(frame: &DisplayFrame) -> Placement {
-    if cfg!(target_os = "windows") {
-        Placement::Physical(frame.physical)
-    } else {
-        Placement::Logical(frame.logical)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::Bounds;
     use image::RgbaImage;
 
     pub(super) fn frame(id: u32, width: u32, height: u32) -> DisplayFrame {
@@ -158,6 +136,7 @@ mod tests {
             "overlay-x",
             "overlay--1",
             "overlay-+1",
+            "overlay-01",
             "overlay-4294967296",
             "xoverlay-1",
             "overlay-1 ",
@@ -189,6 +168,8 @@ mod tests {
 
     #[test]
     fn diff_from_nothing_creates_every_display() {
+        // A display listed twice (hot-plug) still gets one window.
+        assert_eq!(diff([], &[1, 2, 1]).create, [1, 2]);
         let d = diff(["settings"], &[5, 7]);
         assert_eq!(d.create, [5, 7]);
         assert!(d.destroy.is_empty());
@@ -232,16 +213,5 @@ mod tests {
         assert_eq!(&bytes[HEADER_LEN..], f.image.as_raw().as_slice());
         // Pixel (2, 1) is the last one: x=2, y=1, 9, 255.
         assert_eq!(&bytes[bytes.len() - 4..], &[2, 1, 9, 255]);
-    }
-
-    #[test]
-    fn placement_uses_the_authoritative_bounds() {
-        let f = frame(2, 40, 20);
-        let expected = if cfg!(target_os = "windows") {
-            Placement::Physical(f.physical)
-        } else {
-            Placement::Logical(f.logical)
-        };
-        assert_eq!(placement(&f), expected);
     }
 }
