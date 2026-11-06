@@ -148,3 +148,134 @@ describe('Settings window', () => {
     expect(screen.queryByText(/^Version/)).not.toBeInTheDocument()
   })
 })
+
+const line = () => screen.queryByText('Allow xcreenshot in System Settings › Login Items.')
+
+describe('Login item approval', () => {
+  let needs: boolean | Error
+  let opened: number
+  /** Calls to login_item_needs_approval. */
+  let checks: number
+
+  beforeEach(() => {
+    needs = true
+    opened = 0
+    checks = 0
+    resetSettings()
+    Object.assign(settings, { ...fallbackSettings(), shortcut: SHORTCUT })
+    mockIPC((cmd, args) => {
+      if (cmd === 'login_item_needs_approval') {
+        checks++
+        if (needs instanceof Error) throw needs
+        return needs
+      }
+      if (cmd === 'open_login_items') opened++
+      if (cmd === 'set_pref') {
+        const { value } = args as { value: boolean }
+        return { ...settings, openAtLogin: value, version: 1 }
+      }
+    })
+  })
+
+  afterEach(() => {
+    clearMocks()
+    vi.restoreAllMocks()
+  })
+
+  it('asks to allow the login item and opens Login Items', async () => {
+    render(App)
+    await tick()
+    expect(line()).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Open System Settings' }))
+    expect(opened).toBe(1)
+  })
+
+  it('checks again on focus and after the switch changes', async () => {
+    render(App)
+    await tick()
+    expect(line()).toBeInTheDocument()
+    needs = false
+    await fireEvent.focus(window)
+    await tick()
+    expect(line()).toBeNull()
+    needs = true
+    await userEvent.click(screen.getByRole('switch', { name: 'Open at login' }))
+    await tick()
+    expect(settings.openAtLogin).toBe(false)
+    expect(line()).toBeNull()
+    const before = checks
+    await fireEvent.focus(window)
+    expect(checks).toBe(before)
+    await userEvent.click(screen.getByRole('switch', { name: 'Open at login' }))
+    await tick()
+    expect(line()).toBeInTheDocument()
+  })
+
+  it('shows nothing when the check fails', async () => {
+    needs = new Error('no runtime')
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    render(App)
+    await tick()
+    expect(line()).toBeNull()
+    expect(error).toHaveBeenCalledWith('login_item_needs_approval failed', needs)
+  })
+
+  it('logs a failure to open Login Items', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    render(App)
+    await tick()
+    mockIPC((cmd) => {
+      if (cmd === 'open_login_items') throw new Error('nope')
+      return true
+    })
+    await userEvent.click(screen.getByRole('button', { name: 'Open System Settings' }))
+    await tick()
+    expect(error).toHaveBeenCalledWith('open_login_items failed', expect.any(Error))
+  })
+
+  it('ignores an older check that answers last', async () => {
+    const answers: ((needs: boolean) => void)[] = []
+    mockIPC((cmd) => {
+      if (cmd === 'login_item_needs_approval')
+        return new Promise<boolean>((resolve) => answers.push(resolve))
+    })
+    render(App)
+    await tick()
+    await fireEvent.focus(window)
+    expect(answers).toHaveLength(2)
+    answers[1](false)
+    await tick()
+    answers[0](true)
+    await tick()
+    expect(line()).toBeNull()
+  })
+
+  it('drops a check that answers after Open at login was turned off', async () => {
+    const answers: ((needs: boolean) => void)[] = []
+    mockIPC((cmd, args) => {
+      if (cmd === 'login_item_needs_approval')
+        return new Promise<boolean>((resolve) => answers.push(resolve))
+      if (cmd === 'set_pref') {
+        const { value } = args as { value: boolean }
+        return { ...settings, openAtLogin: value, version: 1 }
+      }
+    })
+    render(App)
+    await tick()
+    expect(answers).toHaveLength(1)
+    const login = screen.getByRole('switch', { name: 'Open at login' })
+    await userEvent.click(login)
+    await tick()
+    expect(settings.openAtLogin).toBe(false)
+    answers[0](true)
+    await tick()
+    await userEvent.click(login)
+    await tick()
+    expect(settings.openAtLogin).toBe(true)
+    expect(answers).toHaveLength(2)
+    expect(line()).toBeNull()
+    answers[1](true)
+    await tick()
+    expect(line()).toBeInTheDocument()
+  })
+})

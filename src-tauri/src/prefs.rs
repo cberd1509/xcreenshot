@@ -46,6 +46,9 @@ pub struct Prefs {
     /// in the system settings (see `login`).
     #[serde(default, deserialize_with = "lenient")]
     pub login_item_added: bool,
+    /// The LaunchAgent older versions used as the login item is gone (macOS; see `login`).
+    #[serde(default, deserialize_with = "lenient")]
+    pub launch_agent_removed: bool,
     /// The user was told PrintScreen went to Snipping Tool (Windows; see `print_screen`).
     #[serde(default, deserialize_with = "lenient")]
     pub print_screen_notice_shown: bool,
@@ -64,6 +67,7 @@ impl Default for Prefs {
             open_at_login: on(),
             check_for_updates: on(),
             login_item_added: false,
+            launch_agent_removed: false,
             print_screen_notice_shown: false,
             regions: Vec::new(),
         }
@@ -432,7 +436,7 @@ pub(crate) mod tests {
         let p = Prefs::default();
         assert_eq!(p.shortcut, shortcut::DEFAULT);
         assert!(p.remember_region && !p.magnifier && p.open_at_login && p.check_for_updates);
-        assert!(!p.login_item_added && !p.print_screen_notice_shown);
+        assert!(!p.login_item_added && !p.launch_agent_removed && !p.print_screen_notice_shown);
     }
 
     #[test]
@@ -465,6 +469,7 @@ pub(crate) mod tests {
             open_at_login: false,
             check_for_updates: false,
             login_item_added: true,
+            launch_agent_removed: true,
             print_screen_notice_shown: true,
             regions: Vec::new(),
         };

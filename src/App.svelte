@@ -1,5 +1,7 @@
 <script lang="ts">
   import { getVersion } from '@tauri-apps/api/app'
+  import { invoke } from '@tauri-apps/api/core'
+  import { Button } from '$lib/components/ui/button'
   import { Separator } from '$lib/components/ui/separator'
   import { Switch } from '$lib/components/ui/switch'
   import SettingRow from '$lib/components/SettingRow.svelte'
@@ -62,9 +64,39 @@
       .finally(() => (saving[key] = false))
   }
 
+  /** The login item waits for the user to allow it in System Settings (macOS). */
+  let needsApproval = $state(false)
+
+  /** Checks started; only the latest one's answer counts. */
+  let checks = 0
+
+  /** Checks while Open at login is on: when it turns on and when the window gets focus. */
+  function checkLoginItem() {
+    // A focus check can overlap the effect's; only the latest one counts. Turning Open at
+    // login off drops any check still running.
+    const check = ++checks
+    if (!settings.openAtLogin) {
+      needsApproval = false
+      return
+    }
+    invoke<boolean>('login_item_needs_approval')
+      .then((needs) => {
+        if (check === checks) needsApproval = needs
+      })
+      .catch((e: unknown) => console.error('login_item_needs_approval failed', e))
+  }
+
+  function openLoginItems() {
+    invoke('open_login_items').catch((e: unknown) => console.error('open_login_items failed', e))
+  }
+
+  $effect(checkLoginItem)
+
   let active = $state('shortcuts')
   const version = getVersion().catch(() => '')
 </script>
+
+<svelte:window onfocus={checkLoginItem} />
 
 <div class="flex h-screen bg-background text-foreground select-none">
   <nav
@@ -111,6 +143,14 @@
           </SettingRow>
           {#if failed?.key === t.key}
             <p role="alert" class="text-[13px] text-destructive">{failed.message}</p>
+          {/if}
+          {#if t.key === 'openAtLogin' && settings.openAtLogin && needsApproval}
+            <div class="flex items-center gap-3 text-[13px] text-muted-foreground">
+              <span class="grow">Allow xcreenshot in System Settings › Login Items.</span>
+              <Button size="sm" variant="outline" onclick={openLoginItems}>
+                Open System Settings
+              </Button>
+            </div>
           {/if}
         {/each}
       </section>

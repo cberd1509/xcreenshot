@@ -57,11 +57,15 @@ pub fn run() {
         // Used from Rust only: the pages get no updater, dialog, store or autostart permissions.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_store::Builder::new().build())
-        .plugin(tauri_plugin_autostart::Builder::new().build());
-    // macOS writes the clipboard itself (`output::write_png`).
+        .plugin(tauri_plugin_store::Builder::new().build());
+    // macOS writes the clipboard itself (`output::write_png`) and uses SMAppService for the
+    // login item (`login`).
     #[cfg(not(target_os = "macos"))]
-    let builder = builder.plugin(tauri_plugin_clipboard_manager::init());
+    let builder = builder
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_autostart::Builder::new().build());
+    #[cfg(target_os = "macos")]
+    let builder = builder.manage(login::System::default());
     builder
         .manage(overlay::Overlay::default())
         .manage(shortcut::Registered::default())
@@ -86,6 +90,9 @@ pub fn run() {
             settings::get_prefs,
             settings::set_pref,
             settings::set_capture_option,
+            login::login_item_needs_approval,
+            #[cfg(target_os = "macos")]
+            login::open_login_items,
         ])
         // The capture shortcut is paused while Settings records a new one: take it back if
         // that page reloads or its window closes mid-recording.

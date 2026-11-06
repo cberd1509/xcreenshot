@@ -175,7 +175,10 @@ fn start(
         && let Err(e) = storage.save(&prefs)
     {
         log::error!("could not save prefs: {e}");
-        if let (Some(item), Some(on)) = (login, turned) {
+        // A login item that replaced the old LaunchAgent stays: that one is gone already, and
+        // without either the next launch would take it for the user turning it off.
+        let replaced = loaded.login_item_added && !loaded.launch_agent_removed;
+        if let (Some(item), Some(on), false) = (login, turned, replaced) {
             // `set` logs a failure; there is nothing more to do then.
             let _ = login::set(Some(item), &mut prefs.clone(), !on);
         }
@@ -667,6 +670,40 @@ mod tests {
             OFF,
         );
         assert!(!fakes.login.on.get());
+    }
+
+    #[test]
+    fn startup_keeps_a_login_item_that_replaced_the_old_launch_agent() {
+        let (fakes, storage) = (Fakes::new(), FakeStorage::failing());
+        fakes.login.launch_agent.set(Ok(true));
+        *storage.prefs.borrow_mut() = Prefs {
+            login_item_added: true,
+            ..Prefs::default()
+        };
+        start(
+            &storage,
+            &FakeRegistrar::default(),
+            &fakes.registered,
+            Some(&fakes.login),
+            OFF,
+        );
+        assert_eq!(fakes.login.launch_agent.get(), Ok(false), "removed");
+        assert!(fakes.login.on.get(), "kept, so a login item is still there");
+        // The next launch, from the same unsaved prefs, keeps the pref on.
+        let relaunch = self::storage(false);
+        *relaunch.prefs.borrow_mut() = Prefs {
+            login_item_added: true,
+            ..Prefs::default()
+        };
+        let (p, _) = start(
+            &relaunch,
+            &FakeRegistrar::default(),
+            &fakes.registered,
+            Some(&fakes.login),
+            OFF,
+        );
+        assert!(p.open_at_login && p.login_item_added && p.launch_agent_removed);
+        assert!(fakes.login.on.get());
     }
 
     #[test]
