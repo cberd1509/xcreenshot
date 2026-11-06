@@ -18,7 +18,7 @@ pnpm tauri dev
 ```sh
 pnpm lint && pnpm check && pnpm coverage
 cd src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings
-cargo llvm-cov --ignore-filename-regex '(^|/)(main|lib)\.rs$' --fail-under-lines 90
+cd .. && ./scripts/rust-coverage.sh
 ```
 
 CI runs the same checks on macOS and Windows.
