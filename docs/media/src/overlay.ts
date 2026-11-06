@@ -3,23 +3,28 @@
 // browser draws no pointer and shows no keys, so this page draws both.
 import { emit } from '@tauri-apps/api/event'
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks'
+import { shortcutKeys } from '$lib/keys'
 
 const FRAME = '/frame.png'
+// One display, the size of the page, at its scale.
 const info = {
   session: 1,
-  width: 2880,
-  height: 1800,
-  logicalWidth: 1440,
-  logicalHeight: 900,
+  width: innerWidth * devicePixelRatio,
+  height: innerHeight * devicePixelRatio,
+  logicalWidth: innerWidth,
+  logicalHeight: innerHeight,
   escapeShortcut: true,
   region: null,
 }
 
+// Decoded once: shown behind the overlay, and sent as its frame.
+const image = new Image()
+image.src = FRAME
+const decoded = image.decode()
+
 /** The frame as raw RGBA, as Rust sends it. */
 async function pixels(): Promise<ArrayBuffer> {
-  const image = new Image()
-  image.src = FRAME
-  await image.decode()
+  await decoded
   const canvas = new OffscreenCanvas(info.width, info.height)
   const context = canvas.getContext('2d')!
   context.drawImage(image, 0, 0, info.width, info.height)
@@ -28,7 +33,8 @@ async function pixels(): Promise<ArrayBuffer> {
 
 let open: (value: typeof info) => void
 const opened = new Promise<typeof info>((resolve) => (open = resolve))
-let copies = 0
+let copy: () => void
+const copied = new Promise<void>((resolve) => (copy = resolve))
 
 mockWindows('overlay')
 mockIPC(
@@ -36,7 +42,7 @@ mockIPC(
     if (cmd === 'overlay_ready') return opened
     if (cmd === 'overlay_frame') return pixels()
     if (cmd === 'overlay_copy') {
-      copies++
+      copy()
       // Rust closes the overlay once the image is on the clipboard.
       setTimeout(() => void emit('overlay:closed'), 150)
     }
@@ -89,7 +95,7 @@ function pointAt(x: number, y: number) {
   cursor.style.transform = `translate(${x - next.x}px, ${y - next.y}px)`
 }
 window.addEventListener('pointermove', (e) => pointAt(e.clientX, e.clientY), true)
-pointAt(720, 450)
+pointAt(innerWidth / 2, innerHeight / 2)
 
 const keys = document.createElement('div')
 keys.id = 'demo-keys'
@@ -100,16 +106,18 @@ Object.assign(window, {
   demo: {
     /** Opens the overlay, as the shortcut would. */
     open: () => open(info),
-    /** How many copies were asked for. */
-    copies: () => copies,
+    /** Resolves once a copy is asked for. */
+    copied: () => copied,
     /** Shows the pointer or hides it. */
     cursor: (shown: boolean) => (cursor.style.display = shown ? '' : 'none'),
-    /** Shows keys being pressed (none: hides them). */
-    keys: (...labels: string[]) => {
+    /** Shows an accelerator being pressed, e.g. "Super+C" (none: hides it). */
+    keys: (accelerator = '') => {
+      const labels = shortcutKeys(accelerator, true)
       if (labels.length) keys.innerHTML = labels.map((k) => `<kbd>${k}</kbd>`).join('')
       keys.style.opacity = labels.length ? '1' : '0'
     },
   },
 })
 
+await decoded
 await import('../../../src/overlay/main')

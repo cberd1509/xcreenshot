@@ -11,25 +11,30 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium, type Browser, type BrowserContextOptions, type Page } from 'playwright'
 import { createServer } from 'vite'
-import { gifArgs, path, size, steps, type Point } from './media.ts'
+import type { Point, Rect } from '../src/overlay/geometry.ts'
+import { gifArgs, path, size, steps } from './media.ts'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const out = join(root, 'docs/media')
 const viewport = { width: 1440, height: 900 }
+/** A Retina Mac: the app shows Mac keys, and ⌘C copies. */
+const mac: BrowserContextOptions = {
+  deviceScaleFactor: 2,
+  userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/158',
+}
 const GIF = { width: 1280, fps: 15 }
 /** Pointer moves per second while recording. */
 const FPS = 20
 
-type Box = { x: number; y: number; width: number; height: number }
-/** Where things are on the demo desktop, in logical px. */
-type Spots = { email: Box; save: Box; general: Box; notifications: Box }
+/** Where things are on the demo desktop (its `data-spot`s), in logical px. */
+type Spots = Record<'email' | 'save' | 'general' | 'notifications', Rect>
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, Math.max(0, ms)))
-const center = (b: Box): Point => ({ x: b.x + b.width / 2, y: b.y + b.height / 2 })
+const center = (b: Rect): Point => ({ x: b.x + b.width / 2, y: b.y + b.height / 2 })
 
 /** The pointer, moved like a hand moves it. */
 class Hand {
-  at: Point = { x: 720, y: 450 }
+  at: Point = { x: viewport.width / 2, y: viewport.height / 2 }
   readonly page: Page
   /** Slower for the recording, instant for stills. */
   readonly paced: boolean
@@ -43,21 +48,26 @@ class Hand {
     const n = this.paced ? Math.round(steps(this.at, to, FPS) * slow) : 1
     const start = Date.now()
     // One move after another, on the clock however long each takes.
-    for (const [i, p] of path(this.at, to, n, this.paced ? 0.08 : 0).entries()) {
+    for (const [i, p] of path(this.at, to, n).entries()) {
       // oxlint-disable-next-line no-await-in-loop
       await this.page.mouse.move(p.x, p.y)
       // oxlint-disable-next-line no-await-in-loop
-      if (this.paced) await sleep(start + ((i + 1) * 1000) / FPS - Date.now())
+      await this.pause(start + ((i + 1) * 1000) / FPS - Date.now())
     }
     this.at = to
+  }
+
+  /** Waits, only while recording. */
+  async pause(ms: number) {
+    if (this.paced) await sleep(ms)
   }
 
   async drag(from: Point, to: Point) {
     await this.move(from)
     await this.page.mouse.down()
-    if (this.paced) await sleep(80)
+    await this.pause(80)
     await this.move(to, 1.1)
-    if (this.paced) await sleep(80)
+    await this.pause(80)
     await this.page.mouse.up()
   }
 
@@ -72,23 +82,22 @@ class Hand {
     const box = await this.page.getByLabel(name, { exact: true }).first().boundingBox()
     if (!box) throw new Error(`no ${name} tool on the rail`)
     await this.click(center(box))
-    if (this.paced) await sleep(150)
+    await this.pause(150)
   }
 }
 
 /** Renders the demo desktop: the frame, and where its fields are. */
 async function desktop(browser: Browser, base: string) {
-  const page = await browser.newPage({ viewport, deviceScaleFactor: 2 })
+  const page = await browser.newPage({ viewport, ...mac })
   await page.goto(`${base}docs/media/src/desktop.html`)
-  await page.evaluate(() => document.fonts.ready)
+  const spots = (await page.evaluate(async () => {
+    await document.fonts.ready
+    const found = [...document.querySelectorAll<HTMLElement>('[data-spot]')]
+    return Object.fromEntries(
+      found.map((e) => [e.dataset.spot, e.getBoundingClientRect().toJSON()]),
+    )
+  })) as Spots
   const frame = await page.screenshot()
-  const box = (selector: string) => page.locator(selector).first().boundingBox() as Promise<Box>
-  const spots: Spots = {
-    email: await box('.field >> nth=1'),
-    save: await box('.btn.dark'),
-    general: await box('.card'),
-    notifications: await box('.card >> nth=1'),
-  }
   await page.close()
   return { frame, spots }
 }
@@ -100,7 +109,7 @@ async function overlay(
   frame: Buffer,
   options: BrowserContextOptions,
 ) {
-  const context = await browser.newContext({ viewport, deviceScaleFactor: 2, ...options })
+  const context = await browser.newContext({ viewport, ...mac, ...options })
   await context.route('**/frame.png', (route) =>
     route.fulfill({ body: frame, contentType: 'image/png' }),
   )
@@ -109,24 +118,24 @@ async function overlay(
   const created = Date.now()
   page.on('pageerror', (e) => console.error('page error:', e))
   await page.goto(`${base}docs/media/src/overlay.html`)
+  // Set once the frame is decoded: the desktop shows behind the overlay.
   await page.waitForFunction(() => 'demo' in window)
-  // The desktop behind the overlay, loaded before anything shows.
-  await page.evaluate(async () => {
-    const image = new Image()
-    image.src = '/frame.png'
-    await image.decode()
-  })
   return { context, page, created }
 }
 
-/** The overlay page's controls (docs/media/src/overlay.ts). */
-type Demo = Record<string, (...args: unknown[]) => unknown>
+/** The overlay page's controls, `window.demo` in docs/media/src/overlay.ts. */
+type Demo = {
+  open(): void
+  copied(): Promise<void>
+  cursor(shown: boolean): void
+  keys(accelerator?: string): void
+}
 
-const demo = (page: Page, name: string, ...values: unknown[]) =>
-  page.evaluate(([n, v]) => (window as unknown as { demo: Demo }).demo[n](...v), [
-    name,
-    values,
-  ] as const)
+const demo = <K extends keyof Demo>(page: Page, name: K, ...values: Parameters<Demo[K]>) =>
+  page.evaluate(
+    ([n, v]) => (window as unknown as { demo: Record<string, Function> }).demo[n](...v),
+    [name, values] as const,
+  )
 
 async function open(page: Page) {
   await demo(page, 'open')
@@ -179,8 +188,7 @@ async function still(browser: Browser, base: string, frame: Buffer, spots: Spots
   await hand.tool('Text')
   await hand.click(p.label)
   await page.keyboard.type('Click Save')
-  // A press while typing commits the text.
-  await hand.click({ x: p.region.from.x + 30, y: p.region.to.y - 20 })
+  // Picking a tool commits the text.
   await hand.tool('Select')
   await hand.move({ x: 1400, y: 40 })
   await sleep(500)
@@ -190,20 +198,27 @@ async function still(browser: Browser, base: string, frame: Buffer, spots: Spots
 
 async function settings(browser: Browser, base: string) {
   const page = await browser.newPage({
+    // The Settings window's size (src-tauri/src/lib.rs).
     viewport: { width: 880, height: 640 },
-    deviceScaleFactor: 2,
+    ...mac,
     colorScheme: 'light',
   })
   await page.goto(`${base}docs/media/src/settings.html`)
-  await page.getByText('Check for updates').waitFor()
-  await sleep(300)
+  await page.getByText(/^Version \d/).waitFor()
+  await page.evaluate(() => document.fonts.ready)
   await page.screenshot({ path: join(out, 'settings.png') })
   await page.close()
 }
 
 async function recording(browser: Browser, base: string, frame: Buffer, spots: Spots, dir: string) {
   const { context, page, created } = await overlay(browser, base, frame, {
-    recordVideo: { dir, size: { width: viewport.width * 2, height: viewport.height * 2 } },
+    recordVideo: {
+      dir,
+      size: {
+        width: viewport.width * mac.deviceScaleFactor!,
+        height: viewport.height * mac.deviceScaleFactor!,
+      },
+    },
   })
   const p = plan(spots)
   const hand = new Hand(page, true)
@@ -211,7 +226,7 @@ async function recording(browser: Browser, base: string, frame: Buffer, spots: S
   await sleep(300)
   const clip = (Date.now() - created) / 1000
   await sleep(400)
-  await demo(page, 'keys', '⌃', '⇧', '⌘', 'S')
+  await demo(page, 'keys', 'Control+Shift+Super+S')
   await sleep(450)
   await open(page)
   await demo(page, 'keys')
@@ -220,12 +235,10 @@ async function recording(browser: Browser, base: string, frame: Buffer, spots: S
   await sleep(300)
   await annotate(hand, p)
   await sleep(250)
-  await demo(page, 'keys', '⌘', 'C')
+  await demo(page, 'keys', 'Super+C')
   await sleep(200)
   await page.keyboard.press('Meta+c')
-  await page.waitForFunction(
-    () => ((window as unknown as { demo: Demo }).demo.copies() as number) > 0,
-  )
+  await demo(page, 'copied')
   // The overlay closes: the pointer is the desktop's again.
   await hand.move({ x: hand.at.x + 40, y: hand.at.y + 30 })
   await demo(page, 'keys')
@@ -243,7 +256,10 @@ const server = await createServer({
 })
 await server.listen()
 const base = server.resolvedUrls!.local[0]
-const browser = await chromium.launch()
+const browser = await chromium.launch().catch(async (e: unknown) => {
+  await server.close()
+  throw e
+})
 const dir = mkdtempSync(join(tmpdir(), 'readme-media-'))
 try {
   const { frame, spots } = await desktop(browser, base)

@@ -1,6 +1,6 @@
 // Pure helpers for scripts/readme-media.ts: human-paced pointer paths and the GIF encoding.
 
-export type Point = { x: number; y: number }
+import type { Point } from '../src/overlay/geometry.ts'
 
 /** Slow start, fast middle, slow end: t in [0, 1] to [0, 1]. */
 export function ease(t: number): number {
@@ -30,7 +30,7 @@ export function path(from: Point, to: Point, count: number, bend = 0.08): Point[
 }
 
 /** How many pointer steps a move of `from` to `to` takes, at `fps`, for a human pace. */
-export function steps(from: Point, to: Point, fps = 60): number {
+export function steps(from: Point, to: Point, fps: number): number {
   const distance = Math.hypot(to.x - from.x, to.y - from.y)
   // A fifth of a second for a short move, up to 0.7 s for one across the screen.
   const seconds = Math.min(0.7, 0.2 + distance / 2000)
