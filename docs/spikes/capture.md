@@ -246,15 +246,17 @@ Not run on a real Windows PC yet. The `windows-latest` CI job builds the app and
 
 Windows 11 can give PrintScreen to Snipping Tool (Settings › Accessibility › Keyboard, "Use the
 Print screen key to open screen capture"). The setting is the DWORD
-`HKCU\Control Panel\Keyboard\PrintScreenKeyForSnippingEnabled` (1 on, 0 off). When the value is
-missing, Windows 11 22H2 from build 22621.1928 (KB5027303, June 2023) and every later version
-treat it as on; Windows 10 and earlier Windows 11 builds treat it as off. Microsoft does not
-document the value; this comes from community guides and the KB5027303 notes.
+`HKCU\Control Panel\Keyboard\PrintScreenKeyForSnippingEnabled` (1 on, 0 off). Windows 11 treats
+a missing value as on (from 22H2 build 22621.1928, KB5027303). Microsoft does not document the
+value; this comes from community guides and the KB5027303 notes.
 
-At startup, if the capture shortcut is PrintScreen and either registration failed or Snipping
-Tool owns the key, the app logs it and opens a small guide window (`windows-hotkey`) with the steps,
-a button for `ms-settings:easeofaccess-keyboard` and a pointer to another shortcut in Settings.
-The decision is in `src-tauri/src/windows_keys.rs` and is unit-tested on every platform.
+The Windows default shortcut is bare PrintScreen. At startup, if it fails to register or the
+setting is on (or missing), the app uses Ctrl+Shift+PrintScreen instead. It saves that as the
+shortcut only if the user never chose one in Settings, and shows a dialog once ("Open Settings"
+or OK). "Reset to default" in Settings picks the same fallback while the setting is on. Windows
+10 treats a missing value as off, but the app still falls back there, which costs little:
+Ctrl+Shift+PrintScreen works, and a PrintScreen the user picks in Settings is kept when the value
+is missing (the recorder got the key, so Snipping Tool doesn't have it). The decision is `decide` in `src-tauri/src/print_screen.rs`, unit-tested on every platform.
 
 ## Open risks
 

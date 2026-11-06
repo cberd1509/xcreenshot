@@ -9,6 +9,7 @@
 
 use crate::login::{self, LoginItem};
 use crate::prefs::{self, Prefs, Storage};
+use crate::print_screen;
 use crate::shortcut::{self, Registered, Registrar};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -66,6 +67,8 @@ struct Os<'a, G, L> {
     shortcuts: &'a G,
     registered: &'a Registered,
     login: Option<&'a L>,
+    /// The shortcut "Reset to default" picks (see [`print_screen::default_shortcut`]).
+    default_shortcut: fn() -> &'static str,
 }
 
 impl Change {
@@ -85,10 +88,12 @@ impl Change {
     ) -> Result<(), &'static str> {
         match self {
             Change::Shortcut(accelerator) => {
-                let new = accelerator.unwrap_or_else(|| shortcut::DEFAULT.to_owned());
+                let chosen = accelerator.is_some();
+                let new = accelerator.unwrap_or_else(|| (os.default_shortcut)().to_owned());
                 shortcut::validate(&new)?;
                 shortcut::swap(os.shortcuts, os.registered, &new)?;
                 prefs.shortcut = new;
+                prefs.shortcut_chosen = chosen;
             }
             Change::RememberRegion(on) => prefs.remember_region = on,
             Change::Magnifier(on) => prefs.magnifier = on,
@@ -131,16 +136,20 @@ fn transact<G: Registrar, L: LoginItem>(
     Ok(after)
 }
 
-/// Startup: registers the capture shortcut and syncs the login item, saving what the sync
-/// changed. If that can't be saved, a login item it added is taken away again, so the next
-/// launch doesn't mistake its absence for the user removing it. Returns the prefs in effect.
+/// Startup: registers the capture shortcut (falling back from a PrintScreen that Snipping Tool
+/// has, see [`print_screen`]) and syncs the login item, saving what changed. If that can't be
+/// saved, a login item it added is taken away again, so the next launch doesn't mistake its
+/// absence for the user removing it. Returns the prefs in effect and whether to tell the user
+/// about the PrintScreen fallback.
 fn start(
     storage: &impl Storage,
     shortcuts: &impl Registrar,
     registered: &Registered,
     login: Option<&impl LoginItem>,
-) -> Prefs {
-    let mut prefs = storage.load();
+    snipping_setting: impl FnOnce() -> Option<u32>,
+) -> (Prefs, bool) {
+    let loaded = storage.load();
+    let mut prefs = loaded.clone();
     let ok = shortcuts
         .register(&prefs.shortcut)
         // Another app may own it; the menu bar item still works.
@@ -152,37 +161,55 @@ fn start(
         })
         .is_ok();
     registered.set(&prefs.shortcut, ok);
-    let Some(item) = login else {
-        return prefs;
-    };
-    let before = prefs.clone();
-    let turned = login::sync(item, &mut prefs);
-    if prefs != before
+    let tell = print_screen::fall_back(shortcuts, registered, &mut prefs, ok, snipping_setting);
+    let turned = login.and_then(|item| login::sync(item, &mut prefs));
+    if prefs != loaded
         && let Err(e) = storage.save(&prefs)
     {
         log::error!("could not save prefs: {e}");
-        if let Some(on) = turned {
+        if let (Some(item), Some(on)) = (login, turned) {
             // `set` logs a failure; there is nothing more to do then.
             let _ = login::set(Some(item), &mut prefs.clone(), !on);
         }
-        return before;
+        return (loaded, tell);
     }
-    prefs
+    (prefs, tell)
 }
 
 /// Applies the saved settings at startup. Returns the capture shortcut, for the menu bar.
-pub fn init<R: Runtime>(app: &AppHandle<R>) -> String {
-    init_with(app, app.global_shortcut())
+pub fn init<R: Runtime>(app: &AppHandle<R>, open_settings: print_screen::Open<R>) -> String {
+    let (shortcut, tell) = init_with(app, app.global_shortcut(), print_screen::setting);
+    if tell {
+        print_screen::tell(app, open_settings);
+    }
+    shortcut
 }
 
-fn init_with<R: Runtime>(app: &AppHandle<R>, shortcuts: &impl Registrar) -> String {
+/// Returns the capture shortcut in effect and whether to tell about the PrintScreen fallback.
+fn init_with<R: Runtime>(
+    app: &AppHandle<R>,
+    shortcuts: &impl Registrar,
+    snipping_setting: impl FnOnce() -> Option<u32>,
+) -> (String, bool) {
     let login = login::item(app);
     let registered = app.state::<Registered>();
-    let prefs = match prefs::open(app) {
-        Some(store) => start(&*store, shortcuts, &registered, login.as_deref()),
-        None => start(&prefs::Unsaved, shortcuts, &registered, login.as_deref()),
+    let (_, tell) = match prefs::open(app) {
+        Some(store) => start(
+            &*store,
+            shortcuts,
+            &registered,
+            login.as_deref(),
+            snipping_setting,
+        ),
+        None => start(
+            &prefs::Unsaved,
+            shortcuts,
+            &registered,
+            login.as_deref(),
+            snipping_setting,
+        ),
     };
-    prefs.shortcut
+    (registered.get().accelerator, tell)
 }
 
 // Async, so reading and writing the file stays off the main thread.
@@ -234,6 +261,7 @@ fn set_with<R: Runtime>(
         shortcuts,
         registered: &registered,
         login: login.as_deref(),
+        default_shortcut: || print_screen::default_shortcut(print_screen::setting()),
     };
     prefs::with_store(app, |store| {
         let prefs = transact(store, change, &os)?;
@@ -256,6 +284,9 @@ mod tests {
     use tauri::Listener;
     use tauri::async_runtime::block_on;
     use tauri::test::{MockRuntime, mock_builder, mock_context, noop_assets};
+
+    /// Snipping Tool doesn't have PrintScreen.
+    const OFF: fn() -> Option<u32> = || Some(0);
 
     fn change(key: &str, value: Value) -> Change {
         Change::parse(key, value).unwrap()
@@ -324,6 +355,7 @@ mod tests {
                 shortcuts: &self.shortcuts,
                 registered: &self.registered,
                 login: Some(&self.login),
+                default_shortcut: || shortcut::DEFAULT,
             }
         }
 
@@ -377,10 +409,42 @@ mod tests {
         assert_eq!(p.shortcut, "Alt+Shift+F5");
         assert_eq!(fakes.shortcuts.held(), ["Alt+Shift+F5"]);
         assert_eq!(fakes.registered.active().as_deref(), Some("Alt+Shift+F5"));
+        assert!(p.shortcut_chosen);
         // Reset to default.
         fakes.apply(&mut p, "shortcut", json!(null)).unwrap();
         assert_eq!(p.shortcut, shortcut::DEFAULT);
+        assert!(!p.shortcut_chosen);
         assert_eq!(fakes.shortcuts.held(), [shortcut::DEFAULT]);
+    }
+
+    #[test]
+    fn startup_saves_the_print_screen_fallback_and_tells_once() {
+        let (fakes, storage) = (Fakes::new(), storage(false));
+        storage.prefs.borrow_mut().shortcut = "PrintScreen".into();
+        let shortcuts = FakeRegistrar::default();
+        let on = || Some(1);
+        let (p, tell) = start(
+            &storage,
+            &shortcuts,
+            &fakes.registered,
+            None::<&FakeItem>,
+            on,
+        );
+        assert!(tell);
+        assert_eq!(shortcuts.held(), [print_screen::FALLBACK]);
+        assert_eq!(p.shortcut, print_screen::FALLBACK);
+        assert!(p.print_screen_notice_shown);
+        assert_eq!(storage.load(), p, "saved");
+        // The next launch has nothing to do.
+        let (_, tell) = start(
+            &storage,
+            &FakeRegistrar::default(),
+            &fakes.registered,
+            None::<&FakeItem>,
+            on,
+        );
+        assert!(!tell);
+        assert_eq!(storage.saves.get(), 1);
     }
 
     #[test]
@@ -471,7 +535,13 @@ mod tests {
     fn startup_registers_the_shortcut_and_adds_the_login_item() {
         let (fakes, storage) = (Fakes::new(), storage(false));
         let shortcuts = FakeRegistrar::default();
-        let p = start(&storage, &shortcuts, &fakes.registered, Some(&fakes.login));
+        let (p, _) = start(
+            &storage,
+            &shortcuts,
+            &fakes.registered,
+            Some(&fakes.login),
+            OFF,
+        );
         assert_eq!(shortcuts.held(), [shortcut::DEFAULT]);
         assert!(fakes.registered.get().registered);
         assert!(fakes.login.on.get() && p.login_item_added);
@@ -482,6 +552,7 @@ mod tests {
             &FakeRegistrar::default(),
             &fakes.registered,
             Some(&fakes.login),
+            OFF,
         );
         assert_eq!(storage.saves.get(), 1);
         // Without a login item (debug builds) nothing changes.
@@ -491,6 +562,7 @@ mod tests {
             &FakeRegistrar::default(),
             &fakes.registered,
             None::<&FakeItem>,
+            OFF,
         );
         assert_eq!(other.saves.get(), 0);
     }
@@ -498,11 +570,12 @@ mod tests {
     #[test]
     fn startup_takes_back_a_login_item_it_cannot_record() {
         let (fakes, storage) = (Fakes::new(), FakeStorage::failing());
-        let p = start(
+        let (p, _) = start(
             &storage,
             &FakeRegistrar::default(),
             &fakes.registered,
             Some(&fakes.login),
+            OFF,
         );
         assert!(!fakes.login.on.get(), "added, then taken away again");
         assert_eq!(p, Prefs::default());
@@ -513,6 +586,7 @@ mod tests {
             &FakeRegistrar::default(),
             &fakes.registered,
             Some(&fakes.login),
+            OFF,
         );
         assert!(!fakes.login.on.get());
     }
@@ -521,12 +595,16 @@ mod tests {
     fn startup_with_a_taken_shortcut_marks_it_unregistered() {
         let fakes = Fakes::new();
         let mut shortcuts = FakeRegistrar::default();
-        shortcuts.taken.insert(shortcut::DEFAULT.into());
+        // Both taken, so even Windows keeps PrintScreen (see `print_screen`).
+        shortcuts
+            .taken
+            .extend([shortcut::DEFAULT.into(), print_screen::FALLBACK.into()]);
         start(
             &storage(false),
             &shortcuts,
             &fakes.registered,
             None::<&FakeItem>,
+            OFF,
         );
         assert_eq!(
             fakes.registered.get(),
@@ -564,7 +642,10 @@ mod tests {
         });
         let shortcuts = FakeRegistrar::default();
 
-        assert_eq!(init_with(&h, &shortcuts), shortcut::DEFAULT);
+        assert_eq!(
+            init_with(&h, &shortcuts, OFF),
+            (shortcut::DEFAULT.to_owned(), false)
+        );
         assert_eq!(shortcuts.held(), [shortcut::DEFAULT]);
         let first = block_on(get_prefs(h.clone()));
         assert_eq!(first, Settings::new(&Prefs::default(), first.version));
@@ -587,7 +668,10 @@ mod tests {
         assert_eq!(block_on(get_prefs(h.clone())).shortcut, "Alt+Shift+F5");
         // The next launch registers the saved shortcut.
         let relaunch = FakeRegistrar::default();
-        assert_eq!(init_with(&h, &relaunch), "Alt+Shift+F5");
+        assert_eq!(
+            init_with(&h, &relaunch, OFF),
+            ("Alt+Shift+F5".to_owned(), false)
+        );
 
         assert_eq!(set_with(&h, &shortcuts, "nope", json!(true)), Err(UNKNOWN));
         assert!(set_with(&h, &shortcuts, "shortcut", json!("S")).is_err());

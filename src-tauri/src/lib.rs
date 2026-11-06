@@ -10,6 +10,7 @@ mod output;
 mod overlay;
 mod permission;
 mod prefs;
+mod print_screen;
 mod settings;
 /// Public so the overlay (and later commands) can call it; see `docs/share.md`.
 pub mod share;
@@ -102,7 +103,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            let capture_shortcut = settings::init(app.handle());
+            let capture_shortcut = settings::init(app.handle(), open_settings);
             build_tray(app.handle(), &capture_shortcut)?;
             overlay::prewarm(app.handle());
             permission::on_startup(app.handle());
