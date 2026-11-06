@@ -3,6 +3,9 @@
 //!
 //! The overlay's commands (`overlay/export.rs`) wire these to the Save dialog and the prefs.
 
+/// Annotations on the copied or saved image.
+pub mod compose;
+
 use crate::capture::CaptureError;
 use chrono::NaiveDateTime;
 use image::RgbaImage;

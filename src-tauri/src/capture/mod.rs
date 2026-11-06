@@ -6,7 +6,7 @@
 
 mod geometry;
 
-pub use geometry::{Bounds, PixelRect, Rect, crop, crop_pixels};
+pub use geometry::{Bounds, PixelRect, Rect, clamp_rect, crop, crop_pixels};
 
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::{ExtendedColorType, ImageEncoder, RgbaImage};
@@ -62,6 +62,8 @@ pub enum CaptureError {
     Write(String),
     /// The Save dialog failed (not a cancel).
     Dialog(String),
+    /// The page sent a copy or save request that does not make sense.
+    Invalid(String),
 }
 
 impl CaptureError {
@@ -76,6 +78,7 @@ impl CaptureError {
             Self::Clipboard(_) => "clipboard",
             Self::Write(_) => "write",
             Self::Dialog(_) => "dialog",
+            Self::Invalid(_) => "invalid",
         }
     }
 }
@@ -92,6 +95,7 @@ impl fmt::Display for CaptureError {
             Self::Clipboard(e) => write!(f, "could not copy to the clipboard: {e}"),
             Self::Write(e) => write!(f, "could not save the file: {e}"),
             Self::Dialog(e) => write!(f, "the Save dialog failed: {e}"),
+            Self::Invalid(e) => write!(f, "invalid request: {e}"),
         }
     }
 }

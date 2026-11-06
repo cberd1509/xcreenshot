@@ -29,9 +29,11 @@
 </div>
 
 <style>
+  /* Under it, the annotation layer takes presses (and moves the selection); only the handles
+     are hit here. */
   .selection {
     position: fixed;
-    cursor: move;
+    pointer-events: none;
     outline: 1px solid white;
     /* Dims everything outside; the frame inside stays at full brightness. */
     box-shadow: 0 0 0 100vmax rgb(0 0 0 / 0.35);
@@ -39,6 +41,7 @@
 
   .handle {
     position: absolute;
+    pointer-events: auto;
     width: 8px;
     height: 8px;
     margin: -4px;

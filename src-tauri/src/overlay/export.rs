@@ -15,44 +15,134 @@
 //! without a way out. The OS side is behind [`Clipboard`] and [`Saver`], faked in tests.
 
 use super::display_id;
-use super::window::{Overlay, close, close_session, hide, on_main, phase, reshow, sync_escape};
-use crate::capture::{self, CaptureError, PixelRect};
+use super::window::{Overlay, close, close_if, hide, on_main, phase, reshow, sync_escape};
+use crate::capture::{self, CaptureError, PixelRect, clamp_rect};
+use crate::output::compose::{self, Layer, Marks};
 use crate::output::{self, Clipboard, Target};
 use crate::prefs::{self, Prefs};
 use chrono::NaiveDateTime;
-use image::RgbaImage;
+use image::{ImageBuffer, RgbaImage};
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use tauri::async_runtime::spawn_blocking;
+use tauri::http::HeaderMap;
+use tauri::ipc::{InvokeBody, Request};
 use tauri::{AppHandle, Manager, Runtime, State, WebviewWindow};
 
-/// Copies the selection to the clipboard and closes the overlay. An empty rect is an error and
-/// closes nothing.
+/// The request header describing a copy or save. Must match `OUTPUT_HEADER` on the page.
+pub const HEADER: &str = "x-xcreenshot-output";
+
+/// Most blur rects one request may have. More is a broken or hostile page.
+pub const MAX_BLURS: usize = 256;
+
+/// The JSON in [`HEADER`]. `layer` is where the body's pixels go, relative to `rect`; it is
+/// there only when the body has them.
+#[derive(Debug, Deserialize)]
+struct Head {
+    session: u64,
+    rect: PixelRect,
+    #[serde(default)]
+    layer: Option<PixelRect>,
+    #[serde(default)]
+    blurs: Vec<PixelRect>,
+}
+
+/// A copy or save request: the session, the selection in native px, and its annotations, whose
+/// pixels are read in place from the request body.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Output<'a> {
+    pub session: u64,
+    pub rect: PixelRect,
+    pub marks: Marks<'a>,
+}
+
+fn invalid(e: impl std::fmt::Display) -> CaptureError {
+    CaptureError::Invalid(e.to_string())
+}
+
+/// Reads a copy or save request: JSON in [`HEADER`], and the layer's straight-alpha RGBA as the
+/// raw body (empty without a layer). See `docs/annotations.md`.
+pub(crate) fn parse<'a>(
+    body: &'a InvokeBody,
+    headers: &HeaderMap,
+) -> Result<Output<'a>, CaptureError> {
+    let header = headers
+        .get(HEADER)
+        .ok_or_else(|| invalid(format!("missing {HEADER}")))?;
+    let head: Head = serde_json::from_slice(header.as_bytes()).map_err(invalid)?;
+    if head.blurs.len() > MAX_BLURS {
+        return Err(invalid(format!(
+            "{} blurs, at most {MAX_BLURS}",
+            head.blurs.len()
+        )));
+    }
+    // Each blur clipped to the selection; one outside it is dropped.
+    let (w, h) = (head.rect.width, head.rect.height);
+    let blurs = head
+        .blurs
+        .into_iter()
+        .filter_map(|b| clamp_rect(b, w, h))
+        .collect();
+    let bytes: &[u8] = match body {
+        InvokeBody::Raw(bytes) => bytes,
+        // An empty body may arrive as JSON.
+        InvokeBody::Json(_) => &[],
+    };
+    let layer = head
+        .layer
+        .map(|at| {
+            let size = format!(
+                "{} bytes for a {}x{} layer",
+                bytes.len(),
+                at.width,
+                at.height
+            );
+            let pixels =
+                ImageBuffer::from_raw(at.width, at.height, bytes).ok_or_else(|| invalid(size))?;
+            Ok::<_, CaptureError>(Layer {
+                x: at.x,
+                y: at.y,
+                pixels,
+            })
+        })
+        .transpose()?;
+    Ok(Output {
+        session: head.session,
+        rect: head.rect,
+        marks: Marks { layer, blurs },
+    })
+}
+
+/// Copies the selection, with its annotations, to the clipboard and closes the overlay. An
+/// empty rect is an error and closes nothing. The request is raw: see [`compose`].
 #[tauri::command]
 pub(crate) async fn overlay_copy<R: Runtime>(
     window: WebviewWindow<R>,
     state: State<'_, Overlay>,
-    session: u64,
-    rect: PixelRect,
+    request: Request<'_>,
 ) -> Result<(), CaptureError> {
+    let out = parse(request.body(), request.headers())?;
     let clipboard = output::os_clipboard(window.app_handle());
-    copy_with(&window, &state, session, rect, clipboard).await
+    copy_with(&window, &state, &out, clipboard).await
 }
 
 async fn copy_with<R: Runtime>(
     window: &WebviewWindow<R>,
     state: &Overlay,
-    session: u64,
-    rect: PixelRect,
+    out: &Output<'_>,
     clipboard: Clipboard,
 ) -> Result<(), CaptureError> {
     let started = Instant::now();
-    let Some((_, frame)) = selected_frame(window, state, session) else {
+    let session = out.session;
+    let Some((_, frame, saves)) = selected_frame(window, state, session) else {
         return Ok(());
     };
+    // Cropped and annotated here: the annotations are read in place from the request.
+    let image = annotated(&frame, out)?;
+    drop(frame);
     let copied = spawn_blocking(move || {
-        let image = capture::crop_pixels(&frame, rect)?;
         clipboard(&image)?;
         Ok(image.dimensions())
     })
@@ -61,56 +151,65 @@ async fn copy_with<R: Runtime>(
     let (width, height) = copied.inspect_err(|e| log::warn!("copy failed: {e}"))?;
     let ms = started.elapsed().as_secs_f64() * 1000.0;
     log::info!("copied {width}x{height} px in {ms:.0} ms");
-    on_main(window.app_handle(), move |app| close_session(app, session));
+    // Only if nothing happened meanwhile: a save started (even cancelled) keeps the overlay.
+    on_main(window.app_handle(), move |app| {
+        close_if(app, |phase| phase.copy_may_close(session, saves));
+    });
     Ok(())
 }
 
-/// The calling window's display and its original frame, or `None` if the session or window is
-/// not an open overlay, or the Save dialog is open.
+/// The calling window's display, its original frame and the session's save count, or `None`
+/// if the session or window is not an open overlay, or the Save dialog is open.
 fn selected_frame<R: Runtime>(
     window: &WebviewWindow<R>,
     state: &Overlay,
     session: u64,
-) -> Option<(u32, Arc<RgbaImage>)> {
+) -> Option<(u32, Arc<RgbaImage>, u32)> {
     let display = display_id(window.label())?;
     let mut phase = state.phase();
-    if phase.saving() {
-        return None;
-    }
-    Some((display, phase.image(session, display)?))
+    let saves = phase.saves(session)?;
+    Some((display, phase.image(session, display)?, saves))
 }
 
-/// Asks where to save the selection, writes it and closes the overlay. Returns once that is
-/// done: `Ok` when saved or cancelled, the error if the file could not be written.
+/// The selection cropped from the frame, with its annotations on it.
+fn annotated(frame: &RgbaImage, out: &Output) -> Result<RgbaImage, CaptureError> {
+    let mut image = capture::crop_pixels(frame, out.rect)?;
+    compose::apply(&mut image, &out.marks);
+    Ok(image)
+}
+
+/// Asks where to save the selection, with its annotations, writes it and closes the overlay.
+/// Returns once that is done: `Ok` when saved or cancelled, the error if the file could not be
+/// written. The request is raw: see [`compose`].
 #[tauri::command]
 pub(crate) async fn overlay_save<R: Runtime>(
     window: WebviewWindow<R>,
     state: State<'_, Overlay>,
-    session: u64,
-    rect: PixelRect,
+    request: Request<'_>,
 ) -> Result<(), CaptureError> {
+    let out = parse(request.body(), request.headers())?;
     let app = window.app_handle().clone();
     let paths = app.path();
     let default_dir = output::default_dir(paths.desktop_dir().ok(), paths.picture_dir().ok());
     let now = chrono::Local::now().naive_local();
     let saver = OsSaver(app);
-    save_with(&window, &state, session, rect, saver, now, default_dir).await
+    save_with(&window, &state, &out, saver, now, default_dir).await
 }
 
 async fn save_with<R: Runtime>(
     window: &WebviewWindow<R>,
     state: &Overlay,
-    session: u64,
-    rect: PixelRect,
+    out: &Output<'_>,
     saver: impl Saver,
     now: NaiveDateTime,
     default_dir: Option<PathBuf>,
 ) -> Result<(), CaptureError> {
-    let Some((display, frame)) = selected_frame(window, state, session) else {
+    let session = out.session;
+    let Some((display, frame, _)) = selected_frame(window, state, session) else {
         return Ok(());
     };
     // Checked before anything hides, so an empty selection just stays.
-    let image = capture::crop_pixels(&frame, rect)?;
+    let image = annotated(&frame, out)?;
     drop(frame);
     if !state.phase().begin_save(session) {
         return Ok(());
@@ -271,7 +370,7 @@ mod tests {
         Handle, app, app_with_escape, app_with_escape_by, esc_held, is_idle, is_open, open, press,
         shown, wait_until, window,
     };
-    use super::super::window::{overlay_escape, overlay_painted};
+    use super::super::window::{close_session, overlay_escape, overlay_painted};
     use super::*;
     use crate::output::tests::assert_clean_png;
     use chrono::NaiveDate;
@@ -309,7 +408,8 @@ mod tests {
         c: Clipboard,
     ) -> Result<(), CaptureError> {
         let state = h.state::<Overlay>();
-        tauri::async_runtime::block_on(copy_with(w, &state, session, rect, c))
+        let out = plain(session, rect);
+        tauri::async_runtime::block_on(copy_with(w, &state, &out, c))
     }
 
     fn copy(h: &Handle, session: u64, rect: PixelRect, c: Clipboard) -> Result<(), CaptureError> {
@@ -372,6 +472,25 @@ mod tests {
         assert!(is_open(h, session));
     }
 
+    #[test]
+    fn a_copy_does_not_close_after_a_save_began_meanwhile() {
+        let app = app();
+        let h = app.handle();
+        let session = shown(h, &[1]);
+        // While the clipboard works, another display opens the Save dialog and cancels it.
+        let handle = h.clone();
+        let clipboard: Clipboard = Box::new(move |_: &RgbaImage| {
+            let mut p = phase(&handle);
+            assert!(p.begin_save(session));
+            assert!(p.end_save(session).is_some());
+            Ok(())
+        });
+        assert_eq!(copy(h, session, px(0, 0, 2, 2), clipboard), Ok(()));
+        // The overlay stays: the user moved on from that copy.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(is_open(h, session));
+    }
+
     /// Answers the dialog from `answers` (cancel when they run out) and records what it saw.
     #[derive(Default)]
     struct FakeSaver {
@@ -426,11 +545,70 @@ mod tests {
         saver: &Arc<FakeSaver>,
         default: &Path,
     ) -> Result<(), CaptureError> {
+        save_out(h, &plain(session, rect), saver, default)
+    }
+
+    fn save_out(
+        h: &Handle,
+        out: &Output,
+        saver: &Arc<FakeSaver>,
+        default: &Path,
+    ) -> Result<(), CaptureError> {
         let state = h.state::<Overlay>();
         let w = window(h, 1);
         let default = Some(default.to_owned());
         let saver = Arc::clone(saver);
-        tauri::async_runtime::block_on(save_with(&w, &state, session, rect, saver, now(), default))
+        tauri::async_runtime::block_on(save_with(&w, &state, out, saver, now(), default))
+    }
+
+    /// A request with no annotations.
+    fn plain(session: u64, rect: PixelRect) -> Output<'static> {
+        Output {
+            session,
+            rect,
+            marks: Marks::default(),
+        }
+    }
+
+    const WHITE: [u8; 4] = [255; 4];
+
+    /// A white dot at (0, 0) of the crop, and the rest of a 2x2 crop blurred.
+    fn marks() -> Marks<'static> {
+        Marks {
+            layer: Some(Layer {
+                x: 0,
+                y: 0,
+                pixels: ImageBuffer::from_raw(1, 1, &WHITE[..]).unwrap(),
+            }),
+            blurs: vec![px(0, 0, 2, 2)],
+        }
+    }
+
+    /// `expected(1, 0, 2, 2)` with `marks()` on it.
+    fn marked() -> RgbaImage {
+        let mut image = expected(1, 0, 2, 2);
+        compose::apply(&mut image, &marks());
+        image
+    }
+
+    #[test]
+    fn copy_puts_the_annotations_on_the_crop() {
+        let app = app();
+        let h = app.handle();
+        let session = shown(h, &[1]);
+        let (c, images) = clipboard(false);
+        let state = h.state::<Overlay>();
+        let w = window(h, 1);
+        let out = Output {
+            marks: marks(),
+            ..plain(session, px(1, 0, 2, 2))
+        };
+        let copying = copy_with(&w, &state, &out, c);
+        assert_eq!(tauri::async_runtime::block_on(copying), Ok(()));
+        let copied = images.lock().unwrap()[0].clone();
+        assert_eq!(copied, marked());
+        assert_eq!(*copied.get_pixel(0, 0), image::Rgba([255, 255, 255, 255]));
+        assert_ne!(copied, expected(1, 0, 2, 2));
     }
 
     #[test]
@@ -462,6 +640,24 @@ mod tests {
         assert_eq!(*saver.remembered.lock().unwrap(), [dir.path().to_owned()]);
         wait_until("the overlay to close", || is_idle(h));
         assert!(!esc_held(h));
+    }
+
+    #[test]
+    fn save_writes_the_annotations_with_the_blur_baked_in() {
+        let app = app_with_escape();
+        let h = app.handle();
+        let dir = tempfile::tempdir().unwrap();
+        let session = shown(h, &[1]);
+        let path = dir.path().join("marked.png");
+        let saver = Arc::new(FakeSaver::answering(&[Some(&path)]));
+        let out = Output {
+            marks: marks(),
+            ..plain(session, px(1, 0, 2, 2))
+        };
+        let saved = save_out(h, &out, &saver, dir.path());
+        assert_eq!(saved, Ok(()));
+        assert_clean_png(&fs::read(&path).unwrap(), &marked());
+        wait_until("the overlay to close", || is_idle(h));
     }
 
     #[test]
@@ -706,5 +902,82 @@ mod tests {
         let session = shown(h, &[1]);
         back(h, session, 1);
         assert!(is_open(h, session));
+    }
+
+    fn headers(json: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(HEADER, tauri::http::HeaderValue::from_str(json).unwrap());
+        h
+    }
+
+    #[test]
+    fn parses_a_plain_request() {
+        let h = headers(r#"{"session":3,"rect":{"x":1,"y":2,"width":3,"height":4}}"#);
+        let body = InvokeBody::Raw(vec![]);
+        assert_eq!(parse(&body, &h).unwrap(), plain(3, px(1, 2, 3, 4)));
+        // An empty body may come as JSON.
+        let json = InvokeBody::Json(serde_json::Value::Null);
+        assert_eq!(parse(&json, &h).unwrap(), plain(3, px(1, 2, 3, 4)));
+    }
+
+    #[test]
+    fn parses_the_layer_in_place_and_the_blurs() {
+        let h = headers(
+            r#"{"session":3,"rect":{"x":0,"y":0,"width":9,"height":9},"layer":{"x":1,"y":2,"width":2,"height":1},"blurs":[{"x":0,"y":0,"width":4,"height":4}]}"#,
+        );
+        let body = InvokeBody::Raw(vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        let out = parse(&body, &h).unwrap();
+        let layer = out.marks.layer.unwrap();
+        assert_eq!(
+            (layer.x, layer.y, layer.pixels.dimensions()),
+            (1, 2, (2, 1))
+        );
+        let InvokeBody::Raw(bytes) = &body else {
+            unreachable!()
+        };
+        // The body itself, not a copy.
+        assert_eq!(layer.pixels.as_raw().as_ptr(), bytes.as_ptr());
+        assert_eq!(out.marks.blurs, [px(0, 0, 4, 4)]);
+    }
+
+    #[test]
+    fn blurs_alone_have_no_layer() {
+        let h = headers(
+            r#"{"session":1,"rect":{"x":0,"y":0,"width":9,"height":9},"blurs":[{"x":0,"y":0,"width":4,"height":4}]}"#,
+        );
+        let body = InvokeBody::Raw(vec![]);
+        let out = parse(&body, &h).unwrap();
+        assert_eq!(out.marks.layer, None);
+        assert_eq!(out.marks.blurs.len(), 1);
+    }
+
+    #[test]
+    fn rejects_a_bad_request() {
+        let body = InvokeBody::Raw(vec![1, 2, 3]);
+        let missing = parse(&body, &HeaderMap::new()).unwrap_err();
+        assert!(matches!(missing, CaptureError::Invalid(_)), "{missing}");
+        assert!(parse(&body, &headers("{")).is_err());
+        // The body must hold exactly the layer's pixels.
+        let short = headers(
+            r#"{"session":1,"rect":{"x":0,"y":0,"width":9,"height":9},"layer":{"x":0,"y":0,"width":2,"height":2}}"#,
+        );
+        let e = parse(&body, &short).unwrap_err();
+        assert!(e.to_string().contains("3 bytes for a 2x2 layer"), "{e}");
+    }
+
+    #[test]
+    fn caps_the_blurs_and_clips_them_to_the_selection() {
+        let blur = r#"{"x":0,"y":0,"width":1,"height":1}"#;
+        let many = vec![blur; MAX_BLURS + 1].join(",");
+        let json = format!(
+            r#"{{"session":1,"rect":{{"x":0,"y":0,"width":9,"height":9}},"blurs":[{many}]}}"#
+        );
+        let body = InvokeBody::Raw(vec![]);
+        let e = parse(&body, &headers(&json)).unwrap_err();
+        assert!(e.to_string().contains("at most 256"), "{e}");
+        let h = headers(
+            r#"{"session":1,"rect":{"x":0,"y":0,"width":9,"height":9},"blurs":[{"x":5,"y":5,"width":99,"height":99},{"x":50,"y":0,"width":4,"height":4}]}"#,
+        );
+        assert_eq!(parse(&body, &h).unwrap().marks.blurs, [px(5, 5, 4, 4)]);
     }
 }

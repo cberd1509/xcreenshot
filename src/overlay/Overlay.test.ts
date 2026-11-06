@@ -3,7 +3,16 @@ import userEvent from '@testing-library/user-event'
 import { emit, listen } from '@tauri-apps/api/event'
 import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { setSetting, settings } from '$lib/settings.svelte'
 import { box, fakeContext } from '../test/canvas'
+import { stages } from '../test/konva'
+import { OUTPUT_HEADER } from './annotate/output'
+
+type Invoke = (
+  cmd: string,
+  body: unknown,
+  options?: { headers?: Record<string, string> },
+) => Promise<unknown>
 import Overlay from './Overlay.svelte'
 
 /** The platform the overlay sees (`isMac`). */
@@ -30,10 +39,14 @@ let ready: Info | null
 let frame: (args: { session: number }) => unknown
 let finished: (cmd: string) => unknown
 let context: ReturnType<typeof fakeContext>
-let selected: { label: string; active: boolean }[]
+type Selected = { label: string; active: boolean; session: number; stamp: number }
+let selected: Selected[]
 
 const rgba = (width: number, height: number) => new Uint8Array(width * height * 4).fill(7).buffer
 const called = (cmd: string) => calls.filter((c) => c.cmd === cmd)
+/** Copy and save requests: their header (parsed) and raw body. */
+let sent: { cmd: string; header: unknown; body: unknown }[]
+const output = (cmd: string, i: number) => sent.filter((c) => c.cmd === cmd)[i]?.header
 const tick = () => new Promise((r) => setTimeout(r, 0))
 const small = (session: number): Info => ({
   session,
@@ -53,6 +66,16 @@ const info: Info = {
   escapeShortcut: true,
 }
 /** Esc from Rust, forwarded to this page. */
+/** Another display's selection event, newer than any so far unless `stamp` says otherwise. */
+let later = 0
+const other = (active: boolean, extra: { session?: number; stamp?: number } = {}) =>
+  emit('overlay:selected', {
+    label: 'overlay-2',
+    active,
+    session: 9,
+    stamp: Date.now() + 1000 + ++later,
+    ...extra,
+  })
 const esc = (token = 1) => emit('overlay:escape', { session: 9, token })
 const answers = () => called('overlay_escaped').map((c) => c.args)
 /** The selection `drag({ x: 10, y: 10 }, { x: 110, y: 60 })` makes, in pixels. */
@@ -86,6 +109,22 @@ async function shown(props: { magnifier?: boolean } = {}) {
   return view
 }
 
+const layer = () => screen.getByTestId('annotations')
+/** The annotation shapes on the Konva stage. */
+const shapes = () => stages[0].children[0].children.filter((n) => n.className !== 'Transformer')
+
+/** Selects (10, 10) to (110, 60), then draws a rect in it with R. */
+async function annotated() {
+  await shown()
+  drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+  await waitFor(() => expect(stages).toHaveLength(1))
+  await userEvent.keyboard('r')
+  fireEvent.pointerDown(layer(), point({ x: 20, y: 20 }))
+  fireEvent.pointerMove(layer(), point({ x: 60, y: 50 }))
+  fireEvent.pointerUp(layer(), point({ x: 60, y: 50 }))
+  await waitFor(() => expect(shapes()).toHaveLength(1))
+}
+
 describe('Overlay', () => {
   beforeEach(async () => {
     platform.mac = false
@@ -104,10 +143,17 @@ describe('Overlay', () => {
       },
       { shouldMockEvents: true },
     )
+    // The mock drops request headers: record them on the way.
+    sent = []
+    const internals = Reflect.get(window, '__TAURI_INTERNALS__') as { invoke: Invoke }
+    const inner = internals.invoke
+    internals.invoke = (cmd, body, options) => {
+      const header = options?.headers?.[OUTPUT_HEADER]
+      if (header) sent.push({ cmd, header: JSON.parse(header), body })
+      return inner(cmd, body, options)
+    }
     context = fakeContext()
-    await listen<{ label: string; active: boolean }>('overlay:selected', (e) =>
-      selected.push(e.payload),
-    )
+    await listen<Selected>('overlay:selected', (e) => selected.push(e.payload))
   })
 
   afterEach(async () => {
@@ -253,7 +299,9 @@ describe('Overlay', () => {
       drag({ x: 110, y: 70 }, { x: 10, y: 20 })
       expect(rect()).toEqual([10, 20, 100, 50])
       expect(screen.getByTestId('size-badge')).toHaveTextContent('200 × 100')
-      expect(selected).toEqual([{ label: 'overlay-1', active: true }])
+      expect(selected).toEqual([
+        { label: 'overlay-1', active: true, session: 9, stamp: expect.any(Number) },
+      ])
     })
 
     it('focuses its window on press, so keys reach it', async () => {
@@ -384,7 +432,7 @@ describe('Overlay', () => {
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       await esc(1)
       await waitFor(() => expect(selection()).toBeNull())
-      expect(selected.at(-1)).toEqual({ label: 'overlay-1', active: false })
+      expect(selected.at(-1)).toMatchObject({ label: 'overlay-1', active: false })
       await esc(2)
       await waitFor(() => expect(answers()).toHaveLength(2))
       expect(answers()).toEqual([
@@ -424,14 +472,31 @@ describe('Overlay', () => {
       await shown()
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       // Another display losing a selection changes nothing here.
-      await emit('overlay:selected', { label: 'overlay-2', active: false })
+      await other(false)
       await tick()
       expect(selection()).not.toBeNull()
-      await emit('overlay:selected', { label: 'overlay-2', active: true })
+      await other(true)
       await waitFor(() => expect(selection()).toBeNull())
       // Display 2 has the selection: this page has nothing to undo and says so.
       await esc()
       await waitFor(() => expect(answers()).toEqual([{ session: 9, token: 1, handled: false }]))
+    })
+
+    it('ignores a late event from another display, or one from another capture', async () => {
+      await shown()
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      const mine = selected.at(-1)!.stamp
+      await other(true, { stamp: mine - 1 })
+      await other(true, { session: 8 })
+      await tick()
+      expect(selection()).not.toBeNull()
+      // Once a newer one came, an older one still changes nothing.
+      await other(true, { stamp: mine + 5 })
+      await waitFor(() => expect(selection()).toBeNull())
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      await other(true, { stamp: mine + 2 })
+      await tick()
+      expect(selection()).not.toBeNull()
     })
 
     it('copies the pixel rect on Enter and Ctrl+C', async () => {
@@ -441,12 +506,16 @@ describe('Overlay', () => {
       expect(called('overlay_copy')).toHaveLength(0)
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       await userEvent.keyboard('{Enter}')
-      expect(called('overlay_copy')[0].args).toEqual({ session: 9, rect: rect200 })
+      await waitFor(() =>
+        expect(output('overlay_copy', 0)).toEqual({ session: 9, rect: rect200, blurs: [] }),
+      )
       await waitFor(async () => {
         await userEvent.keyboard(ctrl('c'))
         expect(called('overlay_copy')).toHaveLength(2)
       })
-      expect(called('overlay_copy')[1].args).toEqual({ session: 9, rect: rect200 })
+      await waitFor(() =>
+        expect(output('overlay_copy', 1)).toEqual({ session: 9, rect: rect200, blurs: [] }),
+      )
     })
 
     it('saves the pixel rect on Ctrl+S', async () => {
@@ -455,7 +524,9 @@ describe('Overlay', () => {
       expect(called('overlay_save')).toHaveLength(0)
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       await userEvent.keyboard(ctrl('s'))
-      expect(called('overlay_save')[0].args).toEqual({ session: 9, rect: rect200 })
+      await waitFor(() =>
+        expect(output('overlay_save', 0)).toEqual({ session: 9, rect: rect200, blurs: [] }),
+      )
       expect(called('overlay_copy')).toHaveLength(0)
     })
 
@@ -477,7 +548,7 @@ describe('Overlay', () => {
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       // Russian layout: the C key types "с", the S key "ы".
       fireEvent.keyDown(window, { key: 'ы', code: 'KeyS', ctrlKey: true })
-      expect(called('overlay_save')).toHaveLength(1)
+      await waitFor(() => expect(called('overlay_save')).toHaveLength(1))
       fireEvent.keyDown(window, { key: 'с', code: 'KeyD', ctrlKey: true })
       expect(called('overlay_copy')).toHaveLength(0)
     })
@@ -621,6 +692,153 @@ describe('Overlay', () => {
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       await emit('overlay:show', { ...info, session: 10 })
       await waitFor(() => expect(selection()).toBeNull())
+    })
+  })
+
+  describe('annotations', () => {
+    beforeEach(() => {
+      stages.length = 0
+    })
+
+    it('draws over the frame, under the selection outline', async () => {
+      await annotated()
+      const root = overlay()
+      const at = (e: Element | null) => [...root.children].indexOf(e!)
+      expect(at(root.querySelector('canvas'))).toBeLessThan(at(layer()))
+      expect(at(layer())).toBeLessThan(at(selection()))
+    })
+
+    it('ignores a press outside the selection while there are annotations', async () => {
+      await annotated()
+      drag({ x: 500, y: 500 }, { x: 520, y: 530 })
+      expect(rect()).toEqual([10, 10, 100, 50])
+      expect(shapes()).toHaveLength(1)
+    })
+
+    it('starts a new selection from outside once the annotations are out of it', async () => {
+      await annotated()
+      // Put the tool away, then move the selection off the rect.
+      await esc(1)
+      await waitFor(() =>
+        expect(screen.getByLabelText('Rectangle')).toHaveAttribute('data-state', 'off'),
+      )
+      drag({ x: 100, y: 55 }, { x: 400, y: 355 }, selection()!)
+      expect(rect()).toEqual([310, 310, 100, 50])
+      drag({ x: 600, y: 600 }, { x: 620, y: 630 })
+      expect(rect()).toEqual([600, 600, 20, 30])
+    })
+
+    it('keeps a resize from cutting through the annotations', async () => {
+      await annotated()
+      // The rect paints from (16, 16) to (64, 54): the right edge stops there.
+      drag({ x: 110, y: 30 }, { x: 10, y: 30 }, selection()!.querySelector('[data-handle="e"]')!)
+      expect(rect()).toEqual([10, 10, 54, 50])
+      // Growing is free.
+      drag({ x: 64, y: 60 }, { x: 200, y: 200 }, selection()!.querySelector('[data-handle="se"]')!)
+      expect(rect()).toEqual([10, 10, 190, 190])
+      expect(shapes()).toHaveLength(1)
+    })
+
+    it('focuses the window on a press the annotations take', async () => {
+      await annotated()
+      const before = called('plugin:window|set_focus').length
+      fireEvent.pointerDown(layer(), point({ x: 30, y: 30 }))
+      fireEvent.pointerUp(layer(), point({ x: 30, y: 30 }))
+      expect(called('plugin:window|set_focus')).toHaveLength(before + 1)
+    })
+
+    it('undoes one thing per Esc: size edit, then annotations, then the selection', async () => {
+      await annotated()
+      await userEvent.click(screen.getByTitle('Set size'))
+      // The size edit goes first, then the tool, then the selection with its annotations.
+      await esc(1)
+      await waitFor(() => expect(screen.queryByLabelText('Width')).toBeNull())
+      expect(screen.getByLabelText('Rectangle')).toHaveAttribute('data-state', 'on')
+      await esc(2)
+      await esc(3)
+      await waitFor(() =>
+        expect(answers()).toEqual([
+          { session: 9, token: 1, handled: true },
+          { session: 9, token: 2, handled: true },
+          { session: 9, token: 3, handled: true },
+        ]),
+      )
+      expect(selection()).toBeNull()
+      expect(shapes()).toHaveLength(0)
+    })
+
+    it('gives keys to the annotations first', async () => {
+      await annotated()
+      shapes()[0].fire('pointerdown')
+      // With a shape selected, arrows move the shape, not the selection.
+      await userEvent.keyboard('{ArrowRight}')
+      expect(rect()).toEqual([10, 10, 100, 50])
+      await waitFor(() => expect(shapes()[0].attrs.x).toBe(20.5))
+      await userEvent.keyboard('{Backspace}')
+      await waitFor(() => expect(shapes()).toHaveLength(0))
+      await userEvent.keyboard('{Control>}z{/Control}')
+      await waitFor(() => expect(shapes()).toHaveLength(1))
+    })
+
+    it('leaves keys to an open toolbar menu', async () => {
+      await annotated()
+      await userEvent.click(screen.getByRole('button', { name: 'More' }))
+      await screen.findByText('Magnifier')
+      fireEvent.keyDown(window, { key: 'Enter' })
+      await tick()
+      expect(called('overlay_copy')).toHaveLength(0)
+    })
+
+    it('drops them for a new selection on another display', async () => {
+      await annotated()
+      await other(false)
+      await tick()
+      expect(shapes()).toHaveLength(1)
+      await other(true)
+      await waitFor(() => expect(shapes()).toHaveLength(0))
+    })
+
+    it('drops them on the next capture', async () => {
+      await annotated()
+      await emit('overlay:show', { ...info, session: 10 })
+      await waitFor(() => expect(shapes()).toHaveLength(0))
+    })
+
+    it('sends the annotations with a copy', async () => {
+      await annotated()
+      await userEvent.keyboard('{Enter}')
+      await waitFor(() => expect(sent).toHaveLength(1))
+      const [{ cmd, header, body }] = sent
+      expect(cmd).toBe('overlay_copy')
+      // The rect from (20, 20) to (60, 50), its stroke included, at 2x, inside the crop.
+      expect(header).toEqual({
+        session: 9,
+        rect: rect200,
+        layer: { x: 12, y: 12, width: 96, height: 76 },
+        blurs: [],
+      })
+      expect(body).toBeInstanceOf(Uint8Array)
+      expect((body as Uint8Array).length).toBe(96 * 76 * 4)
+    })
+
+    it('copies and saves from the toolbar', async () => {
+      await annotated()
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(called('overlay_save')).toHaveLength(1))
+      await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
+      await waitFor(() => expect(called('overlay_copy')).toHaveLength(1))
+      expect(sent).toHaveLength(2)
+    })
+
+    it('turns options on and off in the settings', async () => {
+      await shown()
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      await userEvent.click(await screen.findByRole('button', { name: 'More' }, { timeout: 5000 }))
+      await userEvent.click(
+        (await screen.findByText('Magnifier')).closest('[role=menuitemcheckbox]')!,
+      )
+      expect(settings.magnifier).toBe(true)
+      setSetting('magnifier', false)
     })
   })
 })

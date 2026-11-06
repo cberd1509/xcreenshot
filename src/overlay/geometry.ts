@@ -30,17 +30,38 @@ const ARROWS: Record<string, Point> = {
   ArrowDown: { x: 0, y: 1 },
 }
 
-const clamp = (v: number, min: number, max: number) => Math.min(Math.max(v, min), max)
+export const clamp = (v: number, min: number, max: number) => Math.min(Math.max(v, min), max)
 /** A logical edge in whole physical pixels, on the frame. */
 const pixelEdge = (v: number, s: number, max: number) => clamp(Math.round(v * s), 0, max)
 
+/** The rect spanning two points (any order), anywhere, negative coordinates included. */
+export function span(a: Point, b: Point): Rect {
+  const x = Math.min(a.x, b.x)
+  const y = Math.min(a.y, b.y)
+  return { x, y, width: Math.abs(b.x - a.x), height: Math.abs(b.y - a.y) }
+}
+
 /** The rect spanning two points (any order), clamped to the display. */
 export function fromPoints(a: Point, b: Point, bounds: Size): Rect {
-  const x0 = clamp(Math.min(a.x, b.x), 0, bounds.width)
-  const x1 = clamp(Math.max(a.x, b.x), 0, bounds.width)
-  const y0 = clamp(Math.min(a.y, b.y), 0, bounds.height)
-  const y1 = clamp(Math.max(a.y, b.y), 0, bounds.height)
-  return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
+  const corner = (p: Point) => ({ x: clamp(p.x, 0, bounds.width), y: clamp(p.y, 0, bounds.height) })
+  return span(corner(a), corner(b))
+}
+
+/** The smallest rect holding both. */
+export function union(a: Rect, b: Rect): Rect {
+  return span(
+    { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y) },
+    { x: Math.max(a.x + a.width, b.x + b.width), y: Math.max(a.y + a.height, b.y + b.height) },
+  )
+}
+
+/** Where two rects overlap, or `null` if they do not. */
+export function intersect(a: Rect, b: Rect): Rect | null {
+  const x = Math.max(a.x, b.x)
+  const y = Math.max(a.y, b.y)
+  const right = Math.min(a.x + a.width, b.x + b.width)
+  const bottom = Math.min(a.y + a.height, b.y + b.height)
+  return right > x && bottom > y ? { x, y, width: right - x, height: bottom - y } : null
 }
 
 export const isEmpty = (r: Rect) => r.width <= 0 || r.height <= 0

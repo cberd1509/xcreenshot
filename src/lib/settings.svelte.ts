@@ -26,6 +26,11 @@ export function defaultSettings(mac = isMac): Settings {
 
 export const settings: Settings = $state(defaultSettings())
 
+/** Turns an on/off setting on or off. The one place settings change, so #20 can save here. */
+export function setSetting(key: ToggleKey, on: boolean) {
+  settings[key] = on
+}
+
 const macSymbols: Record<string, string> = {
   Control: '⌃',
   Shift: '⇧',

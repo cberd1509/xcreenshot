@@ -121,6 +121,8 @@ pub struct Session {
     escape: Option<EscapeWait>,
     /// The Save dialog is open and the windows are hidden.
     saving: bool,
+    /// Saves started in this session, so a slow copy can tell whether one began meanwhile.
+    saves: u32,
     /// Whether Rust held Esc when the session opened (see [`Phase::wants_escape`]).
     escape_shortcut: bool,
 }
@@ -219,6 +221,7 @@ impl Phase {
             painted: Vec::new(),
             escape: None,
             saving: false,
+            saves: 0,
             escape_shortcut,
         });
         Some(shows)
@@ -346,6 +349,7 @@ impl Phase {
         match self.current(session) {
             Some(s) if !s.saving && !s.painted.is_empty() => {
                 s.saving = true;
+                s.saves += 1;
                 s.escape = None;
                 true
             }
@@ -375,6 +379,21 @@ impl Phase {
     /// Whether the Save dialog is open (the windows are hidden).
     pub fn saving(&self) -> bool {
         matches!(self, Phase::Open(s) if s.saving)
+    }
+
+    /// How many saves `session` has started, or `None` unless it is open and not saving. A copy
+    /// notes it when it starts.
+    pub fn saves(&self, session: u64) -> Option<u32> {
+        match self {
+            Phase::Open(s) if s.id == session && !s.saving => Some(s.saves),
+            _ => None,
+        }
+    }
+
+    /// Whether a copy that started at `saves` may close `session`: it is still open, not saving,
+    /// and no save started since (a save, even cancelled, means the user moved on).
+    pub fn copy_may_close(&self, session: u64, saves: u32) -> bool {
+        self.saves(session) == Some(saves)
     }
 
     /// Whether this session is still open with nothing painted (the overlay page is broken).
@@ -637,6 +656,22 @@ pub(crate) mod tests {
             assert_eq!(p.painted(7, 2).unwrap().focus, Some(2));
             assert_eq!(p.painted(7, 1).unwrap().focus, Some(2));
         }
+    }
+
+    #[test]
+    fn a_copy_may_close_only_if_no_save_began_since() {
+        let mut p = open(None);
+        p.painted(7, 2);
+        let saves = p.saves(7).unwrap();
+        assert!(p.copy_may_close(7, saves));
+        assert!(!p.copy_may_close(6, saves), "other session");
+        p.begin_save(7);
+        assert_eq!(p.saves(7), None, "saving");
+        assert!(!p.copy_may_close(7, saves));
+        p.end_save(7);
+        assert!(!p.copy_may_close(7, saves), "a save began since");
+        assert!(p.copy_may_close(7, p.saves(7).unwrap()));
+        assert_eq!(Phase::Idle.saves(7), None);
     }
 
     #[test]

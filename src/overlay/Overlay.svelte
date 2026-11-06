@@ -3,12 +3,13 @@
   import { emit, listen } from '@tauri-apps/api/event'
   import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
   import { onMount } from 'svelte'
-  import { isMac, settings } from '$lib/settings.svelte'
+  import { setSetting, settings } from '$lib/settings.svelte'
   import {
     CURSORS,
     badgePosition,
     contains,
     fromPoints,
+    intersect,
     isEmpty,
     loupePosition,
     move,
@@ -16,11 +17,15 @@
     resize,
     resizeTo,
     toPhysical,
+    union,
     type Handle,
     type Point,
     type Rect,
     type Size,
   } from './geometry'
+  import Annotator from './annotate/Annotator.svelte'
+  import { outputRequest } from './annotate/output'
+  import { shortcut } from './keys'
   import Magnifier from './Magnifier.svelte'
   import Selection from './Selection.svelte'
   import SizeBadge from './SizeBadge.svelte'
@@ -40,12 +45,17 @@
 
   /** Broadcast to every overlay page, so only one display has a selection. */
   const SELECTED = 'overlay:selected'
-  type Selected = { label: string; active: boolean }
+  /**
+   * `stamp` orders the events (ms since the epoch, the same clock on every display), so a late
+   * one never undoes a newer selection; `session` keeps one capture's events out of the next.
+   */
+  type Selected = { label: string; active: boolean; session: number; stamp: number }
 
   type Drag =
     | { kind: 'draw'; start: Point }
     | { kind: 'move'; start: Point; origin: Rect }
-    | { kind: 'resize'; start: Point; origin: Rect; handle: Handle }
+    /** `keep`: annotations the resize may not cut, so none ends up outside the selection. */
+    | { kind: 'resize'; start: Point; origin: Rect; handle: Handle; keep: Rect | null }
 
   /** Show the pixel loupe while dragging. Defaults to the magnifier setting. */
   let { magnifier }: { magnifier?: boolean } = $props()
@@ -77,6 +87,18 @@
   /** A short error message, shown for a few seconds. */
   let notice = $state<string | null>(null)
   let noticeTimer: ReturnType<typeof setTimeout> | undefined
+  let annotator = $state<ReturnType<typeof Annotator>>()
+  /** The newest selection event seen, its `stamp`. */
+  let seen = 0
+
+  /**
+   * Whether annotations show in the selection. Only then does a press outside it keep them
+   * rather than start a new selection, so hidden ones never strand the user.
+   */
+  function annotationsShown() {
+    const painted = annotator?.painted()
+    return !!(painted && selection && intersect(painted, selection))
+  }
 
   const physical = $derived(selection && toPhysical(selection, scale, frame))
   const cursor = $derived(
@@ -95,6 +117,7 @@
     selection = null
     drag = null
     editing = false
+    annotator?.reset()
   }
 
   /** Gives up on `session` (never a newer one); Rust closes it. */
@@ -107,6 +130,7 @@
     // Session ids only grow: an older (or the same) session never redraws.
     if (info.session <= current) return
     current = info.session
+    seen = 0
     const drawing = generation
     escapeShortcut = info.escapeShortcut
     reset()
@@ -146,7 +170,9 @@
     const rect = next && !isEmpty(toPhysical(next, scale, frame)) ? next : null
     const active = rect !== null
     if (active !== (selection !== null)) {
-      void emit(SELECTED, { label: view.label, active } satisfies Selected)
+      seen = Math.max(Date.now(), seen + 1)
+      const event: Selected = { label: view.label, active, session: current, stamp: seen }
+      void emit(SELECTED, event)
     }
     selection = rect
   }
@@ -155,18 +181,24 @@
   function clear() {
     drag = null
     select(null)
+    annotator?.reset()
   }
 
   /**
-   * Esc from Rust: undo one thing here (the size edit, else the selection or drag) and say
-   * whether anything was undone. Rust closes the overlay when no page undid anything.
+   * Undoes one thing for Esc: the size edit, else one annotation step (the shape being drawn,
+   * a menu, the selected shape, the tool), else the selection or drag. Returns whether it did.
    */
-  function escape({ session, token }: EscapeEvent) {
-    let handled = true
+  function undoOne(): boolean {
     if (editing) editing = false
+    else if (annotator?.escape()) return true
     else if (selection || drag) clear()
-    else handled = false
-    void invoke('overlay_escaped', { session, token, handled })
+    else return false
+    return true
+  }
+
+  /** Esc from Rust. Rust closes the overlay when no page undid anything. */
+  function escape({ session, token }: EscapeEvent) {
+    void invoke('overlay_escaped', { session, token, handled: undoOne() })
   }
 
   function show(message: string) {
@@ -177,14 +209,17 @@
 
   /**
    * Copies (closing the overlay) or saves (Rust hides the windows while the Save dialog is
-   * open, then closes, or shows them again on cancel). On failure the overlay stays open and
-   * says so.
+   * open, then closes, or shows them again on cancel), annotations included. On failure the
+   * overlay stays open and says so.
    */
   async function finish(command: 'overlay_copy' | 'overlay_save', rect: Rect) {
     if (busy) return
     busy = true
     try {
-      await invoke(command, { session: current, rect })
+      const session = current
+      const marks = await annotator?.exportAnnotations(rect, scale)
+      const { body, headers } = outputRequest(session, rect, marks)
+      await invoke(command, body, { headers })
     } catch (e) {
       console.error(`${command} failed`, e)
       show(command === 'overlay_copy' ? "Couldn't copy" : "Couldn't save")
@@ -204,30 +239,28 @@
     notice = null
   }
 
-  /**
-   * ⌘ on macOS, Ctrl elsewhere, plus `key` (a Latin letter), with no other modifier. On a
-   * non-Latin layout the physical key counts, as in other apps.
-   */
-  function shortcut(e: KeyboardEvent, key: string) {
-    const mod = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
-    const latin = /^[a-z]$/i.test(e.key)
-    const pressed = latin ? e.key.toLowerCase() === key : e.code === `Key${key.toUpperCase()}`
-    return mod && !e.altKey && !e.shiftKey && pressed
-  }
-
   const at = (e: PointerEvent): Point => ({ x: e.clientX, y: e.clientY })
+
+  // Keys go to the display pressed, whoever handles the press (the annotations stop theirs).
+  function onpointerdowncapture(e: PointerEvent) {
+    if (e.button !== 0 || frame.width === 0) return
+    view.setFocus().catch((err) => console.error('could not focus the overlay', err))
+  }
 
   function onpointerdown(e: PointerEvent) {
     if (e.button !== 0 || frame.width === 0) return
-    // Keys go to the display with the selection.
-    view.setFocus().catch((err) => console.error('could not focus the overlay', err))
     const start = at(e)
     pointer = start
     const handle = (e.target as Element).closest<HTMLElement>('[data-handle]')?.dataset.handle
     if (selection && handle) {
-      drag = { kind: 'resize', start, origin: selection, handle: handle as Handle }
+      const painted = annotator?.painted()
+      const keep = painted ? intersect(painted, selection) : null
+      drag = { kind: 'resize', start, origin: selection, handle: handle as Handle, keep }
     } else if (selection && contains(selection, start)) {
       drag = { kind: 'move', start, origin: selection }
+    } else if (annotationsShown()) {
+      // A new selection would drop the annotations: ignore the press instead.
+      return
     } else {
       select(null)
       drag = { kind: 'draw', start }
@@ -244,11 +277,10 @@
     const dx = pointer.x - drag.start.x
     const dy = pointer.y - drag.start.y
     if (drag.kind === 'move') return select(move(drag.origin, dx, dy, display))
-    const rect =
-      drag.kind === 'draw'
-        ? fromPoints(drag.start, pointer, display)
-        : resize(drag.origin, drag.handle, dx, dy, display)
-    select(rect)
+    if (drag.kind === 'draw') return select(fromPoints(drag.start, pointer, display))
+    const rect = resize(drag.origin, drag.handle, dx, dy, display)
+    // It cannot shrink past the annotations shown in it.
+    select(drag.keep ? union(rect, drag.keep) : rect)
   }
 
   function onpointerup() {
@@ -264,6 +296,8 @@
     }
     // Typing in the size badge: Enter applies the size there.
     if (e.target instanceof Element && e.target.closest('[data-size-badge]')) return
+    // An open toolbar menu owns the keyboard.
+    if (annotator?.menuOpen() || annotator?.key(e)) return
     if (!selection || !physical) return
     if (e.key === 'Enter' || shortcut(e, 'c')) {
       e.preventDefault()
@@ -291,11 +325,12 @@
       view.listen<FrameInfo>('overlay:show', (e) => void draw(e.payload)),
       view.listen<EscapeEvent>('overlay:escape', (e) => escape(e.payload)),
       view.listen('overlay:closed', free),
-      // A selection started on another display clears this one's.
+      // A selection started on another display clears this one's, annotations included.
       listen<Selected>(SELECTED, ({ payload }) => {
-        if (payload.label === view.label || !payload.active) return
-        drag = null
-        selection = null
+        // Only the newest event of this capture counts.
+        if (payload.session !== current || payload.stamp <= seen) return
+        seen = payload.stamp
+        if (payload.label !== view.label && payload.active) reset()
       }),
     ])
     // Asked only once the listeners are registered, so a frame sent while this window was
@@ -315,12 +350,25 @@
   style:cursor
   data-testid="overlay"
   role="presentation"
+  {onpointerdowncapture}
   {onpointerdown}
   {onpointermove}
   {onpointerup}
   onpointercancel={onpointerup}
 >
   <canvas bind:this={canvas} width="0" height="0"></canvas>
+  <Annotator
+    bind:this={annotator}
+    {selection}
+    {display}
+    {scale}
+    options={{ rememberRegion: settings.rememberRegion, magnifier: settings.magnifier }}
+    actions={{
+      copy: () => physical && void finish('overlay_copy', physical),
+      save: () => physical && void finish('overlay_save', physical),
+      option: setSetting,
+    }}
+  />
   {#if physical}
     <Selection rect={selection!} />
     {@const p = badgePosition(selection!, badge, display)}

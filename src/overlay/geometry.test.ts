@@ -6,6 +6,7 @@ import {
   contains,
   fromPoints,
   hex,
+  intersect,
   isEmpty,
   lockedSize,
   loupePosition,
@@ -13,7 +14,9 @@ import {
   nudge,
   resize,
   resizeTo,
+  span,
   toPhysical,
+  union,
   type Rect,
 } from './geometry'
 
@@ -25,6 +28,21 @@ const rect = (x: number, y: number, width: number, height: number): Rect => ({
   height,
 })
 const retina = { x: 2, y: 2 }
+
+describe('span, union and intersect', () => {
+  it('spans two points in any order, negative ones included', () => {
+    expect(span({ x: 10, y: -20 }, { x: -30, y: 40 })).toEqual(rect(-30, -20, 40, 60))
+  })
+
+  it('holds both rects', () => {
+    expect(union(rect(0, 0, 10, 10), rect(-5, 20, 10, 10))).toEqual(rect(-5, 0, 15, 30))
+  })
+
+  it('overlaps two rects, or says they do not', () => {
+    expect(intersect(rect(0, 0, 10, 10), rect(5, -5, 10, 10))).toEqual(rect(5, 0, 5, 5))
+    expect(intersect(rect(0, 0, 10, 10), rect(10, 0, 10, 10))).toBeNull()
+  })
+})
 
 describe('fromPoints', () => {
   it('normalizes a drag in any direction', () => {

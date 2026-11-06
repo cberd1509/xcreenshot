@@ -18,6 +18,9 @@ vi.mock('@tauri-apps/api/app', () => ({
   getVersion: vi.fn<() => Promise<string>>(() => Promise.resolve('0.1.0')),
 }))
 
+// jsdom has no canvas, so Konva gets a stand-in that records what it was asked to draw.
+vi.mock('konva', async () => ({ default: (await import('./konva')).FakeKonva }))
+
 // jsdom has no pointer events or ResizeObserver.
 class FakePointerEvent extends MouseEvent {
   readonly pointerId: number

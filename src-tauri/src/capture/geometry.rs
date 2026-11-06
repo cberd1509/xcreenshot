@@ -122,21 +122,23 @@ pub fn crop(frame: &DisplayFrame, rect: Rect) -> Result<RgbaImage, CaptureError>
     crop_pixels(&frame.image, to_pixels(frame, rect)?)
 }
 
-/// Cuts a pixel rect out of an image, clamped to it. Empty after clamping is an error.
-pub fn crop_pixels(image: &RgbaImage, rect: PixelRect) -> Result<RgbaImage, CaptureError> {
-    let (w, h) = image.dimensions();
-    let (x0, y0) = (rect.x.min(w), rect.y.min(h));
-    let x1 = rect.x.saturating_add(rect.width).min(w);
-    let y1 = rect.y.saturating_add(rect.height).min(h);
-    if x1 <= x0 || y1 <= y0 {
-        return Err(CaptureError::EmptySelection);
-    }
-    let p = PixelRect {
+/// The part of `rect` on a `width` x `height` image, or `None` if no pixel of it is.
+pub fn clamp_rect(rect: PixelRect, width: u32, height: u32) -> Option<PixelRect> {
+    let (x0, y0) = (rect.x.min(width), rect.y.min(height));
+    let x1 = rect.x.saturating_add(rect.width).min(width);
+    let y1 = rect.y.saturating_add(rect.height).min(height);
+    (x1 > x0 && y1 > y0).then_some(PixelRect {
         x: x0,
         y: y0,
         width: x1 - x0,
         height: y1 - y0,
-    };
+    })
+}
+
+/// Cuts a pixel rect out of an image, clamped to it. Empty after clamping is an error.
+pub fn crop_pixels(image: &RgbaImage, rect: PixelRect) -> Result<RgbaImage, CaptureError> {
+    let (w, h) = image.dimensions();
+    let p = clamp_rect(rect, w, h).ok_or(CaptureError::EmptySelection)?;
     let stride = w as usize * 4;
     let (left, row) = (p.x as usize * 4, p.width as usize * 4);
     let src = image.as_raw();

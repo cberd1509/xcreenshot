@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { defaultSettings, settings, shortcutKeys } from './settings.svelte'
+import { defaultSettings, setSetting, settings, shortcutKeys } from './settings.svelte'
 
 describe('settings on macOS', () => {
   it('defaults to ⌃⇧⌘S and shows Mac key symbols', () => {
@@ -24,5 +24,13 @@ describe('settings state', () => {
 
   it('returns a fresh object each time', () => {
     expect(defaultSettings()).not.toBe(defaultSettings())
+  })
+
+  it('turns an on/off setting on and off', () => {
+    const before = settings.magnifier
+    setSetting('magnifier', !before)
+    expect(settings.magnifier).toBe(!before)
+    setSetting('magnifier', before)
+    expect(settings.magnifier).toBe(before)
   })
 })
