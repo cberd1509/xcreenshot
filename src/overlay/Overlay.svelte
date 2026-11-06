@@ -95,7 +95,7 @@
   let lock = $state(false)
   let badge = $state<Size>({ width: 0, height: 0 })
   let loupe = $state<Size>({ width: 0, height: 0 })
-  /** A copy or save is running: keys wait for it. */
+  /** A copy, save or share is running: keys wait for it. */
   let busy = false
   /** A short error message, shown for a few seconds. */
   let notice = $state<string | null>(null)
@@ -260,22 +260,29 @@
     noticeTimer = setTimeout(() => (notice = null), 3000)
   }
 
+  const FAILED = {
+    overlay_copy: "Couldn't copy",
+    overlay_save: "Couldn't save",
+    overlay_share: "Couldn't share",
+  }
+
   /**
-   * Copies (closing the overlay) or saves (Rust hides the windows while the Save dialog is
-   * open, then closes, or shows them again on cancel), annotations included. On failure the
+   * Copies (closing the overlay), saves (Rust hides the windows while the Save dialog is open,
+   * then closes, or shows them again on cancel) or shares (the share sheet opens under
+   * `anchor`; picking a service closes the overlay), annotations included. On failure the
    * overlay stays open and says so.
    */
-  async function finish(command: 'overlay_copy' | 'overlay_save', rect: Rect) {
+  async function finish(command: keyof typeof FAILED, rect: Rect, anchor?: Rect) {
     if (busy) return
     busy = true
     try {
       const session = current
       const marks = await annotator?.exportAnnotations(rect, scale)
-      const { body, headers } = outputRequest(session, rect, marks)
+      const { body, headers } = outputRequest(session, rect, marks, anchor)
       await invoke(command, body, { headers })
     } catch (e) {
       console.error(`${command} failed`, e)
-      show(command === 'overlay_copy' ? "Couldn't copy" : "Couldn't save")
+      show(FAILED[command])
     } finally {
       busy = false
     }
@@ -486,6 +493,7 @@
     actions={{
       copy: () => physical && void finish('overlay_copy', physical),
       save: () => physical && void finish('overlay_save', physical),
+      share: (anchor) => physical && void finish('overlay_share', physical, anchor),
       cancel: () => close(current),
       option: setCaptureOption,
     }}

@@ -1,5 +1,6 @@
 <script lang="ts" module>
   import type { ToggleKey } from '$lib/settings.svelte'
+  import type { Rect } from '../geometry'
 
   /** Options in the ⋯ menu. */
   export type Option = Extract<ToggleKey, 'rememberRegion' | 'magnifier'>
@@ -8,6 +9,8 @@
   export type ToolbarActions = {
     copy: () => void
     save: () => void
+    /** Opens the share sheet under `anchor`, the Share button in logical px in the page. */
+    share: (anchor: Rect) => void
     /** Closes the overlay, as Esc does once nothing is left to undo. */
     cancel: () => void
     option: (key: Option, on: boolean) => void
@@ -17,7 +20,7 @@
 <script lang="ts">
   import * as Tooltip from '$lib/components/ui/tooltip'
   import { isMac } from '$lib/settings.svelte'
-  import type { Rect, Size } from '../geometry'
+  import type { Size } from '../geometry'
   import { keyLabels } from '../keys'
   import ActionBar from './ActionBar.svelte'
   import { railPosition, toolbarPosition } from './placement'
@@ -73,6 +76,7 @@
     onclear: () => void
     options: Record<Option, boolean>
     actions: ToolbarActions
+    /** macOS: keys show as ⌘ and ⇧, and Share is there (no share sheet elsewhere yet). */
     mac?: boolean
   } = $props()
 
@@ -139,7 +143,7 @@
     onpointerdown={stop}
     role="presentation"
   >
-    <ActionBar {actions} {options} bind:moreOpen {keepFocus} {mod} />
+    <ActionBar {actions} {options} bind:moreOpen {keepFocus} {mod} canShare={mac} />
   </div>
 </Tooltip.Provider>
 

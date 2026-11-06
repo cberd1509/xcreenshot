@@ -19,6 +19,7 @@ function setup(props: Props = {}) {
   const actions: ToolbarActions = {
     copy: vi.fn<() => void>(),
     save: vi.fn<() => void>(),
+    share: vi.fn<ToolbarActions['share']>(),
     cancel: vi.fn<() => void>(),
     option: vi.fn<ToolbarActions['option']>(),
   }
@@ -233,7 +234,7 @@ describe('Toolbar', () => {
     expect(style().color).toBe('#3B82F6')
   })
 
-  it('copies, saves and cancels; Share is coming', async () => {
+  it('copies, saves and cancels', async () => {
     const { actions, user } = setup()
     await user.click(button('Copy'))
     await user.click(button('Save'))
@@ -241,9 +242,27 @@ describe('Toolbar', () => {
     expect(actions.copy).toHaveBeenCalledOnce()
     expect(actions.save).toHaveBeenCalledOnce()
     expect(actions.cancel).toHaveBeenCalledOnce()
-    expect(button('Share')).toHaveAttribute('aria-disabled', 'true')
-    await user.hover(button('Share'))
-    expect(await tooltip('Coming soon')).toBeInTheDocument()
+  })
+
+  it('shares under the Share button, between ⋯ and Save', async () => {
+    const { actions, user } = setup()
+    const share = button('Share')
+    const names = [...screen.getByRole('toolbar', { name: 'Capture actions' }).children]
+      .map((b) => b.getAttribute('aria-label') ?? b.textContent?.trim())
+      .filter(Boolean)
+    expect(names).toEqual(['More', 'Share', 'Save', 'Copy', 'Cancel'])
+    const at = { x: 40, y: 300, width: 80, height: 36 }
+    vi.spyOn(share, 'getBoundingClientRect').mockReturnValue(DOMRect.fromRect(at) as DOMRect)
+    await user.hover(share)
+    expect(await tooltip('Share')).toBeInTheDocument()
+    await user.click(share)
+    expect(actions.share).toHaveBeenCalledExactlyOnceWith(at)
+  })
+
+  it('has no Share button off macOS, where there is no share sheet yet', () => {
+    setup({ mac: false })
+    expect(button('Save')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Share' })).toBeNull()
   })
 
   it('shows the platform key on Copy', async () => {

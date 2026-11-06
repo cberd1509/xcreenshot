@@ -8,6 +8,7 @@ fn main() {
         "overlay_escape",
         "overlay_copy",
         "overlay_save",
+        "overlay_share",
         "close_overlay",
         "notice",
         "notice_answer",

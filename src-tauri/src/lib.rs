@@ -82,6 +82,7 @@ pub fn run() {
             overlay::window::overlay_escape,
             overlay::export::overlay_copy,
             overlay::export::overlay_save,
+            overlay::export::overlay_share,
             overlay::window::close_overlay,
             notice::notice,
             notice::notice_answer,

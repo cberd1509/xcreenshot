@@ -300,6 +300,17 @@ pub fn close<R: Runtime>(app: &AppHandle<R>) {
 /// [`close`], only if `ok` holds for the phase. Checked and closed under one lock, so nothing
 /// can start in between (a save, say).
 pub fn close_if<R: Runtime>(app: &AppHandle<R>, ok: impl FnOnce(&Phase) -> bool) {
+    end_if(app, ok, true);
+}
+
+/// [`close_session`], but the app stays active: a service chosen in the share sheet shows its
+/// UI (AirDrop, Mail…) in this app, and hiding the app would hide it too. Main thread only.
+pub(super) fn close_for_share<R: Runtime>(app: &AppHandle<R>, session: u64) {
+    end_if(app, |phase| phase.session() == Some(session), false);
+}
+
+/// Closes if `ok` holds; `give_back` hands focus back to the app the user was in.
+fn end_if<R: Runtime>(app: &AppHandle<R>, ok: impl FnOnce(&Phase) -> bool, give_back: bool) {
     {
         let mut phase = phase(app);
         if phase.saving() {
@@ -319,9 +330,12 @@ pub fn close_if<R: Runtime>(app: &AppHandle<R>, ok: impl FnOnce(&Phase) -> bool)
             log::warn!("could not tell {label} to free its frame: {e}");
         }
     }
-    // First, so a notice shown again keeps the app visible, as Settings does.
+    // First, so a notice shown again keeps the app visible, as Settings does. After a share
+    // too: only the focus stays with the chosen service.
     crate::notice::show_after_capture(app);
-    crate::windows::yield_focus(app, None);
+    if give_back {
+        crate::windows::yield_focus(app, None);
+    }
     // Last, so a waiting update restart sees the overlay gone.
     app.state::<Overlay>().idle.notify_waiters();
 }
@@ -373,8 +387,8 @@ pub(super) fn reshow<R: Runtime>(app: &AppHandle<R>, displays: &[u32], focus: u3
 /// no page answers within `timeout` (a hung page never locks the user out). Returns the Esc
 /// token if it was forwarded.
 fn escape<R: Runtime>(app: &AppHandle<R>, timeout: Duration) -> Option<u64> {
-    // The Save dialog is open: Esc is the dialog's.
-    if phase(app).saving() {
+    // The Save dialog or share sheet is open: Esc is theirs.
+    if phase(app).in_dialog() {
         return None;
     }
     let token = NEXT_ESCAPE.fetch_add(1, Ordering::Relaxed);
