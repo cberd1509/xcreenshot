@@ -7,6 +7,7 @@ import { resetSettings, settings } from '$lib/settings.svelte'
 import { box, fakeContext } from '../test/canvas'
 import { stages } from '../test/konva'
 import { OUTPUT_HEADER } from './annotate/output'
+import type { Rect } from './geometry'
 
 type Invoke = (
   cmd: string,
@@ -31,7 +32,7 @@ type Info = {
   logicalWidth: number
   logicalHeight: number
   escapeShortcut: boolean
-  region?: { x: number; y: number; width: number; height: number } | null
+  region?: Rect | null
 }
 type At = { x: number; y: number }
 
@@ -535,6 +536,18 @@ describe('Overlay', () => {
         await restored()
         drag({ x: 500, y: 500 }, { x: 520, y: 530 })
         expect(rect()).toEqual([500, 500, 20, 30])
+      })
+
+      it('leaves Esc to close the overlay until it is changed', async () => {
+        await restored()
+        await esc()
+        await waitFor(() => expect(answers()).toEqual([{ session: 9, token: 1, handled: false }]))
+        expect(selection()).not.toBeNull()
+        await userEvent.keyboard('{ArrowRight}')
+        await esc(2)
+        await waitFor(() => expect(answers()).toHaveLength(2))
+        expect(answers()[1]).toEqual({ session: 9, token: 2, handled: true })
+        expect(selection()).toBeNull()
       })
 
       it('starts empty without one', async () => {

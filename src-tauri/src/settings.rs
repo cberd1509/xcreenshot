@@ -387,7 +387,7 @@ mod tests {
         let fakes = Fakes::new();
         let region = crate::region::Region {
             arrangement: "a".into(),
-            display: crate::region::tests::screen(1),
+            display: crate::region::tests::monitor(1),
             rect: crate::region::tests::rect(1.0, 2.0, 3.0, 4.0),
         };
         let mut p = Prefs {

@@ -858,13 +858,13 @@ pub(super) mod tests {
 
     #[test]
     fn a_remembered_region_opens_selected_on_its_display() {
-        use crate::region::{Screen, arrangement, tests::rect};
+        use crate::region::{Monitor, arrangement, tests::rect};
         let app = app();
         let h = app.handle();
-        let screens = [Screen::of(&frame(1, 4, 2)), Screen::of(&frame(2, 4, 2))];
+        let monitors = [Monitor::of(&frame(1, 4, 2)), Monitor::of(&frame(2, 4, 2))];
         let remembered = Region {
-            arrangement: arrangement(&screens),
-            display: screens[1],
+            arrangement: arrangement(&monitors),
+            display: monitors[1],
             rect: rect(0.5, 0.0, 1.0, 1.0),
         };
         let (mut screen, release) = fake(true, &[1, 2]);

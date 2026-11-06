@@ -3,7 +3,7 @@
 //! A [`Region`] is kept per display arrangement (see [`arrangement`]), so a laptop on its own
 //! and the same laptop docked each remember their own; the last [`KEEP`] arrangements are kept,
 //! newest first, in [`Prefs::regions`]. A region names its display by id, logical bounds and
-//! scale, so a display that changed never gets a region meant for another.
+//! pixel size (its scale), so a display that changed never gets a region meant for another.
 //!
 //! Rust saves it after a copy or save (from the session it already holds, never from the page)
 //! and sends it with the frame info when the overlay opens. Turning the setting off clears them.
@@ -25,19 +25,22 @@ pub struct LogicalRect {
     pub height: f64,
 }
 
-/// A display as captured: its id, logical bounds and scale (frame px per logical px).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct Screen {
+/// A display as captured: its id, logical bounds and frame size in pixels, which give its scale
+/// on each axis exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Monitor {
     pub id: u32,
     pub x: i32,
     pub y: i32,
     pub width: u32,
     pub height: u32,
-    pub scale: f64,
+    pub pixel_width: u32,
+    pub pixel_height: u32,
 }
 
-impl Screen {
-    /// The display of `frame`, with the scale measured from its image (as the crop does).
+impl Monitor {
+    /// The display of `frame`, measured from its image (as the crop does).
     pub fn of(frame: &DisplayFrame) -> Self {
         let Bounds {
             x,
@@ -45,24 +48,27 @@ impl Screen {
             width,
             height,
         } = frame.logical;
+        let (pixel_width, pixel_height) = frame.image.dimensions();
         Self {
             id: frame.id,
             x,
             y,
             width,
             height,
-            scale: f64::from(frame.image.width()) / f64::from(width.max(1)),
+            pixel_width,
+            pixel_height,
         }
     }
 
-    /// `px`, a rect in this display's frame pixels, in logical px.
+    /// `px`, a rect in this display's frame pixels, in logical px (the page's scale per axis).
     pub fn to_logical(self, px: PixelRect) -> LogicalRect {
-        let s = self.scale;
+        let sx = f64::from(self.pixel_width) / f64::from(self.width.max(1));
+        let sy = f64::from(self.pixel_height) / f64::from(self.height.max(1));
         LogicalRect {
-            x: f64::from(px.x) / s,
-            y: f64::from(px.y) / s,
-            width: f64::from(px.width) / s,
-            height: f64::from(px.height) / s,
+            x: f64::from(px.x) / sx,
+            y: f64::from(px.y) / sy,
+            width: f64::from(px.width) / sx,
+            height: f64::from(px.height) / sy,
         }
     }
 
@@ -91,66 +97,55 @@ impl Screen {
 pub struct Region {
     /// See [`arrangement`].
     pub arrangement: String,
-    pub display: Screen,
+    pub display: Monitor,
     pub rect: LogicalRect,
 }
 
-/// A key for the connected displays: each one's id, logical bounds and scale, sorted by id.
+/// A key for the connected displays: each one's id, logical bounds and pixel size, sorted by id.
 /// Plugging, unplugging, moving or rescaling a display gives a different key.
-pub fn arrangement(screens: &[Screen]) -> String {
-    let mut sorted = screens.to_vec();
+pub fn arrangement(monitors: &[Monitor]) -> String {
+    let mut sorted = monitors.to_vec();
     sorted.sort_by_key(|s| s.id);
     sorted
         .iter()
         .map(|s| {
             format!(
-                "{}:{},{},{}x{}@{}",
-                s.id, s.x, s.y, s.width, s.height, s.scale
+                "{}:{},{},{}x{}@{}x{}",
+                s.id, s.x, s.y, s.width, s.height, s.pixel_width, s.pixel_height
             )
         })
         .collect::<Vec<_>>()
         .join(";")
 }
 
-/// The remembered rect for `screen` in the arrangement `key`, clamped to it. `None` if there
+/// The remembered rect for `monitor` in the arrangement `key`, clamped to it. `None` if there
 /// is none, or it was on another display or the display changed.
-pub fn find(regions: &[Region], key: &str, screen: &Screen) -> Option<LogicalRect> {
+pub fn find(regions: &[Region], key: &str, monitor: &Monitor) -> Option<LogicalRect> {
     regions
         .iter()
         .find(|r| r.arrangement == key)
-        .filter(|r| r.display == *screen)
-        .and_then(|r| screen.clamp(r.rect))
+        .filter(|r| r.display == *monitor)
+        .and_then(|r| monitor.clamp(r.rect))
 }
 
-/// Why a region was not saved.
-const OFF: &str = "Remember region is off.";
-
-/// Keeps `region` as its arrangement's region, newest first, at most [`KEEP`]. Nothing changes
-/// if the setting is off.
-pub fn remember(prefs: &mut Prefs, region: Region) -> Result<(), &'static str> {
-    if !prefs.remember_region {
-        return Err(OFF);
+/// Keeps `region` as its arrangement's region, newest first, at most [`KEEP`]. Returns whether
+/// anything changed: not while the setting is off (turning it off cleared them), nor for the
+/// region already kept.
+pub fn remember(prefs: &mut Prefs, region: Region) -> bool {
+    if !prefs.remember_region || prefs.regions.first() == Some(&region) {
+        return false;
     }
     prefs
         .regions
         .retain(|r| r.arrangement != region.arrangement);
     prefs.regions.insert(0, region);
     prefs.regions.truncate(KEEP);
-    Ok(())
-}
-
-/// The regions to restore from: none while the setting is off.
-pub fn recall(prefs: Prefs) -> Vec<Region> {
-    if prefs.remember_region {
-        prefs.regions
-    } else {
-        Vec::new()
-    }
+    true
 }
 
 /// The saved regions, read when the overlay opens. Never waits for a change being saved.
 pub fn load<R: Runtime>(app: &AppHandle<R>) -> Vec<Region> {
-    recall(prefs::peek(app))
+    prefs::peek(app).regions
 }
 
 /// Saves `region` (see [`remember`]). Writes the file, so call it off the hot path.
@@ -161,10 +156,13 @@ pub fn save<R: Runtime>(app: &AppHandle<R>, region: Region) {
     }
 }
 
-/// [`save`] into `storage`. Off is not an error.
+/// [`save`] into `storage`. Writes nothing if nothing changed.
 fn save_to(storage: &impl Storage, region: Region) -> Result<(), &'static str> {
-    match prefs::modify(storage, |p| remember(p, region)) {
-        Ok(_) | Err(OFF) => Ok(()),
+    const UNCHANGED: &str = "unchanged";
+    match prefs::modify(storage, |p| {
+        remember(p, region).then_some(()).ok_or(UNCHANGED)
+    }) {
+        Ok(_) | Err(UNCHANGED) => Ok(()),
         Err(e) => Err(e),
     }
 }
@@ -175,14 +173,15 @@ pub(crate) mod tests {
     use crate::overlay::tests::frame;
     use crate::prefs::tests::FakeStorage;
 
-    pub(crate) fn screen(id: u32) -> Screen {
-        Screen {
+    pub(crate) fn monitor(id: u32) -> Monitor {
+        Monitor {
             id,
             x: id as i32 * 1000,
             y: 0,
             width: 800,
             height: 600,
-            scale: 2.0,
+            pixel_width: 1600,
+            pixel_height: 1200,
         }
     }
 
@@ -195,7 +194,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn region(key: &str, display: Screen) -> Region {
+    fn region(key: &str, display: Monitor) -> Region {
         Region {
             arrangement: key.into(),
             display,
@@ -204,17 +203,18 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_screen_is_its_frames_display_and_measured_scale() {
-        let s = Screen::of(&frame(3, 8, 6));
+    fn a_monitor_is_its_frames_display_and_measured_scale() {
+        let s = Monitor::of(&frame(3, 8, 6));
         assert_eq!(
             s,
-            Screen {
+            Monitor {
                 id: 3,
                 x: 3000,
                 y: 0,
                 width: 4,
                 height: 3,
-                scale: 2.0
+                pixel_width: 8,
+                pixel_height: 6
             }
         );
         let px = PixelRect {
@@ -224,19 +224,29 @@ pub(crate) mod tests {
             height: 4,
         };
         assert_eq!(s.to_logical(px), rect(0.5, 1.0, 1.5, 2.0));
+        // Each axis has its own scale (rounded logical sizes on Windows).
+        let uneven = Monitor {
+            pixel_height: 9,
+            ..s
+        };
+        assert_eq!(uneven.to_logical(px), rect(0.5, 2.0 / 3.0, 1.5, 4.0 / 3.0));
     }
 
     #[test]
     fn the_arrangement_key_is_sorted_and_changes_with_any_display() {
-        let (a, b) = (screen(1), screen(2));
+        let (a, b) = (monitor(1), monitor(2));
         let key = arrangement(&[b, a]);
-        assert_eq!(key, "1:1000,0,800x600@2;2:2000,0,800x600@2");
+        assert_eq!(key, "1:1000,0,800x600@1600x1200;2:2000,0,800x600@1600x1200");
         assert_eq!(arrangement(&[a, b]), key, "order does not matter");
         assert_ne!(arrangement(&[a]), key, "unplugged");
-        let moved = Screen { y: -600, ..b };
-        let rescaled = Screen { scale: 1.0, ..b };
-        let resized = Screen { width: 1024, ..b };
-        let renumbered = Screen { id: 3, ..b };
+        let moved = Monitor { y: -600, ..b };
+        let rescaled = Monitor {
+            pixel_width: 800,
+            pixel_height: 600,
+            ..b
+        };
+        let resized = Monitor { width: 1024, ..b };
+        let renumbered = Monitor { id: 3, ..b };
         for other in [moved, rescaled, resized, renumbered] {
             assert_ne!(arrangement(&[a, other]), key, "{other:?}");
         }
@@ -244,7 +254,7 @@ pub(crate) mod tests {
 
     #[test]
     fn clamps_to_the_display() {
-        let s = screen(1);
+        let s = monitor(1);
         let r = rect(10.0, 20.0, 30.0, 40.0);
         assert_eq!(s.clamp(r), Some(r));
         assert_eq!(
@@ -263,21 +273,21 @@ pub(crate) mod tests {
 
     #[test]
     fn finds_only_its_arrangement_and_unchanged_display() {
-        let regions = [region("a", screen(1)), region("b", screen(2))];
+        let regions = [region("a", monitor(1)), region("b", monitor(2))];
         assert_eq!(
-            find(&regions, "b", &screen(2)),
+            find(&regions, "b", &monitor(2)),
             Some(rect(10.0, 20.0, 30.0, 40.0))
         );
-        assert_eq!(find(&regions, "b", &screen(1)), None, "another display");
-        let rescaled = Screen {
-            scale: 1.0,
-            ..screen(2)
+        assert_eq!(find(&regions, "b", &monitor(1)), None, "another display");
+        let rescaled = Monitor {
+            pixel_width: 800,
+            ..monitor(2)
         };
         assert_eq!(find(&regions, "b", &rescaled), None, "the display changed");
-        assert_eq!(find(&regions, "c", &screen(1)), None, "no region there");
-        let small = Screen {
+        assert_eq!(find(&regions, "c", &monitor(1)), None, "no region there");
+        let small = Monitor {
             width: 20,
-            ..screen(1)
+            ..monitor(1)
         };
         let mut far = region("a", small);
         far.rect = rect(10.0, 0.0, 30.0, 5.0);
@@ -292,7 +302,7 @@ pub(crate) mod tests {
     fn keeps_the_newest_per_arrangement_up_to_the_cap() {
         let mut prefs = Prefs::default();
         for i in 0..10 {
-            remember(&mut prefs, region(&format!("k{i}"), screen(1))).unwrap();
+            assert!(remember(&mut prefs, region(&format!("k{i}"), monitor(1))));
         }
         let keys: Vec<_> = prefs
             .regions
@@ -301,9 +311,10 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(keys, ["k9", "k8", "k7", "k6", "k5", "k4", "k3", "k2"]);
         // The same arrangement again replaces its region and moves to the front.
-        let mut newer = region("k5", screen(1));
+        let mut newer = region("k5", monitor(1));
         newer.rect = rect(1.0, 1.0, 1.0, 1.0);
-        remember(&mut prefs, newer.clone()).unwrap();
+        assert!(remember(&mut prefs, newer.clone()));
+        assert!(!remember(&mut prefs, newer.clone()), "already kept");
         assert_eq!(prefs.regions.len(), KEEP);
         assert_eq!(prefs.regions[0], newer);
         assert_eq!(
@@ -317,27 +328,31 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn nothing_is_kept_or_recalled_while_off() {
-        let mut prefs = Prefs::default();
-        remember(&mut prefs, region("a", screen(1))).unwrap();
-        assert_eq!(recall(prefs.clone()).len(), 1);
-        prefs.remember_region = false;
-        assert_eq!(remember(&mut prefs, region("b", screen(1))), Err(OFF));
-        assert_eq!(prefs.regions.len(), 1);
-        assert!(recall(prefs).is_empty());
+    fn nothing_is_kept_while_off() {
+        let mut prefs = Prefs {
+            remember_region: false,
+            ..Prefs::default()
+        };
+        assert!(!remember(&mut prefs, region("b", monitor(1))));
+        assert!(prefs.regions.is_empty());
     }
 
     #[test]
     fn saving_writes_the_prefs_unless_off() {
         let storage = FakeStorage::default();
-        assert_eq!(save_to(&storage, region("a", screen(1))), Ok(()));
-        assert_eq!(storage.load().regions, [region("a", screen(1))]);
+        assert_eq!(save_to(&storage, region("a", monitor(1))), Ok(()));
+        assert_eq!(storage.load().regions, [region("a", monitor(1))]);
+        assert_eq!(save_to(&storage, region("a", monitor(1))), Ok(()));
         storage.prefs.borrow_mut().remember_region = false;
-        assert_eq!(save_to(&storage, region("b", screen(1))), Ok(()));
-        assert_eq!(storage.saves.get(), 1, "nothing written while off");
+        assert_eq!(save_to(&storage, region("b", monitor(1))), Ok(()));
+        assert_eq!(
+            storage.saves.get(),
+            1,
+            "nothing written while off or unchanged"
+        );
         let failing = FakeStorage::failing();
         assert_eq!(
-            save_to(&failing, region("a", screen(1))),
+            save_to(&failing, region("a", monitor(1))),
             Err(prefs::NOT_SAVED)
         );
     }
@@ -345,9 +360,9 @@ pub(crate) mod tests {
     #[test]
     fn regions_round_trip_through_the_prefs_json() {
         let mut prefs = Prefs::default();
-        remember(&mut prefs, region("a", screen(1))).unwrap();
+        assert!(remember(&mut prefs, region("a", monitor(1))));
         let json = serde_json::to_value(&prefs).unwrap();
-        assert_eq!(json["regions"][0]["display"]["scale"], 2.0);
+        assert_eq!(json["regions"][0]["display"]["pixelWidth"], 1600);
         let back: Prefs = serde_json::from_value(json).unwrap();
         assert_eq!(back, prefs);
         // A bad list falls back to none, keeping the other prefs.

@@ -133,7 +133,7 @@ pub(crate) async fn overlay_copy<R: Runtime>(
     copy_with(&window, &state, &out, clipboard, remember_in(app)).await
 }
 
-/// Keeps the region of a copy that worked. Faked in tests.
+/// Keeps the region of a copy or save that worked. Faked in tests.
 pub(crate) type Remember = Box<dyn FnOnce(Region) + Send>;
 
 /// Saves the region to the prefs on a blocking thread, so nothing waits for the file.
@@ -151,7 +151,13 @@ async fn copy_with<R: Runtime>(
 ) -> Result<(), CaptureError> {
     let started = Instant::now();
     let session = out.session;
-    let Some((_, frame, saves, region)) = selected_frame(window, state, out) else {
+    let Some(Selected {
+        frame,
+        saves,
+        region,
+        ..
+    }) = selected_frame(window, state, out)
+    else {
         return Ok(());
     };
     // Cropped and annotated here: the annotations are read in place from the request.
@@ -174,21 +180,34 @@ async fn copy_with<R: Runtime>(
     Ok(())
 }
 
-/// The calling window's display, its original frame, the session's save count and the region
-/// to remember, or `None` if the session or window is not an open overlay, or the Save dialog
-/// is open.
+/// What a copy or save works from.
+struct Selected {
+    /// The calling window's display.
+    display: u32,
+    /// Its original frame.
+    frame: Arc<RgbaImage>,
+    /// The session's save count.
+    saves: u32,
+    /// The selection to remember.
+    region: Region,
+}
+
+/// What a copy or save works from, or `None` if the session or window is not an open overlay,
+/// or the Save dialog is open.
 fn selected_frame<R: Runtime>(
     window: &WebviewWindow<R>,
     state: &Overlay,
     out: &Output,
-) -> Option<(u32, Arc<RgbaImage>, u32, Region)> {
+) -> Option<Selected> {
     let session = out.session;
     let display = display_id(window.label())?;
     let mut phase = state.phase();
-    let saves = phase.saves(session)?;
-    let image = phase.image(session, display)?;
-    let region = phase.region(session, display, out.rect)?;
-    Some((display, image, saves, region))
+    Some(Selected {
+        display,
+        saves: phase.saves(session)?,
+        frame: phase.image(session, display)?,
+        region: phase.region(session, display, out.rect)?,
+    })
 }
 
 /// The selection cropped from the frame, with its annotations on it.
@@ -212,8 +231,9 @@ pub(crate) async fn overlay_save<R: Runtime>(
     let paths = app.path();
     let default_dir = output::default_dir(paths.desktop_dir().ok(), paths.picture_dir().ok());
     let now = chrono::Local::now().naive_local();
+    let remember = remember_in(&app);
     let saver = OsSaver(app);
-    save_with(&window, &state, &out, saver, now, default_dir).await
+    save_with(&window, &state, &out, saver, now, default_dir, remember).await
 }
 
 async fn save_with<R: Runtime>(
@@ -223,9 +243,16 @@ async fn save_with<R: Runtime>(
     saver: impl Saver,
     now: NaiveDateTime,
     default_dir: Option<PathBuf>,
+    remember: Remember,
 ) -> Result<(), CaptureError> {
     let session = out.session;
-    let Some((display, frame, _, region)) = selected_frame(window, state, out) else {
+    let Some(Selected {
+        display,
+        frame,
+        region,
+        ..
+    }) = selected_frame(window, state, out)
+    else {
         return Ok(());
     };
     // Checked before anything hides, so an empty selection just stays.
@@ -266,14 +293,13 @@ async fn save_with<R: Runtime>(
     // Always written once a path is picked: the crop is already taken. The windows are hidden
     // meanwhile, so writing before closing costs nothing visible, and a failure can bring the
     // overlay back to say so.
-    let written = spawn_blocking(move || {
-        write(&image, &path, &*saver)?;
-        saver.remember_region(region);
-        Ok(())
-    })
-    .await
-    .unwrap_or_else(|e| Err(CaptureError::Write(e.to_string())));
+    let written = spawn_blocking(move || write(&image, &path, &*saver))
+        .await
+        .unwrap_or_else(|e| Err(CaptureError::Write(e.to_string())));
     let failed = written.is_err();
+    if !failed {
+        remember(region);
+    }
     on_main(&app, move |app| {
         let Some(displays) = phase(app).end_save(session) else {
             return;
@@ -343,8 +369,6 @@ pub(crate) trait Saver: Send + Sync + 'static {
     /// The folder of the last save, from the prefs.
     fn last_dir(&self) -> Option<PathBuf>;
     fn remember_dir(&self, dir: &Path);
-    /// Keeps the region of a save that worked (already off the main thread).
-    fn remember_region(&self, region: Region);
 }
 
 // ---- OS calls only below. ----
@@ -391,10 +415,6 @@ impl<R: Runtime> Saver for OsSaver<R> {
         {
             log::warn!("could not remember the save folder: {e}");
         }
-    }
-
-    fn remember_region(&self, r: Region) {
-        region::save(&self.0, r);
     }
 }
 
@@ -572,7 +592,8 @@ mod tests {
         /// What `during` returned each time the dialog was "open".
         during_results: Mutex<Vec<bool>>,
         remembered: Mutex<Vec<PathBuf>>,
-        regions: Mutex<Vec<Region>>,
+        /// The regions the save remembered.
+        regions: Arc<Mutex<Vec<Region>>>,
         /// Runs while the dialog is "open".
         during: Option<Box<dyn Fn() -> bool + Send + Sync>>,
     }
@@ -602,10 +623,6 @@ mod tests {
         fn remember_dir(&self, dir: &Path) {
             self.remembered.lock().unwrap().push(dir.to_owned());
         }
-
-        fn remember_region(&self, region: Region) {
-            self.regions.lock().unwrap().push(region);
-        }
     }
 
     fn now() -> NaiveDateTime {
@@ -634,8 +651,11 @@ mod tests {
         let state = h.state::<Overlay>();
         let w = window(h, 1);
         let default = Some(default.to_owned());
+        let regions = Arc::clone(&saver.regions);
+        let remember: Remember = Box::new(move |r| regions.lock().unwrap().push(r));
         let saver = Arc::clone(saver);
-        tauri::async_runtime::block_on(save_with(&w, &state, out, saver, now(), default))
+        let saving = save_with(&w, &state, out, saver, now(), default, remember);
+        tauri::async_runtime::block_on(saving)
     }
 
     /// A request with no annotations.

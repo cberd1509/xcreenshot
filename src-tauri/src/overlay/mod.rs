@@ -16,7 +16,7 @@ pub(crate) mod window;
 pub use window::{Overlay, global_escape, prewarm, start_capture};
 
 use crate::capture::{Display, DisplayFrame, PixelRect};
-use crate::region::{self, LogicalRect, Region, Screen};
+use crate::region::{self, LogicalRect, Monitor, Region};
 use image::RgbaImage;
 use std::sync::Arc;
 use std::time::Instant;
@@ -128,8 +128,6 @@ pub struct Session {
     saves: u32,
     /// Whether Rust held Esc when the session opened (see [`Phase::wants_escape`]).
     escape_shortcut: bool,
-    /// The displays' [`region::arrangement`], to remember the region under.
-    arrangement: String,
 }
 
 /// One Esc press, until a page handles it or every shown page says it had nothing to undo.
@@ -144,7 +142,7 @@ struct EscapeWait {
 #[derive(Debug)]
 struct Slot {
     display: u32,
-    screen: Screen,
+    monitor: Monitor,
     info: FrameInfo,
     image: Arc<RgbaImage>,
     sent: bool,
@@ -198,12 +196,12 @@ impl Phase {
         if id != session {
             return None;
         }
-        let screens: Vec<Screen> = frames.iter().map(Screen::of).collect();
-        let arrangement = region::arrangement(&screens);
+        let monitors: Vec<Monitor> = frames.iter().map(Monitor::of).collect();
+        let arrangement = region::arrangement(&monitors);
         let slots: Vec<Slot> = frames
             .into_iter()
-            .zip(screens)
-            .map(|(f, screen)| {
+            .zip(monitors)
+            .map(|(f, monitor)| {
                 let (width, height) = f.image.dimensions();
                 let info = FrameInfo {
                     session,
@@ -212,11 +210,11 @@ impl Phase {
                     logical_width: f.logical.width,
                     logical_height: f.logical.height,
                     escape_shortcut,
-                    region: region::find(regions, &arrangement, &screen),
+                    region: region::find(regions, &arrangement, &monitor),
                 };
                 Slot {
                     display: f.id,
-                    screen,
+                    monitor,
                     info,
                     image: Arc::new(f.image),
                     sent: false,
@@ -239,7 +237,6 @@ impl Phase {
             saving: false,
             saves: 0,
             escape_shortcut,
-            arrangement,
         });
         Some(shows)
     }
@@ -291,10 +288,11 @@ impl Phase {
     pub fn region(&mut self, session: u64, display: u32, rect: PixelRect) -> Option<Region> {
         let s = self.current(session)?;
         let slot = s.slots.iter().find(|slot| slot.display == display)?;
+        let monitors: Vec<Monitor> = s.slots.iter().map(|slot| slot.monitor).collect();
         Some(Region {
-            arrangement: s.arrangement.clone(),
-            display: slot.screen,
-            rect: slot.screen.to_logical(rect),
+            arrangement: region::arrangement(&monitors),
+            display: slot.monitor,
+            rect: slot.monitor.to_logical(rect),
         })
     }
 
@@ -582,11 +580,11 @@ pub(crate) mod tests {
     fn a_remembered_region_is_sent_to_its_display_which_gets_focus() {
         use crate::region::{arrangement, tests::rect};
         let frames = || vec![frame(1, 4, 2), frame(2, 4, 2)];
-        let screens: Vec<Screen> = frames().iter().map(Screen::of).collect();
-        let key = arrangement(&screens);
+        let monitors: Vec<Monitor> = frames().iter().map(Monitor::of).collect();
+        let key = arrangement(&monitors);
         let on_two = Region {
             arrangement: key.clone(),
-            display: screens[1],
+            display: monitors[1],
             rect: rect(1.0, 0.0, 5.0, 1.0),
         };
         let mut p = Phase::default();
@@ -616,12 +614,12 @@ pub(crate) mod tests {
     fn the_region_to_remember_is_the_selection_in_logical_px() {
         let mut p = open(None);
         let region = p.region(7, 2, px(1, 0, 2, 2)).unwrap();
-        let screens: Vec<Screen> = [frame(1, 4, 2), frame(2, 4, 2)]
+        let monitors: Vec<Monitor> = [frame(1, 4, 2), frame(2, 4, 2)]
             .iter()
-            .map(Screen::of)
+            .map(Monitor::of)
             .collect();
-        assert_eq!(region.arrangement, region::arrangement(&screens));
-        assert_eq!(region.display, screens[1]);
+        assert_eq!(region.arrangement, region::arrangement(&monitors));
+        assert_eq!(region.display, monitors[1]);
         assert_eq!(region.rect, region::tests::rect(0.5, 0.0, 1.0, 1.0));
         assert_eq!(p.region(6, 2, px(0, 0, 1, 1)), None, "other session");
         assert_eq!(p.region(7, 9, px(0, 0, 1, 1)), None, "unknown display");

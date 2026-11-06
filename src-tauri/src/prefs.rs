@@ -199,14 +199,19 @@ impl Storage for Unsaved {
 /// saved, so the file is never read half-written.
 pub fn load<R: Runtime>(app: &AppHandle<R>) -> Prefs {
     let _changing = CHANGING.lock().unwrap_or_else(PoisonError::into_inner);
-    open(app)
-        .map(|store| Prefs::load(&store))
-        .unwrap_or_default()
+    read(app)
 }
 
-/// The saved prefs without waiting for a change being saved, for the capture hotkey. The store
-/// is read from memory: a change saving meanwhile is either all there or not at all.
+/// The saved prefs without waiting for a change being saved, for the capture hotkey. Once the
+/// file was checked (at startup) the store is read from memory; before that, this is [`load`].
 pub fn peek<R: Runtime>(app: &AppHandle<R>) -> Prefs {
+    if !CHECKED.load(Ordering::Acquire) {
+        return load(app);
+    }
+    read(app)
+}
+
+fn read<R: Runtime>(app: &AppHandle<R>) -> Prefs {
     open(app)
         .map(|store| Prefs::load(&store))
         .unwrap_or_default()
