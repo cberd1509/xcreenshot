@@ -272,14 +272,16 @@ mod tests {
 
     #[test]
     fn frame_uses_the_platform_geometry() {
-        let f = to_frame(7, bounds(1800, 1169), 2.0, RgbaImage::new(3600, 2338)).unwrap();
+        // Windows reports bounds in pixels, macOS in points; both describe the same display.
+        let os_bounds = if cfg!(target_os = "windows") {
+            bounds(3600, 2338)
+        } else {
+            bounds(1800, 1169)
+        };
+        let f = to_frame(7, os_bounds, 2.0, RgbaImage::new(3600, 2338)).unwrap();
         assert_eq!(f.id, 7);
         assert_eq!(f.scale_factor, 2.0);
-        if cfg!(target_os = "windows") {
-            assert_eq!(f.logical, bounds(900, 585));
-        } else {
-            assert_eq!(f.logical, bounds(1800, 1169));
-        }
+        assert_eq!(f.logical, bounds(1800, 1169));
         assert_eq!(f.physical, bounds(3600, 2338));
     }
 
