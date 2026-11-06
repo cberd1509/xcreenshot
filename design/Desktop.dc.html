@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mock desktop (frozen frame)</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 1440px; height: 900px; position: relative; overflow: hidden; background: #3f4b5e; font-family: Inter, system-ui, sans-serif; color: #18181b;">
+  <div style="position: absolute; left: 0; top: 0; right: 0; height: 26px; background: rgba(15, 23, 42, 0.45);"></div>
+  <div style="position: absolute; right: -160px; bottom: -220px; width: 760px; height: 760px; border-radius: 50%; background: #4b5a70;"></div>
+
+  <!-- Window A: browser with settings page -->
+  <div style="position: absolute; left: 100px; top: 80px; width: 820px; height: 600px; border-radius: 12px; overflow: hidden; background: #ffffff; box-shadow: 0 24px 60px rgba(0,0,0,0.35);">
+    <div style="height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 14px; background: #f4f4f5; border-bottom: 1px solid #e4e4e7;">
+      <span style="width: 12px; height: 12px; border-radius: 50%; background: #d4d4d8;"></span>
+      <span style="width: 12px; height: 12px; border-radius: 50%; background: #d4d4d8;"></span>
+      <span style="width: 12px; height: 12px; border-radius: 50%; background: #d4d4d8;"></span>
+      <div style="margin-left: 80px; width: 420px; height: 24px; border-radius: 6px; background: #ffffff; border: 1px solid #e4e4e7; font-size: 12px; color: #71717a; display: flex; align-items: center; padding: 0 10px; box-sizing: border-box;">app.acme.dev/settings</div>
+    </div>
+    <div style="position: absolute; left: 0; top: 40px; bottom: 0; width: 180px; box-sizing: border-box; padding: 20px 14px; display: flex; flex-direction: column; gap: 4px; background: #fafafa; border-right: 1px solid #e4e4e7; font-size: 13px; color: #52525b;">
+      <div style="font-weight: 700; color: #18181b; margin-bottom: 12px;">Acme</div>
+      <div style="padding: 6px 8px; border-radius: 6px;">Overview</div>
+      <div style="padding: 6px 8px; border-radius: 6px;">Deployments</div>
+      <div style="padding: 6px 8px; border-radius: 6px; background: #e4e4e7; color: #18181b; font-weight: 500;">Settings</div>
+      <div style="padding: 6px 8px; border-radius: 6px;">Members</div>
+      <div style="padding: 6px 8px; border-radius: 6px;">Billing</div>
+    </div>
+    <div style="position: absolute; left: 220px; top: 70px; font-size: 22px; font-weight: 700;">Project settings</div>
+    <div style="position: absolute; left: 220px; top: 104px; font-size: 13px; color: #71717a;">Manage how your project is named and who gets notified.</div>
+    <div style="position: absolute; left: 220px; top: 160px; width: 520px; height: 300px; box-sizing: border-box; border: 1px solid #e4e4e7; border-radius: 10px;">
+      <div style="position: absolute; left: 24px; top: 20px; font-size: 15px; font-weight: 600;">General</div>
+      <div style="position: absolute; left: 24px; top: 64px; font-size: 12px; font-weight: 500; color: #3f3f46;">Project name</div>
+      <div style="position: absolute; left: 24px; top: 86px; width: 472px; height: 36px; box-sizing: border-box; border: 1px solid #e4e4e7; border-radius: 6px; padding: 0 12px; display: flex; align-items: center; font-size: 13px;">acme-dashboard</div>
+      <div style="position: absolute; left: 24px; top: 138px; font-size: 12px; font-weight: 500; color: #3f3f46;">Contact email</div>
+      <div style="position: absolute; left: 24px; top: 160px; width: 472px; height: 36px; box-sizing: border-box; border: 1px solid #e4e4e7; border-radius: 6px; padding: 0 12px; display: flex; align-items: center; font-size: 13px;">jane.doe@acme.dev</div>
+      <div style="position: absolute; left: 368px; top: 244px; width: 116px; height: 36px; border-radius: 6px; background: #18181b; color: #ffffff; font-size: 13px; font-weight: 500; display: flex; align-items: center; justify-content: center;">Save changes</div>
+    </div>
+  </div>
+
+  <!-- Window B: code editor -->
+  <div style="position: absolute; left: 900px; top: 140px; width: 460px; height: 520px; border-radius: 12px; overflow: hidden; background: #0f172a; box-shadow: 0 24px 60px rgba(0,0,0,0.4); font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; line-height: 22px;">
+    <div style="height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 14px; background: #1e293b; color: #94a3b8;">
+      <span style="width: 12px; height: 12px; border-radius: 50%; background: #475569;"></span>
+      <span style="width: 12px; height: 12px; border-radius: 50%; background: #475569;"></span>
+      <span style="width: 12px; height: 12px; border-radius: 50%; background: #475569;"></span>
+      <span style="margin-left: 12px;">capture.rs</span>
+    </div>
+    <div style="padding: 14px 18px; color: #cbd5e1; white-space: pre;"><span style="color: #c084fc;">pub async fn</span> <span style="color: #7dd3fc;">capture_all</span>() -&gt; Result&lt;Vec&lt;Frame&gt;&gt; {
+    <span style="color: #c084fc;">let</span> displays = Display::all()?;
+    <span style="color: #c084fc;">let mut</span> frames = Vec::new();
+    <span style="color: #c084fc;">for</span> d <span style="color: #c084fc;">in</span> displays {
+        <span style="color: #64748b;">// native pixels, scale-aware</span>
+        frames.push(d.capture().<span style="color: #c084fc;">await</span>?);
+    }
+    Ok(frames)
+}</div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

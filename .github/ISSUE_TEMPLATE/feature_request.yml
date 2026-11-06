@@ -12,3 +12,8 @@ body:
     id: idea
     attributes:
       label: Your idea
+  - type: textarea
+    id: design
+    attributes:
+      label: Design
+      description: Link the artboard on the design canvas this follows, or say it needs one.

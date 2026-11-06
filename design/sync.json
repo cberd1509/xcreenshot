@@ -1,0 +1,15 @@
+{
+  "canvas": "https://claude.ai/artifact/RAcQ8kKKNBJCeC4Z3MriRr",
+  "version": "1794000912-9ce8",
+  "syncedAt": "2026-11-06T22:03:48Z",
+  "files": {
+    "AppIcon.dc.html": "72f6c195721c90f77635186b9c8426f39bbeb96157eb34cdcafc793048018bee",
+    "Desktop.dc.html": "9ec3e1777dea7808f8b8a632d7d41e4640d812bbe0e4d06176df3926d24a7363",
+    "Main.dc.html": "6939b7b73614bdaf0cd73251106ecf0ae94b35d24fe7527748507cdfe82c7ae9",
+    "Onboarding.dc.html": "b11778867c920c9e65c03d694a03c1ad503ab67b2b9301f02eac1235ea2ccfc5",
+    "Settings.dc.html": "ca373454aa68674364eef523286a81075cf5a7cbee09038c03f665bfcca01184",
+    "Tray.dc.html": "e3b1df2d15539b5e861fa674f23dbea549ae1f5b24f7750e3d640b9b682a8813",
+    "WindowSelect.dc.html": "db43e2394126347a9f8d69114a1cf99bdb9f645fc95d60ddadf3083a0909fd8c",
+    "canvas.json": "f931ba7bc8e82013dd88588b5bba469a7edbe890502bb02e9907f635522d2676"
+  }
+}

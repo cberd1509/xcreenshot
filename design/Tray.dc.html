@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Menu bar menu</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 300px; height: 400px; box-sizing: border-box; padding: 16px 10px; background: #e4e4e7; font-family: Inter, system-ui, sans-serif; color: #09090b;">
+  <div role="menu" aria-label="xcreenshot" style="box-sizing: border-box; padding: 5px; display: flex; flex-direction: column; gap: 1px; border-radius: 10px; background: rgba(250, 250, 250, 0.96); border: 1px solid #d4d4d8; box-shadow: 0 12px 32px rgba(0,0,0,0.18); font-size: 13px;">
+    <button role="menuitem" style="height: 30px; padding: 0 10px; display: flex; align-items: center; gap: 10px; border: 0; border-radius: 6px; background: #2563eb; color: #ffffff; font-family: inherit; font-size: 13px; text-align: left;"><span style="flex-grow: 1;">Capture</span><span style="color: #dbeafe;">⌃⇧⌘S</span></button>
+    <div style="height: 1px; margin: 4px 8px; background: #e4e4e7;"></div>
+    <button role="menuitem" style="height: 30px; padding: 0 10px; display: flex; align-items: center; gap: 10px; border: 0; border-radius: 6px; background: transparent; color: #09090b; font-family: inherit; font-size: 13px; text-align: left;"><span style="flex-grow: 1;">Settings…</span><span style="color: #71717a;">⌘,</span></button>
+    <button role="menuitem" style="height: 30px; padding: 0 10px; display: flex; align-items: center; gap: 10px; border: 0; border-radius: 6px; background: transparent; color: #09090b; font-family: inherit; font-size: 13px; text-align: left;"><span style="flex-grow: 1;">Check for updates…</span></button>
+    <div style="height: 1px; margin: 4px 8px; background: #e4e4e7;"></div>
+    <button role="menuitem" style="height: 30px; padding: 0 10px; display: flex; align-items: center; gap: 10px; border: 0; border-radius: 6px; background: transparent; color: #09090b; font-family: inherit; font-size: 13px; text-align: left;"><span style="flex-grow: 1;">Quit xcreenshot</span><span style="color: #71717a;">⌘Q</span></button>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":300,"height":400}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

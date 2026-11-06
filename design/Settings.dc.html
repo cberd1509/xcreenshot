@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Settings</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#2563eb}a:hover{color:#1d4ed8}
+</style>
+</helmet>
+<div style="width: 880px; height: 680px; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden; border-radius: 12px; border: 1px solid #e4e4e7; background: #ffffff; font-family: Inter, system-ui, sans-serif; color: #09090b;">
+  <div style="height: 44px; flex-shrink: 0; display: flex; align-items: center; padding: 0 16px; gap: 8px; border-bottom: 1px solid #e4e4e7; background: #fafafa;">
+    <span style="width: 12px; height: 12px; border-radius: 50%; background: #d4d4d8;"></span>
+    <span style="width: 12px; height: 12px; border-radius: 50%; background: #d4d4d8;"></span>
+    <span style="width: 12px; height: 12px; border-radius: 50%; background: #d4d4d8;"></span>
+    <span style="flex-grow: 1; text-align: center; margin-right: 52px; font-size: 13px; font-weight: 600; color: #3f3f46;">xcreenshot Settings</span>
+  </div>
+  <div style="flex-grow: 1; display: flex; min-height: 0;">
+    <nav aria-label="Settings sections" style="width: 200px; flex-shrink: 0; box-sizing: border-box; padding: 16px 12px; display: flex; flex-direction: column; gap: 2px; border-right: 1px solid #e4e4e7; background: #fafafa; font-size: 13px;">
+      <a href="#general" aria-current="page" style="padding: 8px 10px; border-radius: 6px; background: #f4f4f5; color: #09090b; font-weight: 500; text-decoration: none;">General</a>
+      <a href="#shortcuts" style="padding: 8px 10px; border-radius: 6px; color: #52525b; text-decoration: none;">Shortcuts</a>
+      <a href="#capture" style="padding: 8px 10px; border-radius: 6px; color: #52525b; text-decoration: none;">Capture</a>
+      <a href="#about" style="padding: 8px 10px; border-radius: 6px; color: #52525b; text-decoration: none;">About</a>
+      <div style="flex-grow: 1;"></div>
+      <div style="padding: 8px 10px; font-size: 12px; color: #71717a;">Version 0.1.0</div>
+    </nav>
+    <div style="flex-grow: 1; min-width: 0; box-sizing: border-box; padding: 28px 36px; display: flex; flex-direction: column; gap: 26px;">
+
+      <section id="shortcuts" style="display: flex; flex-direction: column; gap: 14px;">
+        <h2 style="margin: 0; font-size: 14px; font-weight: 600;">Shortcuts</h2>
+        <div style="display: flex; align-items: center; gap: 16px;">
+          <div style="flex-grow: 1;">
+            <div style="font-size: 14px; font-weight: 500;">Take a screenshot</div>
+            <div style="font-size: 13px; color: #71717a;">Works from any app.</div>
+          </div>
+          <button aria-label="Change shortcut, currently Control Shift Command S" style="height: 36px; padding: 0 10px; display: flex; align-items: center; gap: 4px; border: 1px solid #e4e4e7; border-radius: 8px; background: #ffffff; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; color: #09090b;">
+            <span style="padding: 2px 7px; border-radius: 5px; background: #f4f4f5; border: 1px solid #e4e4e7;">⌃</span>
+            <span style="padding: 2px 7px; border-radius: 5px; background: #f4f4f5; border: 1px solid #e4e4e7;">⇧</span>
+            <span style="padding: 2px 7px; border-radius: 5px; background: #f4f4f5; border: 1px solid #e4e4e7;">⌘</span>
+            <span style="padding: 2px 7px; border-radius: 5px; background: #f4f4f5; border: 1px solid #e4e4e7;">S</span>
+          </button>
+        </div>
+      </section>
+
+      <div style="height: 1px; background: #e4e4e7;"></div>
+
+      <section id="capture" style="display: flex; flex-direction: column; gap: 14px;">
+        <h2 style="margin: 0; font-size: 14px; font-weight: 600;">Capture</h2>
+        <div style="display: flex; align-items: center; gap: 16px;">
+          <div style="flex-grow: 1;">
+            <div style="font-size: 14px; font-weight: 500;">Remember region</div>
+            <div style="font-size: 13px; color: #71717a;">Start with your last selection.</div>
+          </div>
+          <button role="switch" aria-checked="true" aria-label="Remember region" style="width: 44px; height: 24px; padding: 2px; display: flex; justify-content: flex-end; border: 0; border-radius: 999px; background: #18181b;"><span style="width: 20px; height: 20px; border-radius: 50%; background: #ffffff;"></span></button>
+        </div>
+        <div style="display: flex; align-items: center; gap: 16px;">
+          <div style="flex-grow: 1;">
+            <div style="font-size: 14px; font-weight: 500;">Magnifier</div>
+            <div style="font-size: 13px; color: #71717a;">Zoom in to select exact pixels.</div>
+          </div>
+          <button role="switch" aria-checked="false" aria-label="Magnifier" style="width: 44px; height: 24px; padding: 2px; display: flex; justify-content: flex-start; border: 0; border-radius: 999px; background: #e4e4e7;"><span style="width: 20px; height: 20px; border-radius: 50%; background: #ffffff; box-shadow: 0 1px 2px rgba(0,0,0,0.15);"></span></button>
+        </div>
+      </section>
+
+      <div style="height: 1px; background: #e4e4e7;"></div>
+
+      <section id="general" style="display: flex; flex-direction: column; gap: 14px;">
+        <h2 style="margin: 0; font-size: 14px; font-weight: 600;">General</h2>
+        <div style="display: flex; align-items: center; gap: 16px;">
+          <div style="flex-grow: 1;">
+            <div style="font-size: 14px; font-weight: 500;">Open at login</div>
+            <div style="font-size: 13px; color: #71717a;">Start xcreenshot when you turn on your Mac.</div>
+          </div>
+          <button role="switch" aria-checked="true" aria-label="Open at login" style="width: 44px; height: 24px; padding: 2px; display: flex; justify-content: flex-end; border: 0; border-radius: 999px; background: #18181b;"><span style="width: 20px; height: 20px; border-radius: 50%; background: #ffffff;"></span></button>
+        </div>
+        <div style="display: flex; align-items: center; gap: 16px;">
+          <div style="flex-grow: 1;">
+            <div style="font-size: 14px; font-weight: 500;">Check for updates</div>
+            <div style="font-size: 13px; color: #71717a;">Get new versions automatically.</div>
+          </div>
+          <button role="switch" aria-checked="true" aria-label="Check for updates" style="width: 44px; height: 24px; padding: 2px; display: flex; justify-content: flex-end; border: 0; border-radius: 999px; background: #18181b;"><span style="width: 20px; height: 20px; border-radius: 50%; background: #ffffff;"></span></button>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":880,"height":680}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
