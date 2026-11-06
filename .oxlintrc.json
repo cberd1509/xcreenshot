@@ -10,7 +10,13 @@
     "browser": true,
     "es2024": true
   },
-  "ignorePatterns": ["dist/**", "coverage/**", "src-tauri/**", "src/lib/components/ui/**"],
+  "ignorePatterns": [
+    "dist/**",
+    "coverage/**",
+    "src-tauri/**",
+    "src/lib/components/ui/**",
+    ".claude/**"
+  ],
   "rules": {
     "import/no-unassigned-import": [
       "error",
