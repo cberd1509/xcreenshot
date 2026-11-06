@@ -30,7 +30,7 @@ Press a shortcut, drag, annotate, done. Nothing ever leaves your computer.
 - **Exact sizes.** Type a width and height, or lock the aspect ratio.
 - **Remember region.** Reopen with your last selection, ready to go.
 - **Annotate in place.** Arrows, lines, rectangles, circles, pen, highlighter, text and blur, in any color.
-- **Copy, save or share.** Straight to the clipboard, a PNG file, or the system share sheet.
+- **Copy or save.** Straight to the clipboard or a PNG file, at the size you saw it.
 - **Private by design.** No accounts, no tracking, no uploads.
 - **Tiny and native-feeling.** A small menu bar app, not a browser in disguise.
 
@@ -40,23 +40,13 @@ Press a shortcut, drag, annotate, done. Nothing ever leaves your computer.
 
 ## Install
 
-> xcreenshot is in early development. The first release is on its way. ⭐ Star or watch the repo to hear about it.
+**macOS** (14 Sonoma or later, Apple Silicon and Intel)
 
-**macOS** (14 Sonoma or later)
-
-```sh
-brew install --cask cberd1509/tap/xcreenshot   # coming soon
-```
-
-Or download the `.dmg` from [Releases](https://github.com/cberd1509/xcreenshot/releases).
+Download the `.dmg` from the [latest release](https://github.com/cberd1509/xcreenshot/releases/latest), open it and drag xcreenshot to Applications. It's signed and notarized by Apple, and it updates itself.
 
 **Windows** (10 or later)
 
-```powershell
-winget install bervex.xcreenshot   # coming soon
-```
-
-Or download the installer from [Releases](https://github.com/cberd1509/xcreenshot/releases).
+Not released yet. On GitHub, click **Watch › Custom › Releases** to get an email when it is.
 
 ## Usage
 
