@@ -37,24 +37,38 @@ export function steps(from: Point, to: Point, fps: number): number {
   return Math.max(2, Math.round(seconds * fps))
 }
 
+/** A captured frame: its file, and when it showed (seconds). */
+export type Shot = { file: string; time: number }
+
+/**
+ * An ffconcat list that shows each frame until the next one came, and the last until `end`. The
+ * browser sends a frame only when the page changes, so still moments cost one frame.
+ */
+export function concat(shots: Shot[], end: number): string {
+  const lines = ['ffconcat version 1.0']
+  shots.forEach(({ file, time }, i) => {
+    const next = shots[i + 1]?.time ?? end
+    lines.push(`file '${file}'`, `duration ${Math.max(0, next - time).toFixed(3)}`)
+  })
+  // The concat demuxer only honors the last duration when the file is listed again.
+  if (shots.length) lines.push(`file '${shots.at(-1)!.file}'`)
+  return `${lines.join('\n')}\n`
+}
+
 export type Gif = {
+  /** An ffconcat list (see `concat`). */
   input: string
   output: string
-  /** Seconds cut from the start of the recording. */
-  start: number
-  /** Seconds kept. */
-  duration: number
   width: number
   fps: number
 }
 
 /**
- * ffmpeg arguments that turn a recording into a looping GIF: one palette for the whole clip,
+ * ffmpeg arguments that turn captured frames into a looping GIF: one palette for the whole clip,
  * built from what changes between frames, and only the changed part of each frame stored.
- * Frames that barely differ from the last (video noise while nothing moves) are dropped, and
- * the kept one is shown for longer.
+ * Repeated frames are dropped, and the kept one is shown for longer.
  */
-export function gifArgs({ input, output, start, duration, width, fps }: Gif): string[] {
+export function gifArgs({ input, output, width, fps }: Gif): string[] {
   const filter =
     `fps=${fps},scale=${width}:-1:flags=lanczos,mpdecimate,split[a][b];` +
     `[a]palettegen=stats_mode=diff[p];` +
@@ -63,10 +77,10 @@ export function gifArgs({ input, output, start, duration, width, fps }: Gif): st
     '-y',
     '-loglevel',
     'error',
-    '-ss',
-    start.toFixed(2),
-    '-t',
-    duration.toFixed(2),
+    '-f',
+    'concat',
+    '-safe',
+    '0',
     '-i',
     input,
     '-filter_complex',

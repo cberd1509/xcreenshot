@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
-import { ease, gifArgs, path, size, steps } from './media.ts'
+import { concat, ease, gifArgs, path, size, steps } from './media.ts'
 
 describe('ease', () => {
   it('starts and ends slowly, symmetric around the middle', () => {
@@ -60,23 +60,44 @@ describe('steps', () => {
   })
 })
 
+describe('concat', () => {
+  it('shows each frame until the next, the last until the end', () => {
+    const list = concat(
+      [
+        { file: '/t/0.jpg', time: 10 },
+        { file: '/t/1.jpg', time: 10.25 },
+      ],
+      11,
+    )
+    expect(list).toBe(
+      [
+        'ffconcat version 1.0',
+        "file '/t/0.jpg'",
+        'duration 0.250',
+        "file '/t/1.jpg'",
+        'duration 0.750',
+        "file '/t/1.jpg'",
+        '',
+      ].join('\n'),
+    )
+  })
+
+  it('never gives a negative duration, and lists nothing without frames', () => {
+    expect(concat([{ file: 'a.jpg', time: 5 }], 4)).toContain('duration 0.000')
+    expect(concat([], 1)).toBe('ffconcat version 1.0\n')
+  })
+})
+
 describe('gifArgs', () => {
-  it('trims, scales and encodes a looping GIF with one diff palette', () => {
-    const args = gifArgs({
-      input: 'in.webm',
-      output: 'out.gif',
-      start: 0.4,
-      duration: 8.123,
-      width: 1280,
-      fps: 15,
-    })
-    expect(args.slice(args.indexOf('-ss'), args.indexOf('-i') + 2)).toEqual([
-      '-ss',
-      '0.40',
-      '-t',
-      '8.12',
+  it('reads the frame list and encodes a looping GIF with one diff palette', () => {
+    const args = gifArgs({ input: 'frames.txt', output: 'out.gif', width: 1280, fps: 15 })
+    expect(args.slice(args.indexOf('-f'), args.indexOf('-i') + 2)).toEqual([
+      '-f',
+      'concat',
+      '-safe',
+      '0',
       '-i',
-      'in.webm',
+      'frames.txt',
     ])
     const filter = args[args.indexOf('-filter_complex') + 1]
     expect(filter).toContain('fps=15,scale=1280:-1')

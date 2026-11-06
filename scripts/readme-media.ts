@@ -5,14 +5,14 @@
 // Writes docs/media/overlay.png, docs/media/settings.png and docs/media/demo.gif.
 /// <reference lib="dom" />
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, statSync } from 'node:fs'
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium, type Browser, type BrowserContextOptions, type Page } from 'playwright'
 import { createServer } from 'vite'
 import type { Point, Rect } from '../src/overlay/geometry.ts'
-import { gifArgs, path, size, steps } from './media.ts'
+import { concat, gifArgs, path, size, steps, type Shot } from './media.ts'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const out = join(root, 'docs/media')
@@ -103,24 +103,17 @@ async function desktop(browser: Browser, base: string) {
 }
 
 /** A page with the overlay open on the frame, ready for a drag. */
-async function overlay(
-  browser: Browser,
-  base: string,
-  frame: Buffer,
-  options: BrowserContextOptions,
-) {
-  const context = await browser.newContext({ viewport, ...mac, ...options })
+async function overlay(browser: Browser, base: string, frame: Buffer) {
+  const context = await browser.newContext({ viewport, ...mac })
   await context.route('**/frame.png', (route) =>
     route.fulfill({ body: frame, contentType: 'image/png' }),
   )
   const page = await context.newPage()
-  // A recording starts with the page.
-  const created = Date.now()
   page.on('pageerror', (e) => console.error('page error:', e))
   await page.goto(`${base}docs/media/src/overlay.html`)
   // Set once the frame is decoded: the desktop shows behind the overlay.
   await page.waitForFunction(() => 'demo' in window)
-  return { context, page, created }
+  return { context, page }
 }
 
 /** The overlay page's controls, `window.demo` in docs/media/src/overlay.ts. */
@@ -178,7 +171,7 @@ async function annotate(hand: Hand, p: ReturnType<typeof plan>) {
 }
 
 async function still(browser: Browser, base: string, frame: Buffer, spots: Spots) {
-  const { context, page } = await overlay(browser, base, frame, {})
+  const { context, page } = await overlay(browser, base, frame)
   await demo(page, 'cursor', false)
   await open(page)
   const p = plan(spots)
@@ -204,27 +197,34 @@ async function settings(browser: Browser, base: string) {
     colorScheme: 'light',
   })
   await page.goto(`${base}docs/media/src/settings.html`)
-  await page.getByText(/^Version \d/).waitFor()
+  await page
+    .getByText(/^Version \d/)
+    .first()
+    .waitFor()
   await page.evaluate(() => document.fonts.ready)
   await page.screenshot({ path: join(out, 'settings.png') })
   await page.close()
 }
 
+/** Records the demo as JPEG frames in `dir`, from the desktop to the copy. */
 async function recording(browser: Browser, base: string, frame: Buffer, spots: Spots, dir: string) {
-  const { context, page, created } = await overlay(browser, base, frame, {
-    recordVideo: {
-      dir,
-      size: {
-        width: viewport.width * mac.deviceScaleFactor!,
-        height: viewport.height * mac.deviceScaleFactor!,
-      },
-    },
-  })
+  const { context, page } = await overlay(browser, base, frame)
   const p = plan(spots)
   const hand = new Hand(page, true)
   await page.mouse.move(hand.at.x, hand.at.y)
   await sleep(300)
-  const clip = (Date.now() - created) / 1000
+  // Best quality JPEGs, at CSS px: Playwright's own video is too noisy to make a small GIF.
+  const shots: Shot[] = []
+  await page.screencast.start({
+    size: viewport,
+    quality: 100,
+    onFrame: ({ data }) => {
+      const file = join(dir, `${String(shots.length).padStart(5, '0')}.jpg`)
+      writeFileSync(file, data)
+      shots.push({ file, time: Date.now() / 1000 })
+    },
+  })
+  const start = Date.now()
   await sleep(400)
   await demo(page, 'keys', 'Control+Shift+Super+S')
   await sleep(450)
@@ -243,10 +243,12 @@ async function recording(browser: Browser, base: string, frame: Buffer, spots: S
   await hand.move({ x: hand.at.x + 40, y: hand.at.y + 30 })
   await demo(page, 'keys')
   await sleep(700)
-  const duration = (Date.now() - created) / 1000 - clip
-  const video = page.video()!
+  const end = Date.now()
+  await page.screencast.stop()
   await context.close()
-  return { webm: await video.path(), clip, duration }
+  const list = join(dir, 'frames.txt')
+  writeFileSync(list, concat(shots, end / 1000))
+  return { list, duration: (end - start) / 1000 }
 }
 
 const server = await createServer({
@@ -265,9 +267,8 @@ try {
   const { frame, spots } = await desktop(browser, base)
   await still(browser, base, frame, spots)
   await settings(browser, base)
-  const { webm, clip, duration } = await recording(browser, base, frame, spots, dir)
-  const gif = join(out, 'demo.gif')
-  execFileSync('ffmpeg', gifArgs({ input: webm, output: gif, start: clip, duration, ...GIF }))
+  const { list, duration } = await recording(browser, base, frame, spots, dir)
+  execFileSync('ffmpeg', gifArgs({ input: list, output: join(out, 'demo.gif'), ...GIF }))
   console.log(`demo.gif: ${duration.toFixed(1)} s at ${GIF.fps} fps`)
   for (const name of ['overlay.png', 'settings.png', 'demo.gif'])
     console.log(`${name}: ${size(statSync(join(out, name)).size)}`)
