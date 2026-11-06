@@ -31,14 +31,19 @@ const keyNames: Record<string, string> = {
   BracketRight: ']',
 }
 
+/** Key cap labels used on Windows (and Linux). */
+const otherNames: Record<string, string> = {
+  Control: 'Ctrl',
+  CmdOrCtrl: 'Ctrl',
+  Super: 'Win',
+  PrintScreen: 'PrtSc',
+}
+
 /** Splits an accelerator into the key labels to show on the given platform. */
 export function shortcutKeys(accelerator: string, mac = isMac): string[] {
   if (!accelerator) return []
-  return accelerator.split('+').map((k) => {
-    if (mac && k in macSymbols) return macSymbols[k]
-    if (k === 'Super') return 'Win'
-    return keyNames[k] ?? k
-  })
+  const names = mac ? macSymbols : otherNames
+  return accelerator.split('+').map((k) => names[k] ?? keyNames[k] ?? k)
 }
 
 const macNames: Record<string, string> = { Alt: 'Option', Super: 'Command', CmdOrCtrl: 'Command' }

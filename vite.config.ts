@@ -31,6 +31,7 @@ export default defineConfig({
         main: fileURLToPath(new URL('./index.html', import.meta.url)),
         overlay: fileURLToPath(new URL('./overlay.html', import.meta.url)),
         permission: fileURLToPath(new URL('./permission.html', import.meta.url)),
+        notice: fileURLToPath(new URL('./notice.html', import.meta.url)),
       },
     },
   },
@@ -51,6 +52,7 @@ export default defineConfig({
         'src/overlay/main.ts',
         'src/permission/main.ts',
         'site/src/main.ts',
+        'src/notice/main.ts',
         'scripts/**/*.test.ts',
         'site/src/**/*.test.ts',
         // Drives a browser; its pure parts are in scripts/media.ts.

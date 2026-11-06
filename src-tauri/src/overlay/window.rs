@@ -220,6 +220,9 @@ fn start_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) -> Option<u64
             WATCHDOG,
         );
     });
+    // After the capture starts, so it isn't delayed. The overlay is always on top: a notice
+    // waits until it closes.
+    crate::notice::hide_for_capture(app);
     if let Err(e) = place(app, &displays) {
         log::error!("could not place the overlay windows: {e}");
         close(app);
@@ -316,7 +319,9 @@ pub fn close_if<R: Runtime>(app: &AppHandle<R>, ok: impl FnOnce(&Phase) -> bool)
             log::warn!("could not tell {label} to free its frame: {e}");
         }
     }
-    // Give focus back to the app the user was in, unless Settings is open.
+    // Before the check below, so a notice shown again keeps the app visible.
+    crate::notice::show_after_capture(app);
+    // Give focus back to the app the user was in, unless Settings or a notice is open.
     #[cfg(target_os = "macos")]
     if !windows
         .iter()
@@ -668,7 +673,7 @@ pub(crate) fn close_overlay<R: Runtime>(app: AppHandle<R>, session: u64) {
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+pub(crate) mod tests {
     use super::super::tests::frame;
     use super::*;
     use std::sync::mpsc;

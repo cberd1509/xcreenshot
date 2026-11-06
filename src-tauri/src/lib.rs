@@ -7,6 +7,7 @@ pub mod capture;
 mod login;
 #[cfg(all(target_os = "macos", not(test)))]
 mod macos;
+mod notice;
 mod output;
 mod overlay;
 mod permission;
@@ -69,6 +70,7 @@ pub fn run() {
     let builder = builder.manage(login::System::default());
     builder
         .manage(overlay::Overlay::default())
+        .manage(notice::Notices::default())
         .manage(shortcut::Registered::default())
         .manage(actions::MenuShows::default())
         .manage(overlay::global_escape::<tauri::Wry>())
@@ -81,6 +83,8 @@ pub fn run() {
             overlay::export::overlay_copy,
             overlay::export::overlay_save,
             overlay::window::close_overlay,
+            notice::notice,
+            notice::notice_answer,
             permission::permission_granted,
             permission::permission_pane,
             #[cfg(target_os = "macos")]
