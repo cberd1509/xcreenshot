@@ -4,6 +4,8 @@ This folder mirrors the xcreenshot [design canvas](https://claude.ai/artifact/RA
 
 Don't edit these files by hand. Change the canvas, then sync it: ask Claude to "sync the design canvas", which reads the latest version, replaces these files and opens a `docs(design):` PR. `sync.json` records the canvas version and a checksum for each file.
 
+**It doesn't update by itself.** After every canvas edit, sync it, or the next UI change is built from the old design. Before any UI work, compare the canvas version with `sync.json` and sync first if they differ.
+
 | Artboard | Screen |
 |---|---|
 | `Main.dc.html` | Capture overlay, region selected and annotating |
