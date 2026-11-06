@@ -19,7 +19,7 @@ pnpm check                # svelte-check + tsc
 pnpm coverage             # vitest, 90% minimum
 pnpm format               # autofix lint + formatting
 cd src-tauri && cargo clippy --all-targets -- -D warnings && cargo test
-./scripts/rust-coverage.sh  # Rust coverage, 90% minimum (skips main.rs/lib.rs)
+./scripts/rust-coverage.sh  # Rust coverage, 90% minimum (skips main.rs/lib.rs and share/macos.rs)
 ```
 
 ## Before opening a PR
