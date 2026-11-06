@@ -249,6 +249,55 @@ describe('Overlay', () => {
       expect(selection()).toBeNull()
     })
 
+    it('stays on this display: clamps a drag past every edge', async () => {
+      await shown()
+      // The display is 1000 x 700 points; other displays are beyond each edge.
+      drag({ x: 500, y: 350 }, { x: -50, y: -30 })
+      expect(rect()).toEqual([0, 0, 500, 350])
+      drag({ x: 500, y: 350 }, { x: 1200, y: 900 })
+      expect(rect()).toEqual([500, 350, 500, 350])
+      // Moving keeps the whole selection on the display.
+      drag({ x: 600, y: 400 }, { x: 2000, y: 2000 }, selection()!)
+      expect(rect()).toEqual([500, 350, 500, 350])
+      drag({ x: 600, y: 400 }, { x: -2000, y: -2000 }, selection()!)
+      expect(rect()).toEqual([0, 0, 500, 350])
+      // Resizing too.
+      const handle = (h: string) => selection()!.querySelector(`[data-handle="${h}"]`)!
+      drag({ x: 500, y: 350 }, { x: 5000, y: 5000 }, handle('se'))
+      expect(rect()).toEqual([0, 0, 1000, 700])
+    })
+
+    it('keeps the drag after the pointer leaves the window', async () => {
+      await shown()
+      fireEvent.pointerDown(overlay(), point({ x: 10, y: 10 }))
+      fireEvent.pointerMove(overlay(), point({ x: 100, y: 100 }))
+      fireEvent.pointerLeave(overlay(), point({ x: 1001, y: 100 }))
+      // Captured moves keep coming from beyond the edge, then from inside again.
+      fireEvent.pointerMove(overlay(), point({ x: 1500, y: 120 }))
+      expect(rect()).toEqual([10, 10, 990, 110])
+      fireEvent.pointerMove(overlay(), point({ x: 200, y: 120 }))
+      expect(rect()).toEqual([10, 10, 190, 110])
+      fireEvent.pointerUp(overlay(), point({ x: 200, y: 120 }))
+      expect(rect()).toEqual([10, 10, 190, 110])
+    })
+
+    it('captures the pointer on press', async () => {
+      await shown()
+      const capture = vi.fn<(id: number) => void>()
+      overlay().setPointerCapture = capture
+      fireEvent.pointerDown(overlay(), point({ x: 10, y: 10 }))
+      expect(capture).toHaveBeenCalledWith(1)
+    })
+
+    it('does not select from moves it did not start', async () => {
+      // A drag that started on another display moves over this one: nothing happens here.
+      await shown()
+      fireEvent.pointerMove(overlay(), point({ x: 10, y: 10 }))
+      fireEvent.pointerMove(overlay(), point({ x: 200, y: 200 }))
+      fireEvent.pointerUp(overlay(), point({ x: 200, y: 200 }))
+      expect(selection()).toBeNull()
+    })
+
     it('uses the drag cursor everywhere while dragging', async () => {
       await shown()
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })

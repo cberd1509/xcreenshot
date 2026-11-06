@@ -177,6 +177,9 @@
       select(null)
       drag = { kind: 'draw', start }
     }
+    // A selection stays on the display where the drag started: with the pointer captured,
+    // moves keep coming here past the window's edges, and every rect is clamped to this
+    // display. While the button is held, other displays' windows get no pointerdown.
     ;(e.currentTarget as Element).setPointerCapture?.(e.pointerId)
   }
 
