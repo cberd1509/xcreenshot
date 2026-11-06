@@ -65,18 +65,24 @@ type Shown = (String, Option<String>);
 pub struct MenuShows(std::sync::Mutex<Option<Shown>>);
 
 impl MenuShows {
-    /// Records `capture` and `update`; returns whether they differ from what is shown.
-    pub fn changed(&self, capture: &str, update: Option<&str>) -> bool {
+    /// Runs `install` if `capture` and `update` differ from what is shown, and remembers them
+    /// only if it succeeds. One refresh at a time, so an older one can't install over a newer.
+    pub fn refresh<E>(
+        &self,
+        capture: &str,
+        update: Option<&str>,
+        install: impl FnOnce() -> Result<(), E>,
+    ) -> Result<(), E> {
         let next = Some((capture.to_owned(), update.map(str::to_owned)));
         let mut shown = self
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if *shown == next {
-            return false;
+        if *shown != next {
+            install()?;
+            *shown = next;
         }
-        *shown = next;
-        true
+        Ok(())
     }
 }
 
@@ -87,11 +93,38 @@ mod tests {
     #[test]
     fn the_menu_changes_only_with_the_shortcut_or_update() {
         let shows = MenuShows::default();
-        assert!(shows.changed("Alt+S", None));
-        assert!(!shows.changed("Alt+S", None));
-        assert!(shows.changed("Alt+D", None));
-        assert!(shows.changed("Alt+D", Some("1.2.0")));
-        assert!(!shows.changed("Alt+D", Some("1.2.0")));
+        let installs = std::cell::Cell::new(0);
+        let install = || {
+            installs.set(installs.get() + 1);
+            Ok::<(), ()>(())
+        };
+        for (capture, update) in [
+            ("Alt+S", None),
+            ("Alt+S", None),
+            ("Alt+D", None),
+            ("Alt+D", Some("1.2.0")),
+            ("Alt+D", Some("1.2.0")),
+        ] {
+            shows.refresh(capture, update, install).unwrap();
+        }
+        assert_eq!(installs.get(), 3);
+    }
+
+    #[test]
+    fn a_failed_install_is_tried_again() {
+        let shows = MenuShows::default();
+        assert_eq!(
+            shows.refresh("Alt+S", None, || Err("no tray")),
+            Err("no tray")
+        );
+        let mut installed = false;
+        shows
+            .refresh("Alt+S", None, || {
+                installed = true;
+                Ok::<(), &str>(())
+            })
+            .unwrap();
+        assert!(installed, "nothing was remembered after the failure");
     }
 
     #[test]

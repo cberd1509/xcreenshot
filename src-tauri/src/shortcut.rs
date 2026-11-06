@@ -3,7 +3,7 @@
 //! Accelerators use the tauri-plugin-global-shortcut format, e.g. `Control+Shift+Super+S`.
 
 use serde::Serialize;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use tauri::{AppHandle, Manager, Runtime, State};
 use tauri_plugin_global_shortcut::{GlobalShortcut, GlobalShortcutExt, Modifiers, Shortcut};
 
@@ -49,6 +49,13 @@ impl<R: Runtime> Registrar for GlobalShortcut<R> {
     }
 }
 
+/// [`swap`], [`pause`] and [`resume`] run one at a time, so a resume can't slip in before a
+/// pause that is still letting go and leave the shortcut paused.
+fn transition() -> MutexGuard<'static, ()> {
+    static TRANSITION: Mutex<()> = Mutex::new(());
+    TRANSITION.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Replaces the registered capture shortcut (if any) with `new` and records it in `registered`.
 /// If `new` can't be registered, the old one stays and the error says the shortcut is taken.
 /// If the old one can't be let go, nothing changes.
@@ -57,6 +64,7 @@ pub fn swap(
     registered: &Registered,
     new: &str,
 ) -> Result<(), &'static str> {
+    let _one_at_a_time = transition();
     let old = registered.active();
     if old.as_deref() == Some(new) {
         return Ok(());
@@ -117,6 +125,7 @@ impl Default for Registered {
 /// recorder instead of starting a capture. [`resume`] takes it back. If it can't be let go,
 /// it stays active and the error is returned.
 pub fn pause(registrar: &impl Registrar, registered: &Registered) -> Result<(), &'static str> {
+    let _one_at_a_time = transition();
     let Some(accelerator) = registered.active() else {
         return Ok(());
     };
@@ -133,6 +142,7 @@ pub fn pause(registrar: &impl Registrar, registered: &Registered) -> Result<(), 
 /// Registers the paused capture shortcut again. Does nothing if it isn't paused (a new
 /// shortcut was saved meanwhile, or it was never paused).
 pub fn resume(registrar: &impl Registrar, registered: &Registered) {
+    let _one_at_a_time = transition();
     let accelerator = {
         let current = registered.lock();
         if !current.paused {
@@ -148,7 +158,7 @@ pub fn resume(registrar: &impl Registrar, registered: &Registered) {
 }
 
 impl Registered {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Current> {
+    fn lock(&self) -> MutexGuard<'_, Current> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 

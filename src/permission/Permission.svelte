@@ -49,7 +49,18 @@
     invoke('restart_app').catch(failed('restart_app'))
   }
 
+  /** Reads the capture shortcut; again on focus, as it may have changed in Settings. */
+  function loadShortcut() {
+    invoke<CaptureShortcut>('capture_shortcut')
+      .then((s) => (shortcut = s))
+      .catch((e: unknown) => {
+        shortcut = null
+        failed('capture_shortcut')(e)
+      })
+  }
+
   function onfocus() {
+    loadShortcut()
     if (!openedSettings || granted) return
     void check().then((now) => {
       if (now === false) needsRestart = true
@@ -58,12 +69,7 @@
 
   onMount(() => {
     void check()
-    invoke<CaptureShortcut>('capture_shortcut')
-      .then((s) => (shortcut = s))
-      .catch((e: unknown) => {
-        shortcut = null
-        failed('capture_shortcut')(e)
-      })
+    loadShortcut()
     return () => {
       stopped = true
       clearTimeout(timer)

@@ -33,37 +33,54 @@
 
   const NOT_CHANGED = "Couldn't change the shortcut."
 
-  /** Records: the capture shortcut is let go, so pressing it reaches this page. If it can't
-   * be let go, recording stops and says so (the old shortcut still works). */
-  function start() {
-    clear()
-    recording = true
+  /** Letting go of the shortcut or saving: the buttons wait, so actions run in click order. */
+  let busy = $state(false)
+  /** Recording was asked for and not cancelled since. */
+  let wanted = false
+
+  const resume = () => resumeShortcut().catch(failed('resume_capture_shortcut'))
+
+  /** Records once the capture shortcut is let go, so pressing it reaches this page. If it
+   * can't be let go, says so (the old shortcut still works). */
+  async function start() {
+    busy = true
+    wanted = true
     error = ''
-    pauseShortcut().catch((e: unknown) => {
-      failed('pause_capture_shortcut')(e)
-      recording = false
+    try {
+      await pauseShortcut()
+      // Cancelled (window left or closed) while letting go: take it back.
+      if (!wanted) return void (await resume())
       clear()
+      recording = true
+    } catch (e) {
+      failed('pause_capture_shortcut')(e)
       error = NOT_CHANGED
-    })
+    } finally {
+      busy = false
+    }
   }
 
   /** Stops recording and takes the capture shortcut back (before any new one is saved). */
   async function stop() {
+    wanted = false
     if (!recording) return
     recording = false
     clear()
-    await resumeShortcut().catch(failed('resume_capture_shortcut'))
+    await resume()
   }
 
   onDestroy(() => void stop())
 
   async function save(run: () => Promise<void>) {
-    await stop()
-    error = ''
+    busy = true
     try {
+      await stop()
+      error = ''
       await run()
     } catch (e) {
       error = typeof e === 'string' ? e : NOT_CHANGED
+    } finally {
+      busy = false
     }
   }
 
@@ -107,11 +124,17 @@
       <Button size="sm" variant="outline" onclick={() => void stop()}>Cancel</Button>
     {:else}
       <ShortcutKbd {accelerator} />
-      <Button size="sm" variant="outline" onclick={start}>Change</Button>
+      <Button size="sm" variant="outline" disabled={busy} onclick={start}>Change</Button>
     {/if}
   </div>
   {#if !recording}
-    <Button size="sm" variant="link" class="h-auto px-0" onclick={() => save(onreset)}>
+    <Button
+      size="sm"
+      variant="link"
+      class="h-auto px-0"
+      disabled={busy}
+      onclick={() => save(onreset)}
+    >
       Reset to default
     </Button>
   {/if}

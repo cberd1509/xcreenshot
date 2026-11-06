@@ -173,6 +173,19 @@ impl<R: Runtime> Storage for Store<R> {
     }
 }
 
+/// No store (it couldn't be opened): the defaults, and nothing can be saved.
+pub struct Unsaved;
+
+impl Storage for Unsaved {
+    fn load(&self) -> Prefs {
+        Prefs::default()
+    }
+
+    fn save(&self, _: &Prefs) -> Result<(), String> {
+        Err(format!("{FILE} could not be opened"))
+    }
+}
+
 /// The saved prefs, or the defaults if the store can't be opened. Waits for a change being
 /// saved, so the file is never read half-written.
 pub fn load<R: Runtime>(app: &AppHandle<R>) -> Prefs {
@@ -473,10 +486,22 @@ pub(crate) mod tests {
         assert!(fresh.get(KEY).is_none());
     }
 
-    /// Prefs in memory whose saves can be made to fail.
+    /// Prefs in memory that count saves, which can be made to fail.
+    #[derive(Default)]
     pub struct FakeStorage {
         pub prefs: std::cell::RefCell<Prefs>,
         pub fail: bool,
+        /// Calls to `save`, failed ones included.
+        pub saves: std::cell::Cell<usize>,
+    }
+
+    impl FakeStorage {
+        pub fn failing() -> Self {
+            Self {
+                fail: true,
+                ..Self::default()
+            }
+        }
     }
 
     impl Storage for FakeStorage {
@@ -485,6 +510,7 @@ pub(crate) mod tests {
         }
 
         fn save(&self, prefs: &Prefs) -> Result<(), String> {
+            self.saves.set(self.saves.get() + 1);
             if self.fail {
                 return Err("disk full".into());
             }
@@ -495,17 +521,16 @@ pub(crate) mod tests {
 
     #[test]
     fn modify_saves_only_a_successful_change() {
-        let mut storage = FakeStorage {
-            prefs: Default::default(),
-            fail: false,
-        };
+        let mut storage = FakeStorage::default();
         let saved = modify(&storage, |p| {
             p.magnifier = true;
             Ok(())
         })
         .unwrap();
         assert!(saved.magnifier && storage.load().magnifier);
+        assert_eq!(storage.saves.get(), 1);
         assert_eq!(modify(&storage, |_| Err("no")), Err("no"));
+        assert_eq!(storage.saves.get(), 1, "a failed change writes nothing");
         storage.fail = true;
         assert_eq!(
             modify(&storage, |p| {
@@ -515,6 +540,12 @@ pub(crate) mod tests {
             Err(NOT_SAVED)
         );
         assert!(storage.load().magnifier);
+    }
+
+    #[test]
+    fn without_a_store_nothing_is_saved() {
+        assert_eq!(Unsaved.load(), Prefs::default());
+        assert!(Unsaved.save(&Prefs::default()).is_err());
     }
 
     #[test]

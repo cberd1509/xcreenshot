@@ -131,14 +131,16 @@ fn transact<G: Registrar, L: LoginItem>(
     Ok(after)
 }
 
-/// Startup: registers the capture shortcut and syncs the login item. Returns whether `prefs`
-/// changed.
+/// Startup: registers the capture shortcut and syncs the login item, saving what the sync
+/// changed. If that can't be saved, a login item it added is taken away again, so the next
+/// launch doesn't mistake its absence for the user removing it. Returns the prefs in effect.
 fn start(
-    prefs: &mut Prefs,
+    storage: &impl Storage,
     shortcuts: &impl Registrar,
     registered: &Registered,
     login: Option<&impl LoginItem>,
-) -> bool {
+) -> Prefs {
+    let mut prefs = storage.load();
     let ok = shortcuts
         .register(&prefs.shortcut)
         // Another app may own it; the menu bar item still works.
@@ -150,7 +152,22 @@ fn start(
         })
         .is_ok();
     registered.set(&prefs.shortcut, ok);
-    login.is_some_and(|item| login::sync(item, prefs))
+    let Some(item) = login else {
+        return prefs;
+    };
+    let before = prefs.clone();
+    let turned = login::sync(item, &mut prefs);
+    if prefs != before
+        && let Err(e) = storage.save(&prefs)
+    {
+        log::error!("could not save prefs: {e}");
+        if let Some(on) = turned {
+            // `set` logs a failure; there is nothing more to do then.
+            let _ = login::set(Some(item), &mut prefs.clone(), !on);
+        }
+        return before;
+    }
+    prefs
 }
 
 /// Applies the saved settings at startup. Returns the capture shortcut, for the menu bar.
@@ -159,21 +176,12 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) -> String {
 }
 
 fn init_with<R: Runtime>(app: &AppHandle<R>, shortcuts: &impl Registrar) -> String {
-    let store = prefs::open(app);
-    let mut prefs = store.as_deref().map(Prefs::load).unwrap_or_default();
     let login = login::item(app);
-    let changed = start(
-        &mut prefs,
-        shortcuts,
-        &app.state::<Registered>(),
-        login.as_deref(),
-    );
-    if changed
-        && let Some(store) = &store
-        && let Err(e) = prefs.save(store)
-    {
-        log::error!("could not save prefs: {e}");
-    }
+    let registered = app.state::<Registered>();
+    let prefs = match prefs::open(app) {
+        Some(store) => start(&*store, shortcuts, &registered, login.as_deref()),
+        None => start(&prefs::Unsaved, shortcuts, &registered, login.as_deref()),
+    };
     prefs.shortcut
 }
 
@@ -326,8 +334,8 @@ mod tests {
 
     fn storage(fail: bool) -> FakeStorage {
         FakeStorage {
-            prefs: Default::default(),
             fail,
+            ..FakeStorage::default()
         }
     }
 
@@ -414,6 +422,7 @@ mod tests {
         let change = change("openAtLogin", json!(false));
         assert_eq!(transact(&storage, change, &fakes.os()), Err(login::FAILED));
         assert_eq!(storage.load(), Prefs::default());
+        assert_eq!(storage.saves.get(), 0, "a failed change writes nothing");
     }
 
     #[test]
@@ -460,26 +469,52 @@ mod tests {
 
     #[test]
     fn startup_registers_the_shortcut_and_adds_the_login_item() {
-        let fakes = Fakes::new();
+        let (fakes, storage) = (Fakes::new(), storage(false));
         let shortcuts = FakeRegistrar::default();
-        let mut p = Prefs::default();
-        assert!(start(
-            &mut p,
-            &shortcuts,
-            &fakes.registered,
-            Some(&fakes.login)
-        ));
+        let p = start(&storage, &shortcuts, &fakes.registered, Some(&fakes.login));
         assert_eq!(shortcuts.held(), [shortcut::DEFAULT]);
         assert!(fakes.registered.get().registered);
         assert!(fakes.login.on.get() && p.login_item_added);
-        // Without a login item (debug builds) nothing changes.
-        let mut p = Prefs::default();
-        assert!(!start(
-            &mut p,
+        assert_eq!(storage.load(), p, "saved");
+        // Nothing changed the second time: nothing is written.
+        start(
+            &storage,
             &FakeRegistrar::default(),
             &fakes.registered,
-            None::<&FakeItem>
-        ));
+            Some(&fakes.login),
+        );
+        assert_eq!(storage.saves.get(), 1);
+        // Without a login item (debug builds) nothing changes.
+        let other = super::tests::storage(false);
+        start(
+            &other,
+            &FakeRegistrar::default(),
+            &fakes.registered,
+            None::<&FakeItem>,
+        );
+        assert_eq!(other.saves.get(), 0);
+    }
+
+    #[test]
+    fn startup_takes_back_a_login_item_it_cannot_record() {
+        let (fakes, storage) = (Fakes::new(), FakeStorage::failing());
+        let p = start(
+            &storage,
+            &FakeRegistrar::default(),
+            &fakes.registered,
+            Some(&fakes.login),
+        );
+        assert!(!fakes.login.on.get(), "added, then taken away again");
+        assert_eq!(p, Prefs::default());
+        // Without any store it is the same.
+        let fakes = Fakes::new();
+        start(
+            &prefs::Unsaved,
+            &FakeRegistrar::default(),
+            &fakes.registered,
+            Some(&fakes.login),
+        );
+        assert!(!fakes.login.on.get());
     }
 
     #[test]
@@ -487,8 +522,12 @@ mod tests {
         let fakes = Fakes::new();
         let mut shortcuts = FakeRegistrar::default();
         shortcuts.taken.insert(shortcut::DEFAULT.into());
-        let mut p = Prefs::default();
-        start(&mut p, &shortcuts, &fakes.registered, None::<&FakeItem>);
+        start(
+            &storage(false),
+            &shortcuts,
+            &fakes.registered,
+            None::<&FakeItem>,
+        );
         assert_eq!(
             fakes.registered.get(),
             shortcut::CaptureShortcut {

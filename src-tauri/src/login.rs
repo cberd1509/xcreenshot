@@ -56,31 +56,28 @@ pub fn set(item: Option<&impl LoginItem>, prefs: &mut Prefs, on: bool) -> Result
 
 /// Brings the login item and the pref in line at startup. The first run adds the login item
 /// (the pref defaults to on). If it was added before and is gone now, the user removed it in
-/// the system settings, so the pref turns off. Returns whether `prefs` changed.
-pub fn sync(item: &impl LoginItem, prefs: &mut Prefs) -> bool {
+/// the system settings, so the pref turns off. Returns what it did to the login item: turned
+/// it on or off, or nothing. A failure is logged (by [`set`]) and leaves everything as it was,
+/// so the next launch tries again.
+pub fn sync(item: &impl LoginItem, prefs: &mut Prefs) -> Option<bool> {
     let enabled = match item.is_enabled() {
         Ok(enabled) => enabled,
         Err(e) => {
             log::warn!("could not check the login item: {e}");
-            return false;
+            return None;
         }
     };
-    let before = prefs.clone();
     match (prefs.open_at_login, enabled) {
         (true, true) => prefs.login_item_added = true,
         (true, false) if prefs.login_item_added => {
             log::info!("the login item was removed in the system settings; turning it off");
             prefs.open_at_login = false;
         }
-        (true, false) => {
-            let _ = set(Some(item), prefs, true);
-        }
-        (false, true) => {
-            let _ = set(Some(item), prefs, false);
-        }
+        (true, false) => return set(Some(item), prefs, true).ok().map(|()| true),
+        (false, true) => return set(Some(item), prefs, false).ok().map(|()| false),
         (false, false) => {}
     }
-    *prefs != before
+    None
 }
 
 #[cfg(test)]
@@ -131,16 +128,17 @@ pub(crate) mod tests {
     #[test]
     fn first_run_adds_the_login_item() {
         let (item, mut p) = (item(false), Prefs::default());
-        assert!(sync(&item, &mut p));
+        assert_eq!(sync(&item, &mut p), Some(true));
         assert!(item.on.get());
         assert_eq!(p, prefs(true, true));
-        assert!(!sync(&item, &mut p), "nothing to do the second time");
+        assert_eq!(sync(&item, &mut p), None, "nothing to do the second time");
+        assert_eq!(p, prefs(true, true));
     }
 
     #[test]
     fn a_login_item_removed_in_system_settings_turns_the_pref_off() {
         let (item, mut p) = (item(false), prefs(true, true));
-        assert!(sync(&item, &mut p));
+        assert_eq!(sync(&item, &mut p), None);
         assert!(!item.on.get());
         assert_eq!(p, prefs(false, true));
     }
@@ -148,18 +146,46 @@ pub(crate) mod tests {
     #[test]
     fn a_pref_turned_off_removes_a_leftover_login_item() {
         let (item, mut p) = (item(true), prefs(false, true));
-        assert!(!sync(&item, &mut p));
+        assert_eq!(sync(&item, &mut p), Some(false));
         assert!(!item.on.get());
+        assert_eq!(p, prefs(false, true));
         let (item, mut p) = (self::item(false), prefs(false, true));
-        assert!(!sync(&item, &mut p));
+        assert_eq!(sync(&item, &mut p), None);
         assert!(!item.on.get());
     }
 
     #[test]
     fn an_existing_login_item_is_marked_as_added() {
         let (item, mut p) = (item(true), prefs(true, false));
-        assert!(sync(&item, &mut p));
+        assert_eq!(sync(&item, &mut p), None);
         assert_eq!(p, prefs(true, true));
+    }
+
+    /// Checks fine, but turning it on or off fails.
+    struct Stuck(bool);
+
+    impl LoginItem for Stuck {
+        fn is_enabled(&self) -> Result<bool, String> {
+            Ok(self.0)
+        }
+
+        fn set_enabled(&self, _: bool) -> Result<(), String> {
+            Err("denied".into())
+        }
+    }
+
+    #[test]
+    fn a_login_item_that_cannot_change_leaves_everything_for_next_time() {
+        let mut p = Prefs::default();
+        assert_eq!(sync(&Stuck(false), &mut p), None);
+        assert_eq!(
+            p,
+            Prefs::default(),
+            "not marked as added, so it is tried again"
+        );
+        let mut p = prefs(false, true);
+        assert_eq!(sync(&Stuck(true), &mut p), None);
+        assert_eq!(p, prefs(false, true));
     }
 
     #[test]
@@ -169,7 +195,7 @@ pub(crate) mod tests {
             ..FakeItem::default()
         };
         let mut p = Prefs::default();
-        assert!(!sync(&broken, &mut p));
+        assert_eq!(sync(&broken, &mut p), None);
         assert_eq!(p, Prefs::default());
         assert_eq!(set(Some(&broken), &mut p, false), Err(FAILED));
         assert_eq!(p, Prefs::default());
@@ -191,8 +217,12 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn debug_builds_have_no_login_item() {
-        let app = mock_builder().build(mock_context(noop_assets())).unwrap();
+    fn debug_builds_have_no_login_item_even_with_the_plugin() {
+        let app = mock_builder()
+            .plugin(tauri_plugin_autostart::Builder::new().build())
+            .build(mock_context(noop_assets()))
+            .unwrap();
+        assert!(app.try_state::<AutoLaunchManager>().is_some());
         assert!(super::item(app.handle()).is_none());
     }
 }

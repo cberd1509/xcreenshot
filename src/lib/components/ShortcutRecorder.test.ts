@@ -22,6 +22,8 @@ const RESUME = 'resume_capture_shortcut'
 /** IPC commands and saves, in order. */
 let calls: string[]
 let failing: Set<string>
+/** While set, pausing waits for it. */
+let pausing: Promise<void> | null
 let onchange: ReturnType<typeof vi.fn<(a: string) => Promise<void>>>
 let onreset: ReturnType<typeof vi.fn<() => Promise<void>>>
 
@@ -38,9 +40,15 @@ function setup(accelerator = 'Control+Shift+Super+S') {
   return render(ShortcutRecorder, { accelerator, onchange, onreset })
 }
 
+/** Clicks Change and waits for the shortcut to be let go. */
+async function change() {
+  await userEvent.click(button('Change'))
+  await tick()
+}
+
 async function record() {
   setup()
-  await userEvent.click(button('Change'))
+  await change()
 }
 
 describe('ShortcutRecorder', () => {
@@ -48,8 +56,10 @@ describe('ShortcutRecorder', () => {
     platform.windows = false
     calls = []
     failing = new Set()
-    mockIPC((cmd) => {
+    pausing = null
+    mockIPC(async (cmd) => {
       calls.push(cmd)
+      if (cmd === PAUSE && pausing) await pausing
       if (failing.has(cmd)) throw new Error('nope')
     })
     onchange = vi.fn<(a: string) => Promise<void>>(() => {
@@ -116,10 +126,10 @@ describe('ShortcutRecorder', () => {
     await down('KeyD', { ctrlKey: true })
     await down('Escape')
     expect(button('Change')).toBeInTheDocument()
-    await userEvent.click(button('Change'))
+    await change()
     await userEvent.click(button('Cancel'))
     expect(button('Change')).toBeInTheDocument()
-    await userEvent.click(button('Change'))
+    await change()
     await fireEvent.blur(window)
     expect(button('Change')).toBeInTheDocument()
     await fireEvent.blur(window) // Not recording: nothing to take back.
@@ -189,7 +199,7 @@ describe('ShortcutRecorder', () => {
       'That shortcut is in use by another app.',
     )
     onchange.mockRejectedValueOnce(new Error('boom'))
-    await userEvent.click(button('Change'))
+    await change()
     expect(screen.queryByRole('alert')).toBeNull()
     await down('KeyD', { ctrlKey: true })
     await up('KeyD', { ctrlKey: true })
@@ -201,5 +211,45 @@ describe('ShortcutRecorder', () => {
     await userEvent.click(button('Reset to default'))
     expect(onreset).toHaveBeenCalledOnce()
     expect(calls).toEqual([])
+  })
+
+  it('records only once the shortcut is let go', async () => {
+    let release = Function.prototype as () => void
+    pausing = new Promise((r) => (release = r))
+    setup()
+    await userEvent.click(button('Change'))
+    expect(button('Change')).toBeDisabled()
+    expect(button('Reset to default')).toBeDisabled()
+    // Pressed before it was let go: the capture shortcut takes it, not the recorder.
+    await down('KeyD', { ctrlKey: true })
+    await up('KeyD', { ctrlKey: true })
+    expect(onchange).not.toHaveBeenCalled()
+    release()
+    await tick()
+    expect(screen.getByText('Type a shortcut')).toBeInTheDocument()
+  })
+
+  it('takes the shortcut back if the window is left while letting go', async () => {
+    let release = Function.prototype as () => void
+    pausing = new Promise((r) => (release = r))
+    setup()
+    await userEvent.click(button('Change'))
+    await fireEvent.blur(window)
+    release()
+    await tick()
+    expect(calls).toEqual([PAUSE, RESUME])
+    expect(button('Change')).not.toBeDisabled()
+  })
+
+  it('keeps the buttons waiting until a save answers', async () => {
+    let release = Function.prototype as () => void
+    onreset.mockImplementationOnce(() => new Promise((r) => (release = r)))
+    setup()
+    await userEvent.click(button('Reset to default'))
+    expect(button('Change')).toBeDisabled()
+    expect(button('Reset to default')).toBeDisabled()
+    release()
+    await tick()
+    expect(button('Change')).not.toBeDisabled()
   })
 })

@@ -127,19 +127,25 @@ pub fn run() {
 }
 
 fn build_tray(app: &AppHandle, capture_accelerator: &str) -> tauri::Result<()> {
-    let menu = tray_menu(app, capture_accelerator, None)?;
+    // The first menu counts as shown once the tray is built with it.
     app.state::<actions::MenuShows>()
-        .changed(capture_accelerator, None);
+        .refresh(capture_accelerator, None, || {
+            build_tray_icon(app, capture_accelerator)
+        })?;
     // Keep the capture item's shortcut in step with the setting.
     let tray_app = app.clone();
     app.listen(settings::CHANGED, move |_| {
         refresh_tray(&tray_app, updates::ready_version(&tray_app).as_deref())
     });
+    Ok(())
+}
+
+fn build_tray_icon(app: &AppHandle, capture_accelerator: &str) -> tauri::Result<()> {
     TrayIconBuilder::with_id("main")
         .icon(tray_icon())
         .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("xcreenshot")
-        .menu(&menu)
+        .menu(&tray_menu(app, capture_accelerator, None)?)
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| {
             if let Some(action) = Action::from_id(event.id().as_ref()) {
@@ -184,17 +190,16 @@ fn offer_update(app: &AppHandle, version: &str) {
 /// Rebuilds the menu bar items with the current capture shortcut and pending update.
 fn refresh_tray(app: &AppHandle, update: Option<&str>) {
     let accelerator = app.state::<shortcut::Registered>().get().accelerator;
-    if !app
+    let installed = app
         .state::<actions::MenuShows>()
-        .changed(&accelerator, update)
-    {
-        return;
-    }
-    let menu = tray_menu(app, &accelerator, update);
-    if let Err(e) = menu.and_then(|m| match app.tray_by_id("main") {
-        Some(tray) => tray.set_menu(Some(m)),
-        None => Ok(()),
-    }) {
+        .refresh(&accelerator, update, || {
+            let menu = tray_menu(app, &accelerator, update)?;
+            match app.tray_by_id("main") {
+                Some(tray) => tray.set_menu(Some(menu)),
+                None => Ok(()),
+            }
+        });
+    if let Err(e) = installed {
         log::error!("could not update the menu bar: {e}");
     }
 }

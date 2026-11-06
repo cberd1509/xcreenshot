@@ -10,6 +10,7 @@ const SHORTCUT = 'Control+Shift+Super+S'
 let calls: string[]
 let granted: boolean
 let registered: boolean
+let accelerator: string
 let failing: Set<string>
 
 const count = (cmd: string) => calls.filter((c) => c === cmd).length
@@ -30,13 +31,14 @@ describe('Permission', () => {
     calls = []
     granted = false
     registered = true
+    accelerator = SHORTCUT
     failing = new Set()
     mockWindows('permission')
     mockIPC((cmd) => {
       calls.push(cmd)
       if (failing.has(cmd)) throw new Error('nope')
       if (cmd === 'permission_granted') return granted
-      if (cmd === 'capture_shortcut') return { accelerator: SHORTCUT, registered }
+      if (cmd === 'capture_shortcut') return { accelerator, registered }
     })
   })
 
@@ -214,6 +216,15 @@ describe('Permission', () => {
         'restart_app failed',
       ]),
     )
+  })
+
+  it('shows a shortcut changed in Settings when the window is back in focus', async () => {
+    granted = true
+    await mount()
+    accelerator = 'Alt+Shift+F5'
+    await fireEvent.focus(window)
+    await after()
+    expect(screen.getByText('F5')).toBeInTheDocument()
   })
 
   it('leaves the shortcut out when it cannot be read', async () => {
