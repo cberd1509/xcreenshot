@@ -3,6 +3,7 @@
   import { Separator } from '$lib/components/ui/separator'
   import { Toggle } from '$lib/components/ui/toggle'
   import * as ToggleGroup from '$lib/components/ui/toggle-group'
+  import * as Tooltip from '$lib/components/ui/tooltip'
   import { TEXT_SIZES, type TextOptions, type TextSize } from './text'
 
   /**
@@ -29,14 +30,21 @@
       <ToggleGroup.Item value={size} aria-label={LABELS[size as TextSize]}>{size}</ToggleGroup.Item>
     {/each}
   </ToggleGroup.Root>
-  <Toggle
-    size="sm"
-    aria-label="Background"
-    title="Background"
-    pressed={options.background}
-    onPressedChange={(background) => onchange({ ...options, background })}
-  >
-    <BackgroundIcon class="fill-current" />
-  </Toggle>
+  <Tooltip.Root>
+    <Tooltip.Trigger>
+      {#snippet child({ props })}
+        <Toggle
+          {...props}
+          size="sm"
+          aria-label="Background"
+          pressed={options.background}
+          onPressedChange={(background) => onchange({ ...options, background })}
+        >
+          <BackgroundIcon class="fill-current" />
+        </Toggle>
+      {/snippet}
+    </Tooltip.Trigger>
+    <Tooltip.Content side="bottom">Background</Tooltip.Content>
+  </Tooltip.Root>
   <Separator orientation="vertical" class="mx-1 h-5" />
 </div>

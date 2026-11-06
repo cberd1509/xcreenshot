@@ -2,7 +2,7 @@ import type Konva from 'konva'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fakeContext } from '../../test/canvas'
 import { FakeKonva, stages, type FakeNode } from '../../test/konva'
-import { Board, attrs, exportShapes, loadKonva, measureText, once, textAttrs } from './board'
+import { Board, attrs, exportShapes, loadKonva, once, textAttrs } from './board'
 import { DEFAULT_STYLE, type Shape } from './shapes'
 
 const style = DEFAULT_STYLE
@@ -79,14 +79,6 @@ describe('text attrs', () => {
     const { box, label } = textAttrs({ ...text, background: true })
     expect(box.fill).toBe(style.color)
     expect(label.fill).toBe('#FFFFFF')
-  })
-
-  it('measures text as Konva lays it out, padding included', () => {
-    // The fake: half the font size per character, lines 1.25 font sizes tall.
-    expect(measureText(FakeKonva as unknown as typeof Konva, 'abcd\nx', 20)).toEqual({
-      width: 4 * 10 + 12,
-      height: 2 * 25 + 12,
-    })
   })
 })
 
@@ -273,6 +265,27 @@ describe('Board', () => {
     board.preview({ ...text, text: 'Yo' })
     const [draft] = drafts()
     expect(draft.children[1].attrs.text).toBe('Yo')
+  })
+
+  it('measures text as Konva lays it out, padding included, with one node', () => {
+    const { board, stage } = setup()
+    // The fake: half the font size per character, lines 1.25 font sizes tall.
+    expect(board.measure('abcd\nx', 20)).toEqual({ width: 4 * 10 + 12, height: 2 * 25 + 12 })
+    expect(board.measure('ab', 20)).toEqual({ width: 2 * 10 + 12, height: 25 + 12 })
+    // Off the stage, and gone with the board.
+    expect(stage.children).toHaveLength(2)
+    board.destroy()
+    expect(stage.destroyed).toBe(true)
+  })
+
+  it('measures moved text only when its size changed', () => {
+    const { board, shapes, onchange } = setup()
+    const measure = vi.spyOn(board, 'measure')
+    board.render([text], null)
+    shapes()[0].setAttrs({ x: 150 })
+    shapes()[0].fire('dragend')
+    expect(onchange).toHaveBeenLastCalledWith({ ...text, x: 150 })
+    expect(measure).not.toHaveBeenCalled()
   })
 
   it('ignores events from a node that was removed', () => {

@@ -24,6 +24,14 @@ export const MAX_FONT = 400
 /** Space between the text and the edge of its box (and its background). */
 export const padding = (fontSize: number) => Math.round(fontSize * 0.3)
 
+/** How text is laid out at `fontSize`: the same in the editor, the measure and on the board. */
+export const textFont = (fontSize: number) => ({
+  fontSize,
+  fontFamily: FONT,
+  lineHeight: LINE_HEIGHT,
+  padding: padding(fontSize),
+})
+
 /** The background's corner radius. */
 export const radius = (fontSize: number) => Math.round(fontSize * 0.25)
 

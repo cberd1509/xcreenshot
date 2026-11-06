@@ -15,7 +15,6 @@
     paintedBounds,
     toolForKey,
     translate,
-    type Style,
     type TextShape,
     type Tool,
   } from './shapes'
@@ -66,13 +65,8 @@
   let textOptions = $state<TextOptions>(DEFAULT_TEXT)
 
   /** The text being typed: a new one, or one taken off the board to edit again. */
-  type Editing = {
-    id: string
+  type Editing = Pick<TextShape, 'id' | 'text' | 'fontSize' | 'style'> & {
     at: Point
-    text: string
-    fontSize: number
-    background: boolean
-    style: Style
     existing: boolean
   }
   let editing = $state<Editing | null>(null)
@@ -166,7 +160,6 @@
       at: boxAt(p, fontSize),
       text: '',
       fontSize,
-      background: textOptions.background,
       style,
       existing: false,
     }
@@ -176,7 +169,7 @@
   function edit(shape: TextShape) {
     const { id, x, y, text, fontSize, background } = shape
     selected = null
-    editing = { id, at: { x, y }, text, fontSize, background, style: shape.style, existing: true }
+    editing = { id, at: { x, y }, text, fontSize, style: shape.style, existing: true }
     textOptions = { size: sizeOf(fontSize) ?? textOptions.size, background }
   }
 
@@ -193,7 +186,8 @@
       if (e.existing) set(without(history.present, e.id))
       return
     }
-    const { id, fontSize, background } = e
+    const { id, fontSize } = e
+    const { background } = textOptions
     const shape: TextShape = {
       id,
       kind: 'text',
@@ -211,10 +205,7 @@
   /** New text options; the text being edited follows them. */
   function setText(next: TextOptions) {
     textOptions = next
-    if (editing) {
-      editing.fontSize = TEXT_SIZES[next.size]
-      editing.background = next.background
-    }
+    if (editing) editing.fontSize = TEXT_SIZES[next.size]
   }
 
   function cancel() {
@@ -249,11 +240,11 @@
     // Over the selection: crosshair to draw, else move it. Elsewhere, the overlay's cursor.
     cursor = !contains(selection, at(e))
       ? ''
-      : drawing
-        ? tool === 'text'
+      : !drawing
+        ? 'move'
+        : tool === 'text'
           ? 'text'
           : 'crosshair'
-        : 'move'
   }
 
   function onpointerup(e: PointerEvent) {
@@ -310,8 +301,8 @@
   }
 
   /**
-   * Esc, one step at a time: the text being edited (it is kept), the shape being drawn, an open menu, the selected shape, then the
-   * tool. Returns whether it undid anything; if not, the overlay handles Esc.
+   * Esc, one step at a time: the text being edited (it is kept), the shape being drawn, an open
+   * menu, the selected shape, then the tool. Returns whether it undid anything; if not, the overlay handles Esc.
    */
   export function escape(): boolean {
     if (editing) finish()
@@ -355,9 +346,9 @@
     bind:text={editing.text}
     at={editing.at}
     fontSize={editing.fontSize}
-    background={editing.background}
+    background={textOptions.background}
     color={editing.style.color}
-    measure={(text, size) => board!.measure(text, size)}
+    measure={board.measure}
     oncommit={finish}
   />
 {/if}

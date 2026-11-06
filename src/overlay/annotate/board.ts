@@ -12,7 +12,7 @@ import {
   type Shape,
   type TextShape,
 } from './shapes'
-import { FONT, LINE_HEIGHT, padding, radius, textColors } from './text'
+import { radius, textColors, textFont } from './text'
 
 type K = typeof Konva
 /** A shape's node: one Konva shape, or a group for text (its background and the text). */
@@ -84,27 +84,10 @@ export function textAttrs(shape: TextShape): { box: Konva.RectConfig; label: Kon
     },
     label: {
       text: shape.text,
-      fontSize: shape.fontSize,
-      fontFamily: FONT,
-      lineHeight: LINE_HEIGHT,
-      padding: padding(shape.fontSize),
+      ...textFont(shape.fontSize),
       fill,
     },
   }
-}
-
-/** The box `text` takes at `fontSize`, padding included, as Konva lays it out. */
-export function measureText(K: K, text: string, fontSize: number): Size {
-  const node = new K.Text({
-    text,
-    fontSize,
-    fontFamily: FONT,
-    lineHeight: LINE_HEIGHT,
-    padding: padding(fontSize),
-  })
-  const size = { width: node.width(), height: node.height() }
-  node.destroy()
-  return size
 }
 
 function create(K: K, shape: Shape): Node {
@@ -155,6 +138,10 @@ export class Board {
   private readonly transformer: Konva.Transformer
   private readonly nodes = new Map<string, { node: Node; shape: Shape }>()
   private draft: { node: Node; kind: Shape['kind'] } | null = null
+  /** Whether the handles are set up for text. */
+  private textHandles = false
+  /** Lays out text off the stage, to measure it. Reused for every keystroke. */
+  private measurer: Konva.Text | null = null
 
   constructor(
     private readonly K: K,
@@ -214,7 +201,10 @@ export class Board {
     const entry = selected ? this.nodes.get(selected) : undefined
     // Text resizes from its corners and keeps its proportions: only the font size changes.
     const text = entry?.shape.kind === 'text'
-    this.transformer.setAttrs({ keepRatio: text, enabledAnchors: text ? CORNERS : ANCHORS })
+    if (text !== this.textHandles) {
+      this.textHandles = text
+      this.transformer.setAttrs({ keepRatio: text, enabledAnchors: text ? CORNERS : ANCHORS })
+    }
     this.transformer.nodes(entry ? [entry.node] : [])
     this.shapes.batchDraw()
     this.top.batchDraw()
@@ -236,9 +226,11 @@ export class Board {
     this.top.batchDraw()
   }
 
-  /** The box `text` takes at `fontSize`, padding included. */
-  measure(text: string, fontSize: number): Size {
-    return measureText(this.K, text, fontSize)
+  /** The box `text` takes at `fontSize`, padding included, as Konva lays it out. */
+  measure = (text: string, fontSize: number): Size => {
+    this.measurer ??= new this.K.Text()
+    this.measurer.setAttrs({ text, ...textFont(fontSize) })
+    return { width: this.measurer.width(), height: this.measurer.height() }
   }
 
   /** Whether `p` (window px) is on a shape or a resize handle. */
@@ -257,13 +249,16 @@ export class Board {
       scaleY: node.scaleY(),
     })
     // Resized text is measured again at its new font size.
-    if (next.kind === 'text') next = { ...next, ...this.measure(next.text, next.fontSize) }
+    if (next.kind === 'text' && shape.kind === 'text' && next.fontSize !== shape.fontSize) {
+      next = { ...next, ...this.measure(next.text, next.fontSize) }
+    }
     // Back to the model: the change comes back through `render` once it is kept.
     node.setAttrs(attrs(shape))
     this.events.onchange(next)
   }
 
   destroy() {
+    this.measurer?.destroy()
     this.stage.destroy()
     this.nodes.clear()
   }

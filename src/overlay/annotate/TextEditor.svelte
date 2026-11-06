@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Point, Size } from '../geometry'
-  import { FONT, LINE_HEIGHT, padding, radius, textColors } from './text'
+  import { radius, textColors, textFont } from './text'
 
   /**
    * Edits a text annotation in place: a textarea over the board, laid out like the text it
@@ -29,6 +29,7 @@
 
   const size = $derived(measure(text, fontSize))
   const colors = $derived(textColors(color, background))
+  const font = $derived(textFont(fontSize))
 
   /** Focused on open, with the caret at the end. */
   function focus(el: HTMLTextAreaElement) {
@@ -48,9 +49,9 @@
   style:top="{at.y}px"
   style:width="{size.width + 2}px"
   style:height="{size.height}px"
-  style:padding="{padding(fontSize)}px"
+  style:padding="{font.padding}px"
   style:border-radius="{radius(fontSize)}px"
-  style:font="{fontSize}px/{LINE_HEIGHT} {FONT}"
+  style:font="{fontSize}px/{font.lineHeight} {font.fontFamily}"
   style:color={colors.fill}
   style:caret-color={colors.fill}
   style:background={colors.box}
