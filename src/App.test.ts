@@ -249,4 +249,33 @@ describe('Login item approval', () => {
     await tick()
     expect(line()).toBeNull()
   })
+
+  it('drops a check that answers after Open at login was turned off', async () => {
+    const answers: ((needs: boolean) => void)[] = []
+    mockIPC((cmd, args) => {
+      if (cmd === 'login_item_needs_approval')
+        return new Promise<boolean>((resolve) => answers.push(resolve))
+      if (cmd === 'set_pref') {
+        const { value } = args as { value: boolean }
+        return { ...settings, openAtLogin: value, version: 1 }
+      }
+    })
+    render(App)
+    await tick()
+    expect(answers).toHaveLength(1)
+    const login = screen.getByRole('switch', { name: 'Open at login' })
+    await userEvent.click(login)
+    await tick()
+    expect(settings.openAtLogin).toBe(false)
+    answers[0](true)
+    await tick()
+    await userEvent.click(login)
+    await tick()
+    expect(settings.openAtLogin).toBe(true)
+    expect(answers).toHaveLength(2)
+    expect(line()).toBeNull()
+    answers[1](true)
+    await tick()
+    expect(line()).toBeInTheDocument()
+  })
 })

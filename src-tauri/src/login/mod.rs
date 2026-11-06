@@ -5,7 +5,8 @@
 //! Debug builds never touch the login item, so `pnpm tauri dev` doesn't add the dev binary.
 //!
 //! Versions before SMAppService added a LaunchAgent (`~/Library/LaunchAgents/xcreenshot.plist`).
-//! [`sync`] removes it once, then registers with SMAppService if the pref is on.
+//! [`sync`] replaces it once: it registers with SMAppService first (if the pref is on) and
+//! deletes the LaunchAgent only after that worked, so login keeps working if it fails.
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -43,9 +44,14 @@ impl Status {
 pub trait LoginItem {
     fn status(&self) -> Result<Status, String>;
     fn set_enabled(&self, on: bool) -> Result<(), String>;
-    /// Removes the LaunchAgent older versions added. Returns whether there was one.
-    fn remove_launch_agent(&self) -> Result<bool, String> {
+    /// Whether the LaunchAgent older versions added is still there; an error if that can't be
+    /// told (then the migration waits for the next launch).
+    fn has_launch_agent(&self) -> Result<bool, String> {
         Ok(false)
+    }
+    /// Deletes that LaunchAgent.
+    fn remove_launch_agent(&self) -> Result<(), String> {
+        Ok(())
     }
 }
 
@@ -91,37 +97,50 @@ pub fn set(item: Option<&impl LoginItem>, prefs: &mut Prefs, on: bool) -> Result
     Ok(())
 }
 
-/// Removes the old LaunchAgent, once. If it was there, it was the login item the app added, so
-/// SMAppService's has yet to be added. Returns false if it couldn't be removed (logged), to try
-/// again at the next launch.
-fn migrate(item: &impl LoginItem, prefs: &mut Prefs) -> bool {
-    if prefs.launch_agent_removed {
-        return true;
+/// Replaces the old LaunchAgent with SMAppService's login item: with the pref on, registers
+/// first, and deletes the LaunchAgent only once registered (or waiting for approval). If
+/// registering or deleting fails, the migration isn't marked done and the next launch tries
+/// again; the LaunchAgent keeps login working meanwhile. Returns what it did, as [`sync`].
+fn replace_launch_agent(item: &impl LoginItem, prefs: &mut Prefs) -> Option<bool> {
+    let mut turned = None;
+    if prefs.open_at_login {
+        match item.status() {
+            Ok(status) if status.is_on() => prefs.login_item_added = true,
+            Ok(_) => {
+                set(Some(item), prefs, true).ok()?;
+                turned = Some(true);
+            }
+            Err(e) => {
+                log::warn!("could not check the login item: {e}");
+                return None;
+            }
+        }
     }
     match item.remove_launch_agent() {
-        Ok(found) => {
-            if found {
-                log::info!("removed the old LaunchAgent");
-                prefs.login_item_added = false;
-            }
+        Ok(()) => {
+            log::info!("replaced the old LaunchAgent");
             prefs.launch_agent_removed = true;
-            true
         }
-        Err(e) => {
-            log::warn!("could not remove the old LaunchAgent: {e}");
-            false
-        }
+        Err(e) => log::warn!("could not remove the old LaunchAgent: {e}"),
     }
+    turned
 }
 
-/// Brings the login item and the pref in line at startup, after removing the old LaunchAgent
-/// (see [`migrate`]). The first run adds the login item (the pref defaults to on). If it was
+/// Brings the login item and the pref in line at startup, first replacing the old LaunchAgent
+/// if it is there (see [`replace_launch_agent`]). The first run adds the login item (the pref defaults to on). If it was
 /// added before and the user turned it off in System Settings, the pref turns off. Returns
 /// what it did to the login item: turned it on or off, or nothing. A failure is logged and
 /// leaves the login item and pref as they were, so the next launch tries again.
 pub fn sync(item: &impl LoginItem, prefs: &mut Prefs) -> Option<bool> {
-    if !migrate(item, prefs) {
-        return None;
+    if !prefs.launch_agent_removed {
+        match item.has_launch_agent() {
+            Ok(true) => return replace_launch_agent(item, prefs),
+            Ok(false) => prefs.launch_agent_removed = true,
+            Err(e) => {
+                log::warn!("could not look for the old LaunchAgent: {e}");
+                return None;
+            }
+        }
     }
     let status = match item.status() {
         Ok(status) => status,
@@ -167,14 +186,17 @@ pub(crate) mod tests {
     use tauri::test::{mock_builder, mock_context, noop_assets};
 
     /// A login item in memory. `waiting` makes it wait for approval when on, `missing` makes
-    /// it not found when off, and `broken` makes every call fail. `launch_agent` is the old
-    /// LaunchAgent, `Err` if it can't be removed.
+    /// it not found when off, `broken` makes every call fail and `stuck` makes turning it on or
+    /// off fail. `launch_agent` is the old LaunchAgent, `Err` if it can't be found out;
+    /// `locked` makes deleting it fail.
     pub struct FakeItem {
         pub on: Cell<bool>,
         pub waiting: bool,
         pub missing: bool,
         pub broken: bool,
+        pub stuck: bool,
         pub launch_agent: Cell<Result<bool, ()>>,
+        pub locked: bool,
     }
 
     impl Default for FakeItem {
@@ -184,7 +206,9 @@ pub(crate) mod tests {
                 waiting: false,
                 missing: false,
                 broken: false,
+                stuck: false,
                 launch_agent: Cell::new(Ok(false)),
+                locked: false,
             }
         }
     }
@@ -203,17 +227,25 @@ pub(crate) mod tests {
         }
 
         fn set_enabled(&self, on: bool) -> Result<(), String> {
-            if self.broken {
-                return Err("broken".into());
+            if self.broken || self.stuck {
+                return Err("denied".into());
             }
             self.on.set(on);
             Ok(())
         }
 
-        fn remove_launch_agent(&self) -> Result<bool, String> {
-            let found = self.launch_agent.get().map_err(|()| "locked".to_owned())?;
+        fn has_launch_agent(&self) -> Result<bool, String> {
+            self.launch_agent
+                .get()
+                .map_err(|()| "no home folder".to_owned())
+        }
+
+        fn remove_launch_agent(&self) -> Result<(), String> {
+            if self.locked {
+                return Err("locked".into());
+            }
             self.launch_agent.set(Ok(false));
-            Ok(found)
+            Ok(())
         }
     }
 
@@ -295,72 +327,124 @@ pub(crate) mod tests {
         assert_eq!(p, prefs(true, true));
     }
 
-    #[test]
-    fn the_old_launch_agent_is_replaced_once() {
-        // Added by an older version: removed, and SMAppService's login item added instead,
-        // not mistaken for the user turning it off.
-        let item = FakeItem {
-            launch_agent: Cell::new(Ok(true)),
-            ..FakeItem::default()
-        };
-        let mut p = Prefs {
+    /// Prefs from a version with the LaunchAgent: it was added, the migration isn't done.
+    fn old_prefs(open_at_login: bool) -> Prefs {
+        Prefs {
+            open_at_login,
             login_item_added: true,
             ..Prefs::default()
-        };
+        }
+    }
+
+    fn with_launch_agent() -> FakeItem {
+        FakeItem {
+            launch_agent: Cell::new(Ok(true)),
+            ..FakeItem::default()
+        }
+    }
+
+    #[test]
+    fn the_old_launch_agent_is_replaced_once() {
+        let (item, mut p) = (with_launch_agent(), old_prefs(true));
         assert_eq!(sync(&item, &mut p), Some(true));
-        assert_eq!(item.launch_agent.get(), Ok(false));
-        assert!(item.on.get());
+        assert!(item.on.get(), "registered");
+        assert_eq!(item.launch_agent.get(), Ok(false), "then deleted");
         assert_eq!(p, prefs(true, true));
         // Only once: a LaunchAgent that shows up later is left alone.
         item.launch_agent.set(Ok(true));
         assert_eq!(sync(&item, &mut p), None);
         assert_eq!(item.launch_agent.get(), Ok(true));
+    }
 
-        // With the pref off it is only removed.
-        let item = FakeItem {
-            launch_agent: Cell::new(Ok(true)),
-            ..FakeItem::default()
-        };
-        let mut p = Prefs {
-            open_at_login: false,
-            login_item_added: true,
-            ..Prefs::default()
-        };
+    #[test]
+    fn an_old_launch_agent_is_deleted_when_already_registered_or_waiting() {
+        for status in [Enabled, RequiresApproval] {
+            let item = FakeItem {
+                launch_agent: Cell::new(Ok(true)),
+                ..item(status)
+            };
+            let mut p = old_prefs(true);
+            assert_eq!(sync(&item, &mut p), None);
+            assert_eq!(item.launch_agent.get(), Ok(false));
+            assert_eq!(p, prefs(true, true));
+        }
+    }
+
+    #[test]
+    fn with_the_pref_off_the_old_launch_agent_is_only_deleted() {
+        let (item, mut p) = (with_launch_agent(), old_prefs(false));
         assert_eq!(sync(&item, &mut p), None);
         assert!(!item.on.get());
-        assert_eq!(p, prefs(false, false));
+        assert_eq!(item.launch_agent.get(), Ok(false));
+        assert_eq!(p, prefs(false, true));
+    }
+
+    #[test]
+    fn a_failed_registration_keeps_the_old_launch_agent() {
+        let item = FakeItem {
+            stuck: true,
+            ..with_launch_agent()
+        };
+        let mut p = old_prefs(true);
+        assert_eq!(sync(&item, &mut p), None);
+        assert_eq!(item.launch_agent.get(), Ok(true), "login still works");
+        assert_eq!(
+            p,
+            old_prefs(true),
+            "not done, and not taken for the user turning it off"
+        );
+        // Next launch, registering works.
+        let item = with_launch_agent();
+        assert_eq!(sync(&item, &mut p), Some(true));
+        assert_eq!(p, prefs(true, true));
+        // A broken check also leaves it.
+        let broken = FakeItem {
+            broken: true,
+            ..with_launch_agent()
+        };
+        let mut p = old_prefs(true);
+        assert_eq!(sync(&broken, &mut p), None);
+        assert_eq!(p, old_prefs(true));
+    }
+
+    #[test]
+    fn an_old_launch_agent_that_cannot_be_deleted_is_tried_again() {
+        let item = FakeItem {
+            locked: true,
+            ..with_launch_agent()
+        };
+        let mut p = old_prefs(true);
+        assert_eq!(sync(&item, &mut p), Some(true));
+        assert!(item.on.get());
+        assert!(!p.launch_agent_removed);
+        // Next launch: registered already, so only the deletion is left.
+        let item = FakeItem {
+            on: Cell::new(true),
+            ..with_launch_agent()
+        };
+        assert_eq!(sync(&item, &mut p), None);
+        assert_eq!(item.launch_agent.get(), Ok(false));
+        assert_eq!(p, prefs(true, true));
     }
 
     #[test]
     fn without_an_old_launch_agent_the_migration_changes_nothing_else() {
         // The user had removed it: the pref turns off, as before.
-        let (item, mut p) = (
-            FakeItem::default(),
-            Prefs {
-                login_item_added: true,
-                ..Prefs::default()
-            },
-        );
+        let (item, mut p) = (FakeItem::default(), old_prefs(true));
         assert_eq!(sync(&item, &mut p), None);
         assert_eq!(p, prefs(false, true));
     }
 
     #[test]
-    fn a_launch_agent_that_cannot_be_removed_is_tried_again_next_time() {
+    fn without_a_home_folder_the_migration_waits() {
         let item = FakeItem {
             launch_agent: Cell::new(Err(())),
             ..FakeItem::default()
         };
-        let mut p = Prefs::default();
+        let mut p = old_prefs(true);
         assert_eq!(sync(&item, &mut p), None);
-        assert!(
-            !item.on.get(),
-            "no second login item while the old one is there"
-        );
-        assert_eq!(p, Prefs::default());
-        item.launch_agent.set(Ok(true));
-        assert_eq!(sync(&item, &mut p), Some(true));
-        assert_eq!(p, prefs(true, true));
+        assert!(!item.on.get());
+        assert_eq!(p, old_prefs(true), "not marked done, and the pref stays on");
     }
 
     /// Checks fine, but turning it on or off fails.

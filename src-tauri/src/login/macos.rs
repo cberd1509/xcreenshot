@@ -7,16 +7,27 @@ use std::path::{Path, PathBuf};
 
 /// The app itself as a login item, listed by name in System Settings › Login Items.
 pub struct MainApp {
-    /// The old LaunchAgent to remove (see [`super::sync`]).
-    launch_agent: Option<PathBuf>,
+    /// The home folder, where the old LaunchAgent is (see [`super::sync`]); `None` if `HOME`
+    /// isn't set.
+    home: Option<PathBuf>,
 }
 
 impl Default for MainApp {
     fn default() -> Self {
-        let home = std::env::var_os("HOME").map(PathBuf::from);
         Self {
-            launch_agent: home.as_deref().map(launch_agent),
+            home: std::env::var_os("HOME")
+                .filter(|home| !home.is_empty())
+                .map(PathBuf::from),
         }
+    }
+}
+
+impl MainApp {
+    fn launch_agents(&self) -> Result<[PathBuf; 2], String> {
+        self.home
+            .as_deref()
+            .map(launch_agents)
+            .ok_or_else(|| "HOME isn't set".to_owned())
     }
 }
 
@@ -40,8 +51,22 @@ impl LoginItem for MainApp {
         .map_err(|e| e.to_string())
     }
 
-    fn remove_launch_agent(&self) -> Result<bool, String> {
-        self.launch_agent.as_deref().map_or(Ok(false), remove_file)
+    fn has_launch_agent(&self) -> Result<bool, String> {
+        for path in self.launch_agents()? {
+            if path
+                .try_exists()
+                .map_err(|e| format!("{}: {e}", path.display()))?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn remove_launch_agent(&self) -> Result<(), String> {
+        self.launch_agents()?
+            .iter()
+            .try_for_each(|p| remove_file(p))
     }
 }
 
@@ -60,19 +85,23 @@ fn from_raw(raw: isize) -> Status {
     }
 }
 
-/// The LaunchAgent tauri-plugin-autostart wrote, under `home`.
-fn launch_agent(home: &Path) -> PathBuf {
-    home.join("Library/LaunchAgents/xcreenshot.plist")
+/// Where tauri-plugin-autostart may have written its LaunchAgent, under `home`: named after the
+/// product (what it used), or after the bundle id.
+fn launch_agents(home: &Path) -> [PathBuf; 2] {
+    let dir = home.join("Library/LaunchAgents");
+    [
+        dir.join("xcreenshot.plist"),
+        dir.join("com.bervex.xcreenshot.plist"),
+    ]
 }
 
 /// Deletes `path` if it is there, as the plugin's own `disable` did. It isn't unloaded with
 /// `launchctl bootout`: when launched at login, xcreenshot runs as that job, so unloading it
 /// would quit the app. Without its file, launchd doesn't load it at the next login.
-fn remove_file(path: &Path) -> Result<bool, String> {
+fn remove_file(path: &Path) -> Result<(), String> {
     match std::fs::remove_file(path) {
-        Ok(()) => Ok(true),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(format!("{}: {e}", path.display())),
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(format!("{}: {e}", path.display())),
+        _ => Ok(()),
     }
 }
 
@@ -80,18 +109,18 @@ fn remove_file(path: &Path) -> Result<bool, String> {
 mod tests {
     use super::*;
 
+    fn app(home: &Path) -> MainApp {
+        MainApp {
+            home: Some(home.to_owned()),
+        }
+    }
+
     /// Reads the status only: tests never register, unregister or touch the real LaunchAgent.
     #[test]
-    fn reads_the_status_and_removes_only_its_own_launch_agent() {
+    fn reads_the_status() {
         let _ = MainApp::default();
         let home = tempfile::tempdir().unwrap();
-        let app = MainApp {
-            launch_agent: Some(launch_agent(home.path())),
-        };
-        assert!(app.status().is_ok());
-        assert_eq!(app.remove_launch_agent(), Ok(false));
-        let none = MainApp { launch_agent: None };
-        assert_eq!(none.remove_launch_agent(), Ok(false));
+        assert!(app(home.path()).status().is_ok());
     }
 
     #[test]
@@ -106,17 +135,36 @@ mod tests {
     }
 
     #[test]
-    fn the_old_launch_agent_file_is_deleted_if_there() {
+    fn finds_and_deletes_either_old_launch_agent() {
         let home = tempfile::tempdir().unwrap();
-        let path = launch_agent(home.path());
-        assert!(path.ends_with("Library/LaunchAgents/xcreenshot.plist"));
-        assert_eq!(remove_file(&path), Ok(false));
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "<plist/>").unwrap();
-        assert_eq!(remove_file(&path), Ok(true));
-        assert!(!path.exists());
-        // A folder in its place can't be removed as a file.
-        std::fs::create_dir(&path).unwrap();
-        assert!(remove_file(&path).unwrap_err().contains("xcreenshot.plist"));
+        let app = app(home.path());
+        let [product, bundle_id] = launch_agents(home.path());
+        assert!(product.ends_with("Library/LaunchAgents/xcreenshot.plist"));
+        assert!(bundle_id.ends_with("Library/LaunchAgents/com.bervex.xcreenshot.plist"));
+        assert_eq!(app.has_launch_agent(), Ok(false));
+        assert_eq!(
+            app.remove_launch_agent(),
+            Ok(()),
+            "nothing to delete is fine"
+        );
+        std::fs::create_dir_all(product.parent().unwrap()).unwrap();
+        for path in [&product, &bundle_id] {
+            std::fs::write(path, "<plist/>").unwrap();
+            assert_eq!(app.has_launch_agent(), Ok(true));
+            assert_eq!(app.remove_launch_agent(), Ok(()));
+            assert!(!path.exists());
+            assert_eq!(app.has_launch_agent(), Ok(false));
+        }
+        // A folder in its place can't be deleted as a file.
+        std::fs::create_dir(&product).unwrap();
+        let err = app.remove_launch_agent().unwrap_err();
+        assert!(err.contains("xcreenshot.plist"), "{err}");
+    }
+
+    #[test]
+    fn without_a_home_folder_there_is_no_answer() {
+        let app = MainApp { home: None };
+        assert!(app.has_launch_agent().is_err());
+        assert!(app.remove_launch_agent().is_err());
     }
 }

@@ -72,9 +72,13 @@
 
   /** Checks while Open at login is on: when it turns on and when the window gets focus. */
   function checkLoginItem() {
-    if (!settings.openAtLogin) return
-    // A focus check can overlap the effect's; only the latest one counts.
+    // A focus check can overlap the effect's; only the latest one counts. Turning Open at
+    // login off drops any check still running.
     const check = ++checks
+    if (!settings.openAtLogin) {
+      needsApproval = false
+      return
+    }
     invoke<boolean>('login_item_needs_approval')
       .then((needs) => {
         if (check === checks) needsApproval = needs

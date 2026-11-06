@@ -689,6 +689,21 @@ mod tests {
         );
         assert_eq!(fakes.login.launch_agent.get(), Ok(false), "removed");
         assert!(fakes.login.on.get(), "kept, so a login item is still there");
+        // The next launch, from the same unsaved prefs, keeps the pref on.
+        let relaunch = self::storage(false);
+        *relaunch.prefs.borrow_mut() = Prefs {
+            login_item_added: true,
+            ..Prefs::default()
+        };
+        let (p, _) = start(
+            &relaunch,
+            &FakeRegistrar::default(),
+            &fakes.registered,
+            Some(&fakes.login),
+            OFF,
+        );
+        assert!(p.open_at_login && p.login_item_added && p.launch_agent_removed);
+        assert!(fakes.login.on.get());
     }
 
     #[test]
