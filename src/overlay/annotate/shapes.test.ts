@@ -7,7 +7,8 @@ import {
   fitTo,
   Freehand,
   MAX_BLURS,
-  hueColor,
+  parseHex,
+  SELECT_KEY,
   pointBounds,
   smooth,
   snapAngle,
@@ -84,17 +85,28 @@ describe('tools', () => {
   })
 })
 
-describe('hueColor', () => {
-  it('gives the fully saturated color at a hue', () => {
-    expect([0, 60, 120, 180, 240, 300, 30].map(hueColor)).toEqual([
-      '#FF0000',
-      '#FFFF00',
-      '#00FF00',
-      '#00FFFF',
-      '#0000FF',
-      '#FF00FF',
-      '#FF8000',
-    ])
+describe('parseHex', () => {
+  it('reads #RGB and #RRGGBB, with or without #, in any case', () => {
+    expect(parseHex('#ef4444')).toBe('#EF4444')
+    expect(parseHex('3b82f6')).toBe('#3B82F6')
+    expect(parseHex('#f80')).toBe('#FF8800')
+    expect(parseHex(' abc ')).toBe('#AABBCC')
+  })
+
+  it('rejects anything else', () => {
+    for (const bad of ['', '#', '#12', '#1234', '#12345', '#1234567', '#GGGGGG', 'red']) {
+      expect(parseHex(bad)).toBeNull()
+    }
+  })
+})
+
+describe('TOOLS', () => {
+  it('has a unique shortcut per tool, none of them Select', () => {
+    const keys = TOOLS.map((t) => t.key)
+    expect(new Set(keys).size).toBe(keys.length)
+    expect(keys).not.toContain(SELECT_KEY)
+    expect(toolForKey('o')).toBe('ellipse')
+    expect(toolForKey('v')).toBeNull()
   })
 })
 

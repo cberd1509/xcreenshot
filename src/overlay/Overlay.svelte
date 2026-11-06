@@ -3,7 +3,7 @@
   import { emit, listen } from '@tauri-apps/api/event'
   import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
   import { onMount } from 'svelte'
-  import { setCaptureOption, settings } from '$lib/settings.svelte'
+  import { isMac, setCaptureOption, settings } from '$lib/settings.svelte'
   import {
     CURSORS,
     badgePosition,
@@ -15,6 +15,7 @@
     move,
     nudge,
     resize,
+    resizeLocked,
     resizeTo,
     toPhysical,
     union,
@@ -26,6 +27,7 @@
   import Annotator from './annotate/Annotator.svelte'
   import { outputRequest } from './annotate/output'
   import { shortcut } from './keys'
+  import { PANEL } from './panel'
   import Magnifier from './Magnifier.svelte'
   import Selection from './Selection.svelte'
   import SizeBadge from './SizeBadge.svelte'
@@ -82,6 +84,12 @@
   let escapeShortcut = true
   let editing = $state(false)
   let pointer = $state<Point>({ x: 0, y: 0 })
+  /** The pointer moved over this capture, so `pointer` is where it is. */
+  let tracked = $state(false)
+  /** Space is held during a drag: the new or resized selection moves instead. */
+  let moving = false
+  /** The size badge's aspect lock: it holds for typed sizes and handle drags. */
+  let lock = $state(false)
   let badge = $state<Size>({ width: 0, height: 0 })
   let loupe = $state<Size>({ width: 0, height: 0 })
   /** A copy or save is running: keys wait for it. */
@@ -116,13 +124,38 @@
   const idle = $derived(frame.width === 0)
   // A captured drag can go past this display; the loupe hides until the pointer is back.
   const onDisplay = $derived(
-    pointer.x >= 0 && pointer.y >= 0 && pointer.x < display.width && pointer.y < display.height,
+    tracked &&
+      pointer.x >= 0 &&
+      pointer.y >= 0 &&
+      pointer.x < display.width &&
+      pointer.y < display.height,
+  )
+  // Before a selection, and while drawing or resizing one: never while moving it.
+  const loupeShown = $derived(
+    loupeOn && onDisplay && (drag ? drag.kind !== 'move' : !selection) && frame.width > 0,
+  )
+  const mod = $derived(isMac ? '⌘' : 'Ctrl+')
+  /** The keys the hint at the bottom shows, for each state. */
+  const hints = $derived(
+    selection
+      ? [
+          ['Enter', 'copy'],
+          [`${mod}S`, 'save'],
+          ['Space', 'move'],
+          ['Esc', 'cancel'],
+        ]
+      : [
+          ['Drag', 'select area'],
+          ['Esc', 'cancel'],
+        ],
   )
 
   function reset() {
     restored = false
     selection = null
     drag = null
+    moving = false
+    tracked = false
     editing = false
     annotator?.reset(true)
   }
@@ -288,20 +321,38 @@
     ;(e.currentTarget as Element).setPointerCapture?.(e.pointerId)
   }
 
+  /**
+   * Shifts a drag by (dx, dy), so the selection it draws or resizes moves with the pointer
+   * (Space held) instead of changing size.
+   */
+  function carry(d: Drag, dx: number, dy: number): Drag {
+    const start = { x: d.start.x + dx, y: d.start.y + dy }
+    if (d.kind === 'draw') return { ...d, start }
+    return { ...d, start, origin: { ...d.origin, x: d.origin.x + dx, y: d.origin.y + dy } }
+  }
+
   function onpointermove(e: PointerEvent) {
+    const last = pointer
     pointer = at(e)
+    tracked = true
     if (!drag) return
+    if (moving) drag = carry(drag, pointer.x - last.x, pointer.y - last.y)
     const dx = pointer.x - drag.start.x
     const dy = pointer.y - drag.start.y
     if (drag.kind === 'move') return select(move(drag.origin, dx, dy, display))
     if (drag.kind === 'draw') return select(fromPoints(drag.start, pointer, display))
-    const rect = resize(drag.origin, drag.handle, dx, dy, display)
+    const rect = (lock ? resizeLocked : resize)(drag.origin, drag.handle, dx, dy, display)
     // It cannot shrink past the annotations shown in it.
     select(drag.keep ? union(rect, drag.keep) : rect)
   }
 
   function onpointerup() {
     drag = null
+    moving = false
+  }
+
+  function onkeyup(e: KeyboardEvent) {
+    if (e.key === ' ') moving = false
   }
 
   function onkeydown(e: KeyboardEvent) {
@@ -311,12 +362,19 @@
       if (!escapeShortcut) void invoke('overlay_escape')
       return
     }
+    // Space during a drag moves the selection being drawn or resized.
+    if (e.key === ' ' && drag && drag.kind !== 'move') {
+      e.preventDefault()
+      moving = true
+      return
+    }
     // Typing in the size badge: Enter applies the size there.
     if (e.target instanceof Element && e.target.closest('[data-size-badge]')) return
     // Copy and Save always work, closing an open toolbar menu first, unless text is being
-    // typed: then they are the text box's.
+    // typed (in a text box or a field such as the hex color): then they are its own.
     const output = shortcut(e, 'c') ? 'overlay_copy' : shortcut(e, 's') ? 'overlay_save' : null
-    if (output && !annotator?.typingText()) {
+    const typing = annotator?.typingText() || e.target instanceof HTMLInputElement
+    if (output && !typing) {
       annotator?.closeMenus()
       if (!selection || !physical) return
       e.preventDefault()
@@ -364,7 +422,7 @@
   })
 </script>
 
-<svelte:window {onkeydown} />
+<svelte:window {onkeydown} {onkeyup} />
 
 <div
   class="root"
@@ -390,6 +448,7 @@
     actions={{
       copy: () => physical && void finish('overlay_copy', physical),
       save: () => physical && void finish('overlay_save', physical),
+      cancel: () => close(current),
       option: setCaptureOption,
     }}
   />
@@ -405,12 +464,28 @@
       onpointerdown={(e) => e.stopPropagation()}
       role="presentation"
     >
-      <SizeBadge size={physical} {onresize} bind:editing />
+      <SizeBadge size={physical} {onresize} bind:editing bind:lock />
     </div>
   {:else}
     <div class="dim"></div>
+    {#if onDisplay}
+      <div
+        class="guide"
+        style:left="{pointer.x}px"
+        style:width="1px"
+        style:top="0"
+        data-testid="guide"
+      ></div>
+      <div
+        class="guide"
+        style:top="{pointer.y}px"
+        style:height="1px"
+        style:left="0"
+        data-testid="guide"
+      ></div>
+    {/if}
   {/if}
-  {#if loupeOn && drag && drag.kind !== 'move' && onDisplay}
+  {#if loupeShown}
     {@const p = loupePosition(pointer, loupe, display)}
     <div
       class="floating"
@@ -423,11 +498,13 @@
     </div>
   {/if}
   {#if notice}
-    <div
-      class="pointer-events-none fixed bottom-8 left-1/2 -translate-x-1/2 rounded-md bg-popover/90 px-3 py-2 text-sm text-popover-foreground shadow-md"
-      role="alert"
-    >
-      {notice}
+    <div class="message {PANEL}" role="alert">{notice}</div>
+  {/if}
+  {#if frame.width > 0}
+    <div class="hint" data-testid="hint">
+      {#each hints as [key, action] (key)}
+        <span><b>{key}</b> {action}</span>
+      {/each}
     </div>
   {/if}
 </div>
@@ -459,9 +536,57 @@
     cursor: inherit !important;
   }
 
+  /* The selection color, for the outline, its handles and focused fields. */
+  :global(:root) {
+    --selection: #3b82f6;
+  }
+
+  /* Before a selection, the whole frame is dimmed. */
   .dim {
-    background: rgb(0 0 0 / 0.35);
+    background: rgb(9 9 11 / 0.45);
     pointer-events: none;
+  }
+
+  /* Full-width and full-height lines through the pointer. */
+  .guide {
+    position: fixed;
+    pointer-events: none;
+    background: rgb(255 255 255 / 0.35);
+    width: 100%;
+    height: 100%;
+  }
+
+  .hint,
+  .message {
+    position: fixed;
+    left: 50%;
+    transform: translateX(-50%);
+    pointer-events: none;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  /* The keys for the current state, at the bottom. */
+  .hint {
+    bottom: 28px;
+    display: flex;
+    gap: 16px;
+    padding: 8px 14px;
+    border-radius: 999px;
+    background: rgb(24 24 27 / 0.92);
+    border: 1px solid #27272a;
+    color: #a1a1aa;
+  }
+
+  .hint b {
+    color: #e4e4e7;
+    font-weight: 600;
+  }
+
+  /* A short error, above the hint. */
+  .message {
+    bottom: 72px;
+    padding: 8px 14px;
   }
 
   .floating {

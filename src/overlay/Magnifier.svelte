@@ -1,12 +1,14 @@
 <script lang="ts">
   import { hex, type Point, type Size } from './geometry'
 
+  const SIDE = 120 // the loupe's diameter, in screen px
+  const ZOOM = 12 // screen px per frame pixel
   const SPAN = 11 // frame pixels across; the one under the cursor is in the middle
-  const ZOOM = 11 // screen px per frame pixel
-  const SIDE = SPAN * ZOOM
   const MIDDLE = Math.floor(SPAN / 2)
+  // The middle pixel is centred, so the grid starts half a pixel off the edge.
+  const ORIGIN = SIDE / 2 - MIDDLE * ZOOM - ZOOM / 2
 
-  /** A pixel loupe: zoomed frame around physical pixel `at`, with its coords and color. */
+  /** A round pixel loupe: zoomed frame around physical pixel `at`, with its coords and color. */
   let { source, frame, at }: { source: HTMLCanvasElement; frame: Size; at: Point } = $props()
 
   let loupe: HTMLCanvasElement
@@ -23,22 +25,52 @@
     context.imageSmoothingEnabled = false
     context.fillStyle = 'black'
     context.fillRect(0, 0, SIDE, SIDE)
-    context.drawImage(image, x - MIDDLE, y - MIDDLE, SPAN, SPAN, 0, 0, SIDE, SIDE)
-    // The color of the middle pixel, read back before the outline is drawn over it.
-    const middle = MIDDLE * ZOOM + Math.floor(ZOOM / 2)
-    color = inside ? hex(context.getImageData(middle, middle, 1, 1).data) : null
-    context.strokeStyle = 'white'
-    context.strokeRect(MIDDLE * ZOOM + 0.5, MIDDLE * ZOOM + 0.5, ZOOM - 1, ZOOM - 1)
+    const drawn = SPAN * ZOOM
+    context.drawImage(image, x - MIDDLE, y - MIDDLE, SPAN, SPAN, ORIGIN, ORIGIN, drawn, drawn)
+    // The color of the middle pixel, read back before the grid is drawn over it.
+    color = inside ? hex(context.getImageData(SIDE / 2, SIDE / 2, 1, 1).data) : null
+    // A faint line between pixels.
+    context.fillStyle = 'rgb(0 0 0 / 0.08)'
+    for (let i = 1; i < SPAN; i++) {
+      const edge = ORIGIN + i * ZOOM - 1
+      context.fillRect(edge, 0, 1, SIDE)
+      context.fillRect(0, edge, SIDE, 1)
+    }
   })
 </script>
 
-<div
-  class="pointer-events-none overflow-hidden rounded-md border border-border bg-popover text-popover-foreground shadow-md"
-  data-testid="magnifier"
->
-  <canvas bind:this={loupe} width={SIDE} height={SIDE} class="block"></canvas>
-  <div class="flex justify-between gap-2 px-2 py-1 font-mono text-xs tabular-nums">
-    <span>{x}, {y}</span>
-    <span>{color ?? ''}</span>
+<div class="pointer-events-none flex flex-col items-center gap-1.5" data-testid="magnifier">
+  <div class="loupe">
+    <canvas bind:this={loupe} width={SIDE} height={SIDE} class="block"></canvas>
+    <div class="middle"></div>
+  </div>
+  <div
+    class="rounded-md border border-zinc-800 bg-zinc-900 px-2 py-[3px] font-mono text-[11px] text-zinc-200 tabular-nums"
+  >
+    {x}, {y}{color ? ` · ${color}` : ''}
   </div>
 </div>
+
+<style>
+  .loupe {
+    position: relative;
+    width: 120px;
+    height: 120px;
+    overflow: hidden;
+    border: 2px solid white;
+    border-radius: 50%;
+    box-shadow: 0 8px 24px rgb(0 0 0 / 0.4);
+    box-sizing: content-box;
+  }
+
+  /* The pixel under the cursor, outlined in the selection color. */
+  .middle {
+    position: absolute;
+    left: 54px;
+    top: 54px;
+    width: 12px;
+    height: 12px;
+    box-sizing: border-box;
+    border: 2px solid var(--selection);
+  }
+</style>

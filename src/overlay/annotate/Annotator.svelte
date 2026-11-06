@@ -2,14 +2,15 @@
   import { onMount, untrack } from 'svelte'
   import { contains, nudge, type Point, type Rect, type Scale, type Size } from '../geometry'
   import { shortcut } from '../keys'
+  import { PANEL } from '../panel'
   import { Board, exportShapes, loadKonva, type AnnotationExport } from './board'
   import { commit, empty, redo, replace, undo, without, type History, type Shapes } from './history'
-  import { toolbarPosition } from './placement'
   import { recall, remember } from './memory'
   import {
     FREEHAND,
     MAX_BLURS,
     READY,
+    SELECT_KEY,
     bounds,
     constrain,
     draw,
@@ -37,9 +38,10 @@
   import type { Option, ToolbarActions } from './Toolbar.svelte'
 
   /**
-   * Annotations on the selection, and the toolbar next to it. Konva and the toolbar load when
-   * the page is idle; the stage is built on the first selection. The overlay owns the keyboard
-   * and calls `key` and `escape`; it calls `reset` when the annotations should go.
+   * Annotations on the selection, with the tool rail and action bar (the toolbar) next to it.
+   * Konva and the toolbar load when the page is idle; the stage is built on the first selection.
+   * The overlay owns the keyboard and calls `key` and `escape`; it calls `reset` when the
+   * annotations should go.
    */
   let {
     selection,
@@ -60,7 +62,13 @@
   } = $props()
 
   const noop = () => {}
-  const actions: ToolbarActions = $derived({ copy: noop, save: noop, option: noop, ...given })
+  const actions: ToolbarActions = $derived({
+    copy: noop,
+    save: noop,
+    cancel: noop,
+    option: noop,
+    ...given,
+  })
 
   let container: HTMLDivElement = $state()!
   let Toolbar = $state<typeof ToolbarComponent | null>(null)
@@ -90,7 +98,6 @@
   type Stroke = { tool: Tool; start: Point; pointer: Point; end: Point; path: Freehand }
   let stroke: Stroke | null = null
   let ids = 0
-  let bar = $state<Size>({ width: 0, height: 0 })
   let cursor = $state('')
   let textOptions = $state<TextOptions>(DEFAULT_TEXT)
 
@@ -452,6 +459,11 @@
       set(replace(history.present, next))
       return true
     }
+    if (e.key.toUpperCase() === SELECT_KEY) {
+      e.preventDefault()
+      tool = null
+      return true
+    }
     const next = toolForKey(e.key)
     if (!next || !READY.has(next) || failed) return false
     e.preventDefault()
@@ -484,8 +496,6 @@
     finish()
     return exportShapes(history.present, crop, ratio)
   }
-
-  const toolbarAt = $derived(selection && toolbarPosition(selection, bar, display))
 </script>
 
 <svelte:window onkeydown={onshift} onkeyup={onshift} />
@@ -507,7 +517,7 @@
 
 {#if hint}
   <div
-    class="pointer-events-none fixed bottom-8 left-1/2 z-1 -translate-x-1/2 rounded-md bg-popover/90 px-3 py-2 text-sm text-popover-foreground shadow-md"
+    class="pointer-events-none fixed bottom-[72px] left-1/2 z-1 -translate-x-1/2 px-3.5 py-2 text-xs whitespace-nowrap {PANEL}"
     role="status"
   >
     {hint}
@@ -526,41 +536,33 @@
   />
 {/if}
 
-{#if Toolbar && toolbarAt}
-  <div
-    class="toolbar"
-    style:left="{toolbarAt.x}px"
-    style:top="{toolbarAt.y}px"
-    bind:offsetWidth={bar.width}
-    bind:offsetHeight={bar.height}
-    onpointerdown={(e) => e.stopPropagation()}
-    role="presentation"
-  >
-    <Toolbar
-      bind:this={toolbar}
-      {tool}
-      ontool={(t) => {
-        finish()
-        tool = t
-      }}
-      bind:style={() => shownStyle, setStyle}
-      text={shownText}
-      ontext={setText}
-      keepFocus={editing !== null}
-      drawable={!failed}
-      canUndo={history.past.length > 0 || editing !== null}
-      canRedo={history.future.length > 0 && !editing}
-      canClear={history.present.length > 0}
-      onundo={() => (editing ? (editing = null) : move(undo(history)))}
-      onredo={() => move(redo(history))}
-      onclear={() => {
-        finish()
-        set([])
-      }}
-      {options}
-      {actions}
-    />
-  </div>
+{#if Toolbar && selection}
+  <Toolbar
+    bind:this={toolbar}
+    {selection}
+    {display}
+    {tool}
+    ontool={(t) => {
+      finish()
+      tool = t
+    }}
+    bind:style={() => shownStyle, setStyle}
+    text={shownText}
+    ontext={setText}
+    keepFocus={editing !== null}
+    drawable={!failed}
+    canUndo={history.past.length > 0 || editing !== null}
+    canRedo={history.future.length > 0 && !editing}
+    canClear={history.present.length > 0}
+    onundo={() => (editing ? (editing = null) : move(undo(history)))}
+    onredo={() => move(redo(history))}
+    onclear={() => {
+      finish()
+      set([])
+    }}
+    {options}
+    {actions}
+  />
 {/if}
 
 <style>
@@ -569,12 +571,5 @@
     position: fixed;
     left: 0;
     top: 0;
-  }
-
-  /* Above the selection outline and the size badge. */
-  .toolbar {
-    position: fixed;
-    z-index: 1;
-    cursor: default;
   }
 </style>

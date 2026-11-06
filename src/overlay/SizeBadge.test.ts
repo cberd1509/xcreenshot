@@ -6,37 +6,43 @@ import type { Size } from './geometry'
 
 function badge(size: Size = { width: 400, height: 200 }) {
   const onresize = vi.fn<(size: Size, keepRatio: boolean) => void>()
-  render(SizeBadge, { props: { size, onresize } })
-  return onresize
+  const view = render(SizeBadge, { props: { size, onresize } })
+  return { onresize, view }
 }
 
-const open = () => userEvent.click(screen.getByRole('button', { name: '400 × 200' }))
 const width = () => screen.getByLabelText<HTMLInputElement>('Width')
 const height = () => screen.getByLabelText<HTMLInputElement>('Height')
+const lock = () => screen.getByRole('button', { name: 'Lock aspect ratio' })
 
 describe('SizeBadge', () => {
-  it('shows the size and opens with it selected', async () => {
-    badge()
-    expect(screen.getByTestId('size-badge')).toHaveTextContent('400 × 200')
-    await open()
-    expect(width().value).toBe('400')
-    expect(height().value).toBe('200')
-    expect(width()).toHaveFocus()
+  it('shows the size in its fields, following the selection', async () => {
+    const { view } = badge()
+    expect(screen.getByRole('group', { name: 'Selection size' })).toHaveTextContent('W')
+    expect([width().value, height().value]).toEqual(['400', '200'])
+    await view.rerender({ size: { width: 30, height: 20 } })
+    expect([width().value, height().value]).toEqual(['30', '20'])
   })
 
-  it('applies the typed size on Enter', async () => {
-    const onresize = badge()
-    await open()
+  it('applies the typed size on Enter and leaves the field', async () => {
+    const { onresize } = badge()
     await userEvent.clear(height())
     await userEvent.type(height(), '50{Enter}')
     expect(onresize).toHaveBeenCalledWith({ width: 400, height: 50 }, false)
-    expect(screen.queryByLabelText('Width')).toBeNull()
+    expect(height()).not.toHaveFocus()
+  })
+
+  it('holds the typed size while the selection changes under it', async () => {
+    const { view } = badge()
+    await userEvent.clear(width())
+    await userEvent.type(width(), '12')
+    await view.rerender({ size: { width: 30, height: 20 } })
+    expect(width().value).toBe('12')
   })
 
   it('keeps the ratio while typing when locked', async () => {
-    const onresize = badge()
-    await open()
-    await userEvent.click(screen.getByRole('button', { name: 'Lock ratio' }))
+    const { onresize } = badge()
+    await userEvent.click(lock())
+    expect(lock()).toHaveAttribute('aria-pressed', 'true')
     await userEvent.clear(width())
     await userEvent.type(width(), '100')
     expect(height().value).toBe('50')
@@ -48,23 +54,32 @@ describe('SizeBadge', () => {
   })
 
   it('ignores an empty size', async () => {
-    const onresize = badge()
-    await open()
+    const { onresize } = badge()
     await userEvent.clear(width())
     await userEvent.type(width(), '{Enter}')
     expect(onresize).not.toHaveBeenCalled()
   })
 
-  it('cancels when focus leaves', async () => {
-    const onresize = badge()
+  it('cancels when focus leaves, but not for the lock', async () => {
+    const { onresize } = badge()
     const outside = document.createElement('button')
     document.body.append(outside)
-    await open()
-    await userEvent.click(screen.getByRole('button', { name: 'Lock ratio' }))
-    expect(width()).toBeInTheDocument()
+    await userEvent.clear(width())
+    await userEvent.type(width(), '9')
+    // The lock takes no focus, so the edit goes on.
+    await userEvent.click(lock())
+    expect(width()).toHaveFocus()
     await userEvent.click(outside)
-    expect(screen.queryByLabelText('Width')).toBeNull()
+    expect(width().value).toBe('400')
     expect(onresize).not.toHaveBeenCalled()
     outside.remove()
+  })
+
+  it('leaves the field when the edit is cancelled from outside', async () => {
+    const { view } = badge()
+    await userEvent.click(width())
+    expect(width()).toHaveFocus()
+    await view.rerender({ editing: false })
+    expect(width()).not.toHaveFocus()
   })
 })

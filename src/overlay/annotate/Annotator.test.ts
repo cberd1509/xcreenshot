@@ -59,7 +59,7 @@ async function setup(p: Props = { selection: sel }) {
 }
 
 // The toolbar is loaded on demand; the first load in a run compiles it, which can be slow.
-const toolbar = () => screen.findByRole('toolbar', {}, { timeout: 5000 })
+const toolbar = () => screen.findByRole('toolbar', { name: 'Annotation tools' }, { timeout: 5000 })
 const stage = () => stages[0] as FakeNode & { hit: FakeNode | null }
 /** The shapes' layer, clipped to the selection. */
 const layer = () => stage().children[0]
@@ -75,6 +75,9 @@ const press = (key: string, init: KeyboardEventInit = {}) =>
   new KeyboardEvent('keydown', { key, cancelable: true, ...init })
 /** ⌘ on macOS, Ctrl elsewhere. */
 const mod = isMac ? { metaKey: true } : { ctrlKey: true }
+
+/** Where a bar of the toolbar is, by name. */
+const barStyle = (name: string) => screen.getByRole('toolbar', { name }).parentElement!.style
 
 /** The text editor, if open. */
 const editor = () => screen.queryByRole<HTMLTextAreaElement>('textbox', { name: 'Text' })
@@ -114,7 +117,7 @@ describe('Annotator', () => {
     const view = render(Annotator, { props: props({ selection: null }) })
     await new Promise((r) => setTimeout(r, 300))
     expect(stages).toHaveLength(0)
-    expect(screen.queryByRole('toolbar')).not.toBeInTheDocument()
+    expect(screen.queryAllByRole('toolbar')).toHaveLength(0)
     expect(element().style.width).toBe('0px')
 
     await view.rerender(props({ selection: sel }))
@@ -129,15 +132,29 @@ describe('Annotator', () => {
     expect(layer().attrs.clip).toEqual(sel)
     await view.rerender(props({ selection: null }))
     expect(stage().attrs).toMatchObject({ width: 0, height: 0 })
-    expect(screen.queryByRole('toolbar')).not.toBeInTheDocument()
+    expect(screen.queryAllByRole('toolbar')).toHaveLength(0)
   })
 
-  it('puts the toolbar below the selection', async () => {
+  it('puts the rail right of the selection and the action bar below it', async () => {
     await setup()
-    const bar = screen.getByRole('toolbar').closest<HTMLElement>('[style*=left]')!
-    // jsdom lays nothing out, so the toolbar has no size: right-aligned is the right edge.
-    expect(bar.style.left).toBe('500px')
-    expect(bar.style.top).toBe('406px')
+    // jsdom lays nothing out, so the bars have no size: right-aligned is the right edge.
+    expect(barStyle('Capture actions')).toMatchObject({ left: '500px', top: '412px' })
+    expect(barStyle('Annotation tools')).toMatchObject({ left: '512px', top: '100px' })
+  })
+
+  it('goes back to Select with V, and stays there', async () => {
+    const { api } = await setup()
+    api.key(press('r'))
+    await waitFor(() =>
+      expect(screen.getByLabelText('Rectangle')).toHaveAttribute('data-state', 'on'),
+    )
+    expect(api.key(press('v'))).toBe(true)
+    await waitFor(() => expect(screen.getByLabelText('Select')).toHaveAttribute('data-state', 'on'))
+    // Without a drawing tool, a drag in the selection draws nothing and goes on to the overlay.
+    await drag(150, 150, 250, 200)
+    expect(kinds()).toEqual([])
+    expect(passed).toHaveBeenCalled()
+    expect(api.key(press('V'))).toBe(true)
   })
 
   it('draws a rect with R and an arrow with A, in display coordinates', async () => {
@@ -378,7 +395,7 @@ describe('Annotator', () => {
   it('remembers the last tool, color and size for the next time', async () => {
     const user = userEvent.setup()
     const first = await setup()
-    first.api.key(press('e'))
+    first.api.key(press('o'))
     await user.click(screen.getByRole('button', { name: 'Color and size' }))
     await user.click(await screen.findByLabelText('Thick'))
     // Dropping the tool keeps the last one used.
@@ -408,47 +425,47 @@ describe('Annotator', () => {
   it('takes up what another overlay window remembered on the next capture', async () => {
     const { api } = await setup()
     remember('tool', 'line')
-    remember('color', '#007AFF')
+    remember('color', '#3B82F6')
     remember('size', 2)
     api.reset(true)
     await waitFor(() => expect(screen.getByLabelText('Line')).toHaveAttribute('data-state', 'on'))
     await drag(150, 150, 250, 150)
-    expect(nodes()[0].attrs).toMatchObject({ stroke: '#007AFF', strokeWidth: 2 })
+    expect(nodes()[0].attrs).toMatchObject({ stroke: '#3B82F6', strokeWidth: 2 })
   })
 
   it('restyles the selected shape, one undo step each; a blur keeps none', async () => {
     const user = userEvent.setup()
     const { api } = await setup()
-    api.key(press('e'))
+    api.key(press('o'))
     await drag(150, 150, 250, 200)
     api.key(press('b'))
     await drag(300, 300, 350, 350)
     const [ellipse, blur] = [nodes()[1], nodes()[0]]
     ellipse.fire('pointerdown')
     await user.click(screen.getByRole('button', { name: 'Color and size' }))
-    await user.click(await screen.findByLabelText('Color #007AFF'))
-    await waitFor(() => expect(ellipse.attrs.stroke).toBe('#007AFF'))
+    await user.click(await screen.findByLabelText('Blue'))
+    await waitFor(() => expect(ellipse.attrs.stroke).toBe('#3B82F6'))
     await user.click(screen.getByLabelText('Thick'))
     await waitFor(() => expect(ellipse.attrs.strokeWidth).toBe(8))
-    expect(screen.getByTestId('current-color').style.background).toBe('rgb(0, 122, 255)')
+    expect(screen.getByTestId('current-color').style.background).toBe('rgb(59, 130, 246)')
     // The tool takes the choice too, and remembers it for the next capture.
     api.escape()
     api.escape()
     await waitFor(() =>
-      expect(screen.getByTestId('current-color').style.background).toBe('rgb(0, 122, 255)'),
+      expect(screen.getByTestId('current-color').style.background).toBe('rgb(59, 130, 246)'),
     )
-    expect(recall().style).toEqual({ color: '#007AFF', size: 8 })
+    expect(recall().style).toEqual({ color: '#3B82F6', size: 8 })
     api.key(press('z', mod))
     await waitFor(() => expect(ellipse.attrs.strokeWidth).toBe(4))
-    expect(ellipse.attrs.stroke).toBe('#007AFF')
+    expect(ellipse.attrs.stroke).toBe('#3B82F6')
     api.key(press('z', mod))
-    await waitFor(() => expect(ellipse.attrs.stroke).toBe('#FF3B30'))
+    await waitFor(() => expect(ellipse.attrs.stroke).toBe('#EF4444'))
     // A selected blur has no color: the tool takes it, and the blur is left alone.
     blur.fire('pointerdown')
     await user.click(screen.getByRole('button', { name: 'Color and size' }))
-    await user.click(await screen.findByLabelText('Color #34C759'))
+    await user.click(await screen.findByLabelText('Green'))
     await waitFor(() =>
-      expect(screen.getByTestId('current-color').style.background).toBe('rgb(52, 199, 89)'),
+      expect(screen.getByTestId('current-color').style.background).toBe('rgb(34, 197, 94)'),
     )
     // No undo step: the next undo takes the blur itself away.
     api.escape()
@@ -825,7 +842,7 @@ describe('Annotator', () => {
       await waitFor(() => expect(texts()).toEqual(['Hi']))
       const [box, label] = nodes()[0].children
       expect(label.attrs).toMatchObject({ fontSize: 36, fill: '#000000' })
-      expect(box.attrs.fill).toBe('#FF3B30')
+      expect(box.attrs.fill).toBe('#EF4444')
       // The next text uses them too.
       await place(api, 300, 300)
       expect(editor()!.style.fontSize).toBe('36px')
@@ -881,51 +898,45 @@ describe('Annotator', () => {
       const field = await place(api)
       await user.type(field, 'Hi')
       await user.click(screen.getByRole('button', { name: 'Color and size' }))
-      await user.click(await screen.findByLabelText('Color #007AFF'))
+      await user.click(await screen.findByLabelText('Blue'))
       // Still the active edit, in the new color.
       expect(field).toHaveFocus()
-      expect(editor()!.style.color).toBe('rgb(0, 122, 255)')
+      expect(editor()!.style.color).toBe('rgb(59, 130, 246)')
       await user.type(field, '!')
       // Esc closes the menu first, then commits.
       expect(api.escape()).toBe(true)
-      await waitFor(() => expect(screen.queryByLabelText('Color #007AFF')).toBeNull())
+      await waitFor(() => expect(screen.queryByLabelText('Blue')).toBeNull())
       expect(editor()).toHaveFocus()
       expect(api.escape()).toBe(true)
       await waitFor(() => expect(texts()).toEqual(['Hi!']))
-      expect(nodes()[0].children[1].attrs.fill).toBe('#007AFF')
+      expect(nodes()[0].children[1].attrs.fill).toBe('#3B82F6')
     })
 
-    it('lets the hue slider move while text is typed, then gives the text its focus back', async () => {
+    it('takes a hex color while text is typed, then gives the text its focus back', async () => {
       const user = userEvent.setup()
       const { api } = await setup()
       const field = await place(api)
       await user.type(field, 'Hi')
       field.setSelectionRange(1, 1)
       await user.click(screen.getByRole('button', { name: 'Color and size' }))
-      const slider = await screen.findByLabelText<HTMLInputElement>('Custom color')
-      const capture = vi.fn<(id: number) => void>()
-      slider.setPointerCapture = capture
-      // The press is not cancelled, so the slider can move and take focus.
+      const hex = await screen.findByLabelText<HTMLInputElement>('Hex')
+      // The press is not cancelled, so the field can take focus.
       const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true })
-      slider.dispatchEvent(down)
+      hex.dispatchEvent(down)
       expect(down.defaultPrevented).toBe(false)
-      await fireEvent.pointerDown(slider, { pointerId: 3 })
-      expect(capture).toHaveBeenCalledWith(3)
-      slider.focus()
-      // The text stays open while the slider has focus.
+      hex.focus()
+      // The text stays open while the field has focus, and takes the color as it is typed.
       expect(editor()).toBe(field)
-      await fireEvent.change(slider, { target: { value: '240' } })
+      await user.clear(hex)
+      await user.type(hex, '00f')
+      expect(field.style.color).toBe('rgb(0, 0, 255)')
+      await user.keyboard('{Enter}')
       expect(field).toHaveFocus()
       expect(field.selectionStart).toBe(1)
-      expect(field.style.color).toBe('rgb(0, 0, 255)')
-      // A release without a change gives focus back too.
-      await fireEvent.pointerDown(slider, { pointerId: 3 })
-      slider.focus()
-      await fireEvent.pointerUp(slider, { pointerId: 3 })
-      expect(field).toHaveFocus()
       // Focus going anywhere else still commits.
       field.blur()
       await waitFor(() => expect(texts()).toEqual(['Hi']))
+      expect(nodes()[0].children[1].attrs.fill).toBe('#0000FF')
       expect(api.escape()).toBe(true)
     })
 
@@ -979,17 +990,17 @@ describe('Annotator', () => {
       await waitFor(() => expect(label().fontSize).toBe(36))
       expect(box()).toMatchObject({ width: 58, fill: 'transparent' })
       await user.click(screen.getByRole('button', { name: 'Background' }))
-      await waitFor(() => expect(box().fill).toBe('#FF3B30'))
+      await waitFor(() => expect(box().fill).toBe('#EF4444'))
       expect(label().fontSize).toBe(36)
       await user.click(screen.getByRole('button', { name: 'Color and size' }))
-      await user.click(await screen.findByLabelText('Color #FFCC00'))
-      await waitFor(() => expect(box().fill).toBe('#FFCC00'))
+      await user.click(await screen.findByLabelText('Yellow'))
+      await waitFor(() => expect(box().fill).toBe('#FACC15'))
       expect(label().fill).toBe('#000000')
       // The stroke size does not show on text: no undo step.
       await user.click(screen.getByLabelText('Thick'))
       api.escape()
       api.key(press('z', mod))
-      await waitFor(() => expect(box().fill).toBe('#FF3B30'))
+      await waitFor(() => expect(box().fill).toBe('#EF4444'))
       api.key(press('z', mod))
       await waitFor(() => expect(box().fill).toBe('transparent'))
       expect(label().fontSize).toBe(36)
@@ -998,7 +1009,7 @@ describe('Annotator', () => {
       // The tool took the last color picked, and keeps it after the text is deselected.
       api.escape()
       await waitFor(() =>
-        expect(screen.getByTestId('current-color').style.background).toBe('rgb(255, 204, 0)'),
+        expect(screen.getByTestId('current-color').style.background).toBe('rgb(250, 204, 21)'),
       )
       // A rect selected: the text options are the tool's again.
       await drag(300, 300, 350, 350)
@@ -1013,23 +1024,23 @@ describe('Annotator', () => {
       await user.click(screen.getByLabelText('Text'))
       await user.click(screen.getByLabelText('Small text'))
       await user.click(screen.getByRole('button', { name: 'Color and size' }))
-      await user.click(await screen.findByLabelText('Color #007AFF'))
+      await user.click(await screen.findByLabelText('Blue'))
       api.escape()
       await user.type(await place(api, 470, 385), 'Hello')
       api.escape()
       await waitFor(() => expect(texts()).toEqual(['Hello']))
       // Back to red for the tool; the text stays blue.
       await user.click(screen.getByRole('button', { name: 'Color and size' }))
-      await user.click(await screen.findByLabelText('Color #FF3B30'))
+      await user.click(await screen.findByLabelText('Red'))
       api.escape()
       nodes()[0].fire('pointerdown')
       await waitFor(() =>
-        expect(screen.getByTestId('current-color').style.background).toBe('rgb(0, 122, 255)'),
+        expect(screen.getByTestId('current-color').style.background).toBe('rgb(59, 130, 246)'),
       )
       // Red, the tool's color, can be picked for it.
       await user.click(screen.getByRole('button', { name: 'Color and size' }))
-      await user.click(await screen.findByLabelText('Color #FF3B30'))
-      await waitFor(() => expect(nodes()[0].children[1].attrs.fill).toBe('#FF3B30'))
+      await user.click(await screen.findByLabelText('Red'))
+      await waitFor(() => expect(nodes()[0].children[1].attrs.fill).toBe('#EF4444'))
       api.escape()
       await user.click(screen.getByLabelText('Large text'))
       // 5 x 18 + 2 x 11 = 112 wide, 45 + 22 = 67 tall: moved into the corner at (500, 400).

@@ -2,22 +2,25 @@
 // like the selection, so they stay on the same pixels when the selection moves or resizes. The
 // selection only clips what is shown and exported.
 
-import { clamp, hex, span, union, type Point, type Rect, type Scale } from '../geometry'
+import { clamp, span, union, type Point, type Rect, type Scale } from '../geometry'
 import { MAX_FONT, MIN_FONT } from './text'
 
 export type Tool = 'pen' | 'line' | 'arrow' | 'rect' | 'ellipse' | 'highlighter' | 'text' | 'blur'
 
-/** Toolbar order, with each tool's shortcut and label. */
-export const TOOLS: readonly { tool: Tool; key: string; label: string }[] = [
+/** Rail order, with each tool's shortcut, name and, where the name is not enough, tooltip. */
+export const TOOLS: readonly { tool: Tool; key: string; label: string; tip?: string }[] = [
   { tool: 'pen', key: 'P', label: 'Pen' },
   { tool: 'line', key: 'L', label: 'Line' },
   { tool: 'arrow', key: 'A', label: 'Arrow' },
   { tool: 'rect', key: 'R', label: 'Rectangle' },
-  { tool: 'ellipse', key: 'E', label: 'Ellipse' },
+  { tool: 'ellipse', key: 'O', label: 'Ellipse' },
   { tool: 'highlighter', key: 'H', label: 'Highlighter' },
   { tool: 'text', key: 'T', label: 'Text' },
-  { tool: 'blur', key: 'B', label: 'Blur to hide info' },
+  { tool: 'blur', key: 'B', label: 'Blur', tip: 'Blur to hide info' },
 ]
+
+/** The Select tool's shortcut: no drawing tool, so drags move shapes and the selection. */
+export const SELECT_KEY = 'V'
 
 /** Tools that draw something. */
 export const READY: ReadonlySet<Tool> = new Set<Tool>([
@@ -42,17 +45,26 @@ export function toolForKey(key: string): Tool | null {
 
 export type Style = { color: string; size: number }
 
-export const COLORS = ['#FF3B30', '#FF9500', '#FFCC00', '#34C759', '#007AFF', '#000000', '#FFFFFF']
+/** The swatches, in the color menu's order. */
+export const COLORS: readonly { color: string; name: string }[] = [
+  { color: '#EF4444', name: 'Red' },
+  { color: '#F97316', name: 'Orange' },
+  { color: '#FACC15', name: 'Yellow' },
+  { color: '#22C55E', name: 'Green' },
+  { color: '#3B82F6', name: 'Blue' },
+  { color: '#A855F7', name: 'Purple' },
+  { color: '#FFFFFF', name: 'White' },
+  { color: '#000000', name: 'Black' },
+]
 export const SIZES = [2, 4, 8]
-export const DEFAULT_STYLE: Style = { color: COLORS[0], size: SIZES[1] }
+export const DEFAULT_STYLE: Style = { color: COLORS[0].color, size: SIZES[1] }
 
-/** The fully saturated color at `hue` degrees, as `#RRGGBB`. */
-export function hueColor(hue: number): string {
-  const channel = (n: number) => {
-    const k = (n + hue / 60) % 6
-    return Math.round(255 * (1 - Math.max(0, Math.min(k, 4 - k, 1))))
-  }
-  return hex([channel(5), channel(3), channel(1)])
+/** `#RGB` or `#RRGGBB` (the `#` optional, any case) as `#RRGGBB`, or `null`. */
+export function parseHex(input: string): string | null {
+  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(input.trim())
+  if (!m) return null
+  const digits = m[1].length === 3 ? [...m[1]].map((c) => c + c).join('') : m[1]
+  return `#${digits.toUpperCase()}`
 }
 
 type Base = { id: string; style: Style }
