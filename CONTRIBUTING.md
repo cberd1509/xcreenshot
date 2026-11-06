@@ -40,7 +40,7 @@ CI runs the same checks on macOS and Windows.
 - xcreenshot uses [Semantic Versioning](https://semver.org). Until 1.0, `minor` is for new features and `patch` for fixes; breaking changes to settings also bump `minor`.
 - `package.json` is the only version source; `tauri.conf.json` reads it.
 - PRs with user-facing changes (`feat`, `fix`, `perf`, or breaking `!`) add a **changeset**: run `pnpm changeset` and write one plain sentence for the changelog. CI checks for it. Internal changes (`chore`, `ci`, `docs`, `test`, `refactor`) don't need one.
-- After merges to `main`, a bot keeps a **"chore(release): version packages"** PR open with the next version and the updated `CHANGELOG.md`. Merging it bumps the version. Tagging and building releases come with M4.
+- After merges to `main`, a bot keeps a **"chore(release): version packages"** PR open with the next version and the updated `CHANGELOG.md`. Merging it bumps the version, and the **Build release** workflow then builds the DMG and creates a draft GitHub Release for the maintainer to check and publish. See [docs/releasing.md](docs/releasing.md).
 
 ## App icon
 

@@ -3,8 +3,8 @@ name: Release
 # On every push to main, Changesets keeps a "chore(release): version packages" PR up to date
 # with the pending changes. Merging it bumps package.json (the only version source;
 # tauri.conf.json reads it) and writes CHANGELOG.md.
-# Tagging and the signed app build come with M4 (#24, #26). That release step will use a
-# GitHub App token, since tags and PRs created with GITHUB_TOKEN don't trigger other workflows.
+# That version bump then triggers build-release.yml, which builds the DMG and drafts the GitHub
+# Release. Publishing the draft creates the tag (docs/releasing.md).
 
 on:
   push:
