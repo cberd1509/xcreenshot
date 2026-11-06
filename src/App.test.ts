@@ -148,3 +148,81 @@ describe('Settings window', () => {
     expect(screen.queryByText(/^Version/)).not.toBeInTheDocument()
   })
 })
+
+const line = () => screen.queryByText('Allow xcreenshot in System Settings › Login Items.')
+
+describe('Login item approval', () => {
+  let needs: boolean | Error
+  let opened: number
+
+  beforeEach(() => {
+    needs = true
+    opened = 0
+    resetSettings()
+    Object.assign(settings, { ...fallbackSettings(), shortcut: SHORTCUT })
+    mockIPC((cmd, args) => {
+      if (cmd === 'login_item_needs_approval') {
+        if (needs instanceof Error) throw needs
+        return needs
+      }
+      if (cmd === 'open_login_items') opened++
+      if (cmd === 'set_pref') {
+        const { value } = args as { value: boolean }
+        return { ...settings, openAtLogin: value, version: 1 }
+      }
+    })
+  })
+
+  afterEach(() => {
+    clearMocks()
+    vi.restoreAllMocks()
+  })
+
+  it('asks to allow the login item and opens Login Items', async () => {
+    render(App)
+    await tick()
+    expect(line()).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Open System Settings' }))
+    expect(opened).toBe(1)
+  })
+
+  it('checks again on focus and after the switch changes', async () => {
+    render(App)
+    await tick()
+    expect(line()).toBeInTheDocument()
+    needs = false
+    await fireEvent.focus(window)
+    await tick()
+    expect(line()).toBeNull()
+    needs = true
+    await userEvent.click(screen.getByRole('switch', { name: 'Open at login' }))
+    await tick()
+    expect(settings.openAtLogin).toBe(false)
+    expect(line()).toBeNull()
+    await userEvent.click(screen.getByRole('switch', { name: 'Open at login' }))
+    await tick()
+    expect(line()).toBeInTheDocument()
+  })
+
+  it('shows nothing when the check fails', async () => {
+    needs = new Error('no runtime')
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    render(App)
+    await tick()
+    expect(line()).toBeNull()
+    expect(error).toHaveBeenCalledWith('login_item_needs_approval failed', needs)
+  })
+
+  it('logs a failure to open Login Items', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    render(App)
+    await tick()
+    mockIPC((cmd) => {
+      if (cmd === 'open_login_items') throw new Error('nope')
+      return true
+    })
+    await userEvent.click(screen.getByRole('button', { name: 'Open System Settings' }))
+    await tick()
+    expect(error).toHaveBeenCalledWith('open_login_items failed', expect.any(Error))
+  })
+})
