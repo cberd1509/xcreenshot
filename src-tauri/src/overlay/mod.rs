@@ -15,7 +15,7 @@ pub(crate) mod window;
 
 pub use window::{Overlay, global_escape, prewarm, start_capture};
 
-use crate::capture::{Display, DisplayFrame, PixelRect};
+use crate::capture::{Density, Display, DisplayFrame, PixelRect};
 use crate::region::{self, LogicalRect, Monitor, Region};
 use image::RgbaImage;
 use std::sync::Arc;
@@ -103,6 +103,16 @@ pub struct FrameInfo {
     pub escape_shortcut: bool,
     /// The remembered region on this display, in logical px: the page starts with it selected.
     pub region: Option<LogicalRect>,
+}
+
+impl FrameInfo {
+    /// That same scale, for the PNG's pixel density.
+    pub fn density(&self) -> Density {
+        Density::of(
+            (self.width, self.height),
+            (self.logical_width, self.logical_height),
+        )
+    }
 }
 
 /// The overlay's whole state. One capture at a time: the hotkey is ignored unless `Idle`.
@@ -312,10 +322,10 @@ impl Phase {
         })
     }
 
-    /// A display's original frame, to crop outside the lock.
-    pub fn image(&mut self, session: u64, display: u32) -> Option<Arc<RgbaImage>> {
+    /// A display's original frame, to crop outside the lock, and its pixel density.
+    pub fn image(&mut self, session: u64, display: u32) -> Option<(Arc<RgbaImage>, Density)> {
         self.slot(session, display)
-            .map(|slot| Arc::clone(&slot.image))
+            .map(|slot| (Arc::clone(&slot.image), slot.info.density()))
     }
 
     /// Esc was pressed. Returns the session if Esc goes to its pages (one may have a size edit
@@ -701,7 +711,9 @@ pub(crate) mod tests {
         assert_eq!(p.frame_for_page(7, 9), None, "unknown display");
         assert_eq!(Phase::Idle.frame_for_page(7, 1), None);
         // The original is shared, not moved.
-        assert!(Arc::ptr_eq(&image, &p.image(7, 1).unwrap()));
+        let (kept, density) = p.image(7, 1).unwrap();
+        assert!(Arc::ptr_eq(&image, &kept));
+        assert_eq!(density, Density::new(2.0, 2.0), "pixels over logical size");
         assert_eq!(p.image(7, 9), None);
         assert_eq!(p.image(6, 1), None);
     }

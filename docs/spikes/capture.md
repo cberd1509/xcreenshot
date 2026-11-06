@@ -172,8 +172,10 @@ The whole copy is about 70 ms for a full display, less for a normal selection.
 - **Writing.** A temp file (`tempfile`) in the target's folder, permissions copied from the file
   it replaces, synced, renamed over the target, then the folder synced. A symlink is followed and
   the real file replaced. The file never keeps old bytes after the new PNG (aCropalypse,
-  CVE-2023-28303), and a failed write leaves no half file. The PNG has only `IHDR`, `IDAT` and
-  `IEND`; tests check the file and the pasteboard bytes. Known limitation of the atomic replace: only the mode
+  CVE-2023-28303), and a failed write leaves no half file. The PNG has only `IHDR`, `pHYs`,
+  `IDAT` and `IEND`; tests check the file and the pasteboard bytes. `pHYs` is the capture's
+  density (frame pixels over logical size, per axis) times 72 DPI for a macOS point or 96 for a
+  Windows DIP, so apps show the image at its on-screen size: 144 DPI at 2× on macOS. Known limitation of the atomic replace: only the mode
   bits are carried over, not ACLs or extended attributes. A failed folder sync after the rename
   is only logged, since the file is complete. Writing through a symlink is deliberate: the user
   picked that name in the dialog, which confirmed the overwrite, as TextEdit and Preview do. The write happens before the overlay

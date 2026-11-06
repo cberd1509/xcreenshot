@@ -119,7 +119,8 @@ fn test_png() -> Vec<u8> {
             image::Rgba([0xff, 0xff, 0xff, 0xff])
         }
     });
-    crate::capture::encode_png(&image).expect("encoding to memory cannot fail")
+    crate::capture::encode_png(&image, crate::capture::Density::ONE)
+        .expect("encoding to memory cannot fail")
 }
 
 #[cfg(test)]

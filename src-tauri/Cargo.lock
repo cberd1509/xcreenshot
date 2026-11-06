@@ -6349,6 +6349,7 @@ dependencies = [
  "objc2-foundation",
  "objc2-service-management",
  "open",
+ "png",
  "serde",
  "serde_json",
  "tauri",

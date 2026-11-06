@@ -33,6 +33,8 @@ fn main() -> Result<(), CaptureError> {
                     f.id, f.logical, f.physical, f.scale_factor
                 );
                 assert_eq!(f.image.dimensions(), (f.physical.width, f.physical.height));
+                let density =
+                    capture::Density::of(f.image.dimensions(), (f.logical.width, f.logical.height));
                 let half = Rect {
                     x: 0.0,
                     y: 0.0,
@@ -42,7 +44,7 @@ fn main() -> Result<(), CaptureError> {
                 let t = Instant::now();
                 let crop = capture::crop(f, half)?;
                 let cropped = t.elapsed();
-                let png = capture::encode_png(&crop)?;
+                let png = capture::encode_png(&crop, density)?;
                 println!(
                     "  crop {}x{} px in {cropped:?}, PNG {} KB in {:?}",
                     crop.width(),
@@ -90,7 +92,7 @@ fn main() -> Result<(), CaptureError> {
                     );
                 }
                 let t = Instant::now();
-                let png = capture::encode_png(&crop)?;
+                let png = capture::encode_png(&crop, density)?;
                 println!(
                     "    encode_png (copy and save): {} KB in {:?}",
                     png.len() / 1024,

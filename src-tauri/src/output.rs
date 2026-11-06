@@ -6,7 +6,7 @@
 /// Annotations on the copied or saved image.
 pub mod compose;
 
-use crate::capture::CaptureError;
+use crate::capture::{CaptureError, Density};
 use chrono::NaiveDateTime;
 use image::RgbaImage;
 use std::ffi::OsString;
@@ -107,17 +107,18 @@ pub fn write_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-/// Puts an image on the system clipboard. Called off the main thread (it may block on it).
-pub type Clipboard = Box<dyn Fn(&RgbaImage) -> Result<(), CaptureError> + Send + Sync>;
+/// Puts an image at its pixel density on the system clipboard. Called off the main thread (it
+/// may block on it).
+pub type Clipboard = Box<dyn Fn(&RgbaImage, Density) -> Result<(), CaptureError> + Send + Sync>;
 
-/// The real clipboard. macOS: a PNG, plus TIFF on request (`macos::write`), written on the main
-/// thread. Windows: the clipboard plugin, which adds the PNG and bitmap formats.
+/// The real clipboard. macOS: a PNG with its density, plus TIFF on request (`macos::write`),
+/// written on the main thread. Windows: the clipboard plugin, which adds the PNG and bitmap
+/// formats, both without a density (#78).
 pub fn os_clipboard<R: Runtime>(app: &AppHandle<R>) -> Clipboard {
     let app = app.clone();
-    Box::new(move |image| {
-        #[cfg(target_os = "macos")]
-        {
-            let png = crate::capture::encode_png(image)?;
+    #[cfg(target_os = "macos")]
+    {
+        png_clipboard(move |png| {
             let (tx, rx) = std::sync::mpsc::channel();
             app.run_on_main_thread(move || {
                 let pasteboard = objc2_app_kit::NSPasteboard::generalPasteboard();
@@ -126,23 +127,34 @@ pub fn os_clipboard<R: Runtime>(app: &AppHandle<R>) -> Clipboard {
             .map_err(|e| CaptureError::Clipboard(e.to_string()))?;
             rx.recv()
                 .map_err(|e| CaptureError::Clipboard(e.to_string()))?
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Box::new(move |image, _density| {
             use tauri_plugin_clipboard_manager::ClipboardExt;
             let image = tauri::image::Image::new(image.as_raw(), image.width(), image.height());
             app.clipboard()
                 .write_image(&image)
                 .map_err(|e| CaptureError::Clipboard(e.to_string()))
-        }
-    })
+        })
+    }
+}
+
+/// A clipboard that encodes the image at its density, off the main thread, and hands `put` the
+/// PNG. Tests give it a private pasteboard.
+#[cfg(target_os = "macos")]
+pub(crate) fn png_clipboard(
+    put: impl Fn(Vec<u8>) -> Result<(), CaptureError> + Send + Sync + 'static,
+) -> Clipboard {
+    Box::new(move |image, density| put(crate::capture::encode_png(image, density)?))
 }
 
 /// The macOS pasteboard: the PNG as `public.png`, and TIFF for apps that only read that. TIFF
 /// is made only if an app asks for it (an `NSPasteboardItem` data provider), so copying costs
 /// the PNG alone. Main thread only.
 #[cfg(target_os = "macos")]
-mod macos {
+pub(crate) mod macos {
     use crate::capture::CaptureError;
     use objc2::rc::Retained;
     use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
@@ -244,7 +256,7 @@ mod macos {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::capture::encode_png;
+        use crate::capture::{Density, encode_png};
         use image::RgbaImage;
 
         #[test]
@@ -252,21 +264,26 @@ mod macos {
             // A private pasteboard: the user's clipboard is left alone.
             let pasteboard = NSPasteboard::pasteboardWithUniqueName();
             let image = RgbaImage::from_fn(7, 3, |x, y| image::Rgba([x as u8, y as u8, 1, 255]));
-            let png = encode_png(&image).unwrap();
+            let density = Density::new(2.0, 1.5);
+            let png = encode_png(&image, density).unwrap();
             write(&pasteboard, png.clone()).unwrap();
             let (png_type, tiff_type) = unsafe { (NSPasteboardTypePNG, NSPasteboardTypeTIFF) };
             let copied = pasteboard.dataForType(png_type).unwrap();
             assert_eq!(copied.to_vec(), png, "exactly the encoded PNG");
-            crate::output::tests::assert_clean_png(&copied.to_vec(), &image);
+            crate::output::tests::assert_clean_png(&copied.to_vec(), &image, density);
             let tiff = pasteboard.dataForType(tiff_type).expect("TIFF on request");
             let rep = NSBitmapImageRep::imageRepWithData(&tiff).unwrap();
             assert_eq!((rep.pixelsWide(), rep.pixelsHigh()), (7, 3));
+            // The TIFF keeps the density: its size in points is the on-screen size.
+            let size = rep.size();
+            assert!((size.width - 3.5).abs() < 0.01, "{size:?}");
+            assert!((size.height - 2.0).abs() < 0.01, "{size:?}");
         }
 
         #[test]
         fn the_png_is_released_when_the_pasteboard_moves_on() {
             let pasteboard = NSPasteboard::pasteboardWithUniqueName();
-            let png = encode_png(&RgbaImage::new(2, 2)).unwrap();
+            let png = encode_png(&RgbaImage::new(2, 2), Density::ONE).unwrap();
             objc2::rc::autoreleasepool(|_| {
                 write(&pasteboard, png).unwrap();
                 assert!(PROVIDER.with(|p| p.borrow().is_some()));
@@ -301,15 +318,14 @@ pub(crate) mod tests {
         chunks
     }
 
-    /// Only the chunks needed for the pixels (no text, EXIF or anything else), decoding to
-    /// exactly `image`.
-    pub(crate) fn assert_clean_png(png: &[u8], image: &RgbaImage) {
-        for chunk in png_chunks(png) {
-            assert!(
-                ["IHDR", "IDAT", "IEND"].contains(&chunk.as_str()),
-                "unexpected {chunk} chunk"
-            );
-        }
+    /// Exactly IHDR, pHYs, IDAT and IEND (no text, EXIF or anything else), with `density` in
+    /// pHYs, decoding to exactly `image`. The encoder splits IDAT only past 2 GiB.
+    pub(crate) fn assert_clean_png(png: &[u8], image: &RgbaImage, density: Density) {
+        assert_eq!(png_chunks(png), ["IHDR", "pHYs", "IDAT", "IEND"]);
+        let reader = png::Decoder::new(io::Cursor::new(png)).read_info().unwrap();
+        let dims = reader.info().pixel_dims.unwrap();
+        assert_eq!((dims.xppu, dims.yppu), density.pixels_per_metre());
+        assert_eq!(dims.unit, png::Unit::Meter);
         let decoded = image::load_from_memory(png).unwrap().to_rgba8();
         assert_eq!(decoded.dimensions(), image.dimensions());
         assert_eq!(&decoded, image);
@@ -331,23 +347,26 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn encoded_pngs_carry_only_the_pixels() {
+    fn encoded_pngs_carry_only_the_pixels_and_density() {
         let image = sample(33, 17);
-        assert_clean_png(&encode_png(&image).unwrap(), &image);
+        let d = Density::new;
+        for density in [Density::ONE, d(2.0, 2.0), d(1.5, 1.5), d(1.25, 2.0)] {
+            assert_clean_png(&encode_png(&image, density).unwrap(), &image, density);
+        }
     }
 
     #[test]
     fn saving_over_a_larger_file_leaves_only_the_new_bytes() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("shot.png");
-        fs::write(&path, encode_png(&sample(200, 200)).unwrap()).unwrap();
+        fs::write(&path, encode_png(&sample(200, 200), Density::ONE).unwrap()).unwrap();
         let small = sample(10, 5);
-        let png = encode_png(&small).unwrap();
+        let png = encode_png(&small, Density::ONE).unwrap();
         write_file(&path, &png).unwrap();
         let saved = fs::read(&path).unwrap();
         assert_eq!(saved.len(), png.len());
         assert_eq!(saved, png, "exactly the new bytes, nothing after IEND");
-        assert_clean_png(&saved, &small);
+        assert_clean_png(&saved, &small, Density::ONE);
         assert_eq!(names(dir.path()), ["shot.png"], "no temp file left");
     }
 
