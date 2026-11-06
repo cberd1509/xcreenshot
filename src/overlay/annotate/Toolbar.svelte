@@ -260,7 +260,14 @@
 
     <DropdownMenu.Root bind:open={moreOpen}>
       {@render tip(moreButton, 'More')}
-      <DropdownMenu.Content side="bottom" align="end" escapeKeydownBehavior="ignore">
+      <DropdownMenu.Content
+        side="bottom"
+        align="end"
+        escapeKeydownBehavior="ignore"
+        onmousedown={keep}
+        onOpenAutoFocus={keep}
+        onCloseAutoFocus={keep}
+      >
         <DropdownMenu.CheckboxItem
           checked={options.rememberRegion}
           onCheckedChange={(on) => actions.option('rememberRegion', on)}

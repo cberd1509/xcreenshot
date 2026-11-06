@@ -47,7 +47,8 @@ the overlay asks the annotator first:
 - `key(e)` handles undo and redo (⌘Z / ⇧⌘Z on macOS, Ctrl elsewhere), Delete/Backspace and arrow
   keys on the selected shape, and the tool letters. It returns whether it handled the key.
 - Esc undoes one thing per press: the size edit, then `escape()` (the shape being drawn, an open
-  menu, the selected shape, the tool), then the selection, then the overlay closes.
+  menu, the text being edited, the selected shape, the tool), then the selection, then the
+  overlay closes.
 
 While there are annotations (`annotated()`), a press outside the selection is ignored rather than
 starting a new selection, and a resize cannot shrink the selection past what the shapes paint
@@ -68,10 +69,11 @@ While a text is edited, `key(e)` returns true for every key without `preventDefa
 overlay runs no shortcut, copy, save or nudge and the textarea gets the key. Esc comes from Rust
 as usual and `escape()` closes an open menu first, then commits the text. While text is typed,
 presses on the toolbar and its color menu leave focus in the textarea (`keepFocus`), so the text
-stays the active edit and follows the size, Background and color; a tool, undo, redo or clear
-commits it first. With a text selected, the same options apply to it, one undo step each. With
-Background, the box is filled with the color and the text is black or white, whichever reads
-better.
+stays the active edit and follows the size, Background and color. A tool or Clear all commits it
+first; Undo drops it, and Redo waits until it is committed (committing would drop what can be
+redone). With a text selected, the toolbar shows its options and they apply to it, one undo step
+each, leaving the tool's own options as they were. With Background, the box is filled with the
+color and the text is black or white, whichever reads better.
 
 ## Speed
 

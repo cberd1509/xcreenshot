@@ -220,6 +220,10 @@ describe('Toolbar', () => {
     bar.closeMenus()
     await waitFor(() => expect(screen.queryByLabelText(`Color ${COLORS[4]}`)).toBeNull())
     expect(field).toHaveFocus()
+    // The ⋯ menu too.
+    await user.click(button('More'))
+    expect(mousedown(await item('Magnifier'))).toBe(true)
+    expect(field).toHaveFocus()
     field.remove()
   })
 

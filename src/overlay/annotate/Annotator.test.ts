@@ -648,24 +648,34 @@ describe('Annotator', () => {
       expect(nodes()[0].children[1].attrs.fill).toBe('#007AFF')
     })
 
-    it('commits the text being typed before a tool, undo, redo or clear', async () => {
+    it('drops the text being typed on Undo, and commits it before a tool or clear', async () => {
       const user = userEvent.setup()
       const { api } = await setup()
+      // Undo, then type: Redo waits, since committing would drop what can be redone.
+      api.key(press('r'))
+      await drag(300, 300, 350, 350)
+      api.key(press('z', mod))
+      await waitFor(() => expect(kinds()).toEqual([]))
       await user.type(await place(api), 'A')
+      expect(screen.getByRole('button', { name: 'Redo' })).toBeDisabled()
+      // Undo drops the text being typed, and only that.
       await user.click(screen.getByRole('button', { name: 'Undo' }))
-      // Committed, then undone.
       await waitFor(() => expect(editor()).not.toBeInTheDocument())
       expect(kinds()).toEqual([])
-      await user.type(await place(api), 'B')
       await user.click(screen.getByRole('button', { name: 'Redo' }))
-      expect(texts()).toEqual(['B'])
-      await user.type(await place(api, 300, 300), 'C')
+      await waitFor(() => expect(kinds()).toEqual(['Rect']))
+
+      await user.type(await place(api, 200, 200), 'C')
       await user.click(screen.getByLabelText('Rectangle'))
-      expect(texts()).toEqual(['B', 'C'])
-      await user.type(await place(api, 300, 200), 'D')
+      await waitFor(() => expect(texts()).toEqual([undefined, 'C']))
+      expect(editor()).not.toBeInTheDocument()
+      await user.type(await place(api, 200, 250), 'D')
       await user.click(screen.getByRole('button', { name: 'Clear all' }))
       expect(kinds()).toEqual([])
       expect(editor()).not.toBeInTheDocument()
+      // Clear is one step: undo brings the text back with the rest.
+      await user.click(screen.getByRole('button', { name: 'Undo' }))
+      await waitFor(() => expect(texts()).toEqual([undefined, 'C', 'D']))
     })
 
     it('applies size, Background and color to the selected text, one undo step each', async () => {
@@ -704,10 +714,45 @@ describe('Annotator', () => {
       expect(label().fontSize).toBe(36)
       api.key(press('z', mod))
       await waitFor(() => expect(label().fontSize).toBe(24))
+      // The tool's own options did not change.
+      expect(screen.getByTestId('current-color').style.background).toBe('rgb(255, 59, 48)')
       // A rect selected: the text options are the tool's again.
       await drag(300, 300, 350, 350)
       nodes()[1].fire('pointerdown')
       await waitFor(() => expect(screen.queryByLabelText('Text size')).not.toBeInTheDocument())
+    })
+
+    it('shows the selected text’s color, and keeps it in the selection when it grows', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      // Small text near the selection's bottom-right corner (500, 400).
+      await user.click(screen.getByLabelText('Text'))
+      await user.click(screen.getByLabelText('Small text'))
+      await user.click(screen.getByRole('button', { name: 'Color and size' }))
+      await user.click(await screen.findByLabelText('Color #007AFF'))
+      api.escape()
+      await user.type(await place(api, 470, 385), 'Hello')
+      api.escape()
+      await waitFor(() => expect(texts()).toEqual(['Hello']))
+      // Back to red for the tool; the text stays blue.
+      await user.click(screen.getByRole('button', { name: 'Color and size' }))
+      await user.click(await screen.findByLabelText('Color #FF3B30'))
+      api.escape()
+      nodes()[0].fire('pointerdown')
+      await waitFor(() =>
+        expect(screen.getByTestId('current-color').style.background).toBe('rgb(0, 122, 255)'),
+      )
+      // Red, the tool's color, can be picked for it.
+      await user.click(screen.getByRole('button', { name: 'Color and size' }))
+      await user.click(await screen.findByLabelText('Color #FF3B30'))
+      await waitFor(() => expect(nodes()[0].children[1].attrs.fill).toBe('#FF3B30'))
+      api.escape()
+      await user.click(screen.getByLabelText('Large text'))
+      // 5 x 18 + 2 x 11 wide, 45 + 22 tall: 8 px of it stays inside (500, 400).
+      await waitFor(() => expect(nodes()[0].children[1].attrs.fontSize).toBe(36))
+      const { x, y } = nodes()[0].attrs as { x: number; y: number }
+      expect(x).toBeLessThanOrEqual(492)
+      expect(y).toBeLessThanOrEqual(392)
     })
 
     it('commits the text being typed before exporting', async () => {

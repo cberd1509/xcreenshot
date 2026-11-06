@@ -194,25 +194,35 @@
       if (e.existing) set(without(history.present, e.id))
       return
     }
-    const { id, fontSize } = e
-    const { background } = textOptions
-    const shape: TextShape = {
+    const { id, fontSize, style: textStyle } = e
+    const shape = fit({
       id,
       kind: 'text',
-      style: e.style,
+      style: textStyle,
       ...e.at,
-      ...board.measure(text, fontSize),
+      width: 0,
+      height: 0,
       text,
       fontSize,
-      background,
-    }
-    const kept = selection ? keepInside(shape, selection) : shape
-    set(e.existing ? replace(history.present, kept) : [...history.present, kept])
+      background: textOptions.background,
+    })
+    set(e.existing ? replace(history.present, shape) : [...history.present, shape])
   }
 
-  /** The selected shape, if it is a text: the toolbar's options apply to it. */
-  const selectedText = $derived(
-    history.present.find((s): s is TextShape => s.id === selected && s.kind === 'text'),
+  /** The text measured for its content and size, and kept in the selection. */
+  function fit(text: TextShape): TextShape {
+    const measured = { ...text, ...board!.measure(text.text, text.fontSize) }
+    // Moving a shape keeps its kind.
+    return selection ? (keepInside(measured, selection) as TextShape) : measured
+  }
+
+  const selectedShape = $derived(history.present.find((s) => s.id === selected))
+  /** The selected shape, if it is a text: the toolbar's options apply to it, not the tool's. */
+  const selectedText = $derived(selectedShape?.kind === 'text' ? selectedShape : undefined)
+
+  /** The color and size the toolbar shows: the edited or selected text's color, or the tool's. */
+  const shownStyle = $derived(
+    editing ? editing.style : selectedText ? { ...style, color: selectedText.style.color } : style,
   )
 
   /** The text options the toolbar shows: the edited or selected text's, or the tool's. */
@@ -223,42 +233,31 @@
     return tool === 'text' ? textOptions : null
   })
 
-  /** Replaces the selected text with `change` applied and measured again, as one undo step. */
-  function restyle(text: TextShape, change: Partial<TextShape>) {
-    const next = { ...text, ...change }
-    set(replace(history.present, { ...next, ...board!.measure(next.text, next.fontSize) }))
-  }
-
-  /** A changed text option, for the tool and the text being edited or selected. */
+  /**
+   * A changed text option. A selected text takes it, as one undo step; otherwise the tool does,
+   * and the text being typed follows it.
+   */
   function setText(change: Partial<TextOptions>) {
-    textOptions = { ...textOptions, ...change }
     const fontSize = change.size && TEXT_SIZES[change.size]
-    if (editing) {
-      if (fontSize) editing.fontSize = fontSize
-    } else if (selectedText) {
-      restyle(selectedText, {
-        ...(fontSize && { fontSize }),
-        ...(change.background !== undefined && { background: change.background }),
-      })
+    if (selectedText && !editing) {
+      const { fontSize: size, background } = selectedText
+      const next = { fontSize: fontSize || size, background: change.background ?? background }
+      return set(replace(history.present, fit({ ...selectedText, ...next })))
     }
+    textOptions = { ...textOptions, ...change }
+    if (editing && fontSize) editing.fontSize = fontSize
   }
 
-  /** A new color or size, for the tool and the text being edited or selected. */
+  /** A new color or size: for a selected text, its color as one undo step; else the tool's. */
   function setStyle(next: Style) {
+    if (selectedText && !editing) {
+      // Only the color shows on text, so a size change leaves no undo step.
+      const color = { ...selectedText.style, color: next.color }
+      return set(replace(history.present, { ...selectedText, style: color }))
+    }
     style = next
     if (editing) editing.style = next
-    // Only the color shows on text, so a size change leaves no undo step.
-    else if (selectedText)
-      restyle(selectedText, { style: { ...selectedText.style, color: next.color } })
   }
-
-  /** Commits the text being edited before a toolbar action. */
-  const thenFinish =
-    <A extends unknown[]>(f: (...args: A) => void) =>
-    (...args: A) => {
-      finish()
-      f(...args)
-    }
 
   /** A press while text is edited commits it and does nothing more; Konva never sees it. */
   function onpointerdowncapture(e: PointerEvent) {
@@ -328,7 +327,7 @@
       return true
     }
     if (e.metaKey || e.ctrlKey || e.altKey) return false
-    const shape = history.present.find((s) => s.id === selected)
+    const shape = selectedShape
     if (shape && (e.key === 'Backspace' || e.key === 'Delete')) {
       e.preventDefault()
       set(without(history.present, shape.id))
@@ -355,16 +354,14 @@
   }
 
   /**
-   * Esc, one step at a time: the text being edited (it is kept), the shape being drawn, an open
-   * menu, the selected shape, then the tool. Returns whether it undid anything; if not, the
+   * Esc, one step at a time: the shape being drawn, an open menu, the text being edited (it is
+   * kept), the selected shape, then the tool. Returns whether it undid anything; if not, the
    * overlay handles Esc.
    */
   export function escape(): boolean {
-    // A menu opened while typing closes first: the text stays in the editor.
-    if (editing && toolbar?.closeMenus()) return true
-    if (editing) finish()
-    else if (start) cancel()
+    if (start) cancel()
     else if (toolbar?.closeMenus()) return true
+    else if (editing) finish()
     else if (selected) selected = null
     else if (tool) tool = null
     else return false
@@ -424,18 +421,24 @@
     <Toolbar
       bind:this={toolbar}
       {tool}
-      ontool={thenFinish((t) => (tool = t))}
-      bind:style={() => style, setStyle}
+      ontool={(t) => {
+        finish()
+        tool = t
+      }}
+      bind:style={() => shownStyle, setStyle}
       text={shownText}
       ontext={setText}
       keepFocus={editing !== null}
       drawable={!failed}
-      canUndo={history.past.length > 0}
-      canRedo={history.future.length > 0}
+      canUndo={history.past.length > 0 || editing !== null}
+      canRedo={history.future.length > 0 && !editing}
       canClear={history.present.length > 0}
-      onundo={thenFinish(() => move(undo(history)))}
-      onredo={thenFinish(() => move(redo(history)))}
-      onclear={thenFinish(() => set([]))}
+      onundo={() => (editing ? (editing = null) : move(undo(history)))}
+      onredo={() => move(redo(history))}
+      onclear={() => {
+        finish()
+        set([])
+      }}
       {options}
       {actions}
     />
