@@ -18,10 +18,14 @@ function setup() {
     onselect,
   })
   const stage = stages.at(-1)! as FakeNode & { hit: FakeNode | null; asked: unknown }
-  const layer = stage.children[0]
-  const transformer = layer.children[0] as FakeNode & { attached: FakeNode[] }
-  const shapes = () => layer.children.filter((n) => n !== transformer)
-  return { board, stage, layer, transformer, shapes, onchange, onselect }
+  const [layer, top] = stage.children as [
+    FakeNode & { draws: number },
+    FakeNode & { draws: number },
+  ]
+  const transformer = top.children[0] as FakeNode & { attached: FakeNode[] }
+  const shapes = () => layer.children
+  const drafts = () => top.children.filter((n) => n !== transformer)
+  return { board, stage, layer, top, transformer, shapes, drafts, onchange, onselect }
 }
 
 describe('attrs', () => {
@@ -73,13 +77,17 @@ describe('Board', () => {
     stages.length = 0
   })
 
-  it('starts empty and covers the selection, shapes offset to keep display coordinates', () => {
-    const { board, stage, layer } = setup()
+  it('covers the display while there is a selection, and clips the shapes to it', () => {
+    const { board, stage, layer, top } = setup()
+    const display = { width: 1000, height: 700 }
     expect(stage.attrs).toMatchObject({ width: 0, height: 0 })
-    board.place({ x: 100, y: 50, width: 300, height: 200 })
-    expect(stage.attrs).toMatchObject({ width: 300, height: 200 })
-    expect(layer.attrs).toMatchObject({ x: -100, y: -50 })
-    board.place(null)
+    const sel = { x: 100, y: 50, width: 300, height: 200 }
+    board.place(sel, display)
+    expect(stage.attrs).toMatchObject(display)
+    expect(layer.attrs.clip).toEqual(sel)
+    // The handles are not clipped.
+    expect(top.attrs.clip).toBeUndefined()
+    board.place(null, display)
     expect(stage.attrs).toMatchObject({ width: 0, height: 0 })
   })
 
@@ -97,7 +105,7 @@ describe('Board', () => {
     board.render([arrow], null)
     expect(node.destroyed).toBe(true)
     expect(shapes().map((n) => n.className)).toEqual(['Arrow'])
-    expect((layer as unknown as { draws: number }).draws).toBe(3)
+    expect(layer.draws).toBe(3)
   })
 
   it('leaves a node alone when its shape did not change', () => {
@@ -108,28 +116,30 @@ describe('Board', () => {
     expect(set).not.toHaveBeenCalled()
   })
 
-  it('reuses one node for the shape being drawn', () => {
-    const { board, shapes } = setup()
+  it('reuses one node on the top layer for the shape being drawn', () => {
+    const { board, drafts, layer, top } = setup()
     board.preview(rect)
-    const [draft] = shapes()
+    const [draft] = drafts()
     expect(draft.attrs).toMatchObject({ listening: false, width: 30 })
     board.preview({ ...rect, width: 60 })
-    expect(shapes()).toEqual([draft])
+    expect(drafts()).toEqual([draft])
     expect(draft.attrs).toMatchObject({ width: 60 })
     // Another kind needs another node.
     board.preview(arrow)
     expect(draft.destroyed).toBe(true)
-    expect(shapes().map((n) => n.className)).toEqual(['Arrow'])
+    expect(drafts().map((n) => n.className)).toEqual(['Arrow'])
     board.preview(null)
-    expect(shapes()).toEqual([])
+    expect(drafts()).toEqual([])
     board.preview(null)
+    // Only the top layer redraws while drawing.
+    expect(layer.draws).toBe(0)
+    expect(top.draws).toBe(5)
   })
 
-  it('attaches the resize handles to the selected shape, on top', () => {
-    const { board, shapes, transformer, layer } = setup()
+  it('attaches the resize handles to the selected shape', () => {
+    const { board, shapes, transformer } = setup()
     board.render([rect, arrow], 'a')
     expect(transformer.attached).toEqual([shapes()[1]])
-    expect(layer.children.at(-1)).toBe(transformer)
     board.render([rect, arrow], 'gone')
     expect(transformer.attached).toEqual([])
     board.render([rect, arrow], null)
@@ -167,11 +177,10 @@ describe('Board', () => {
     expect(onchange).not.toHaveBeenCalled()
   })
 
-  it('hit-tests in stage px', () => {
+  it('hit-tests in window px', () => {
     const { board, stage } = setup()
-    board.place({ x: 100, y: 50, width: 300, height: 200 })
     expect(board.hits({ x: 110, y: 60 })).toBe(false)
-    expect(stage.asked).toEqual({ x: 10, y: 10 })
+    expect(stage.asked).toEqual({ x: 110, y: 60 })
     stage.hit = stage
     expect(board.hits({ x: 110, y: 60 })).toBe(true)
   })
@@ -190,15 +199,16 @@ describe('exportShapes', () => {
 
   // The selection (100, 100) to (400, 300) at 2x.
   const crop = { x: 200, y: 200, width: 600, height: 400 }
+  const two = { x: 2, y: 2 }
 
   it('renders only the box the shapes paint, at native size', async () => {
     const context = fakeContext()
-    const out = await exportShapes([rect, blur], crop, 2)
+    const out = await exportShapes([rect, blur], crop, two)
     // The rect's box with its stroke, (106, 116) to (144, 164), in px of the crop.
-    expect(out).toMatchObject({ x: 12, y: 32, width: 76, height: 96 })
+    expect(out.layer).toMatchObject({ x: 12, y: 32, width: 76, height: 96 })
     expect(out.blurs).toEqual([{ x: 2, y: 4, width: 6, height: 8 }])
     expect(context.getImageData).toHaveBeenCalledWith(0, 0, 76, 96)
-    expect(out.rgba).toEqual(new Uint8ClampedArray([7, 7, 7, 255]))
+    expect(out.layer?.rgba).toEqual(new Uint8ClampedArray([7, 7, 7, 255]))
     const stage = stages.at(-1)!
     const layer = stage.children[0]
     expect(layer.children.map((n) => n.className)).toEqual(['Rect'])
@@ -208,21 +218,28 @@ describe('exportShapes', () => {
 
   it('clips the box to the crop', async () => {
     fakeContext()
-    const out = await exportShapes([{ ...rect, x: 90 }], crop, 2)
-    expect(out).toMatchObject({ x: 0, width: 48 })
+    const out = await exportShapes([{ ...rect, x: 90 }], crop, two)
+    expect(out.layer).toMatchObject({ x: 0, width: 48 })
+  })
+
+  it('uses each axis’s own scale', async () => {
+    fakeContext()
+    const out = await exportShapes([rect], { ...crop, y: 150 }, { x: 2, y: 1.5 })
+    // y: (116 to 164) x 1.5 = 174 to 246, less the crop's 150.
+    expect(out.layer).toMatchObject({ x: 12, y: 24, width: 76, height: 72 })
+    const layer = stages.at(-1)!.children[0]
+    // Stretched by 1.5 / 2 on y, then rendered at 2x: y px land at 1.5x.
+    expect(layer.attrs.scaleY).toBe(0.75)
+    expect(layer.attrs.exported).toEqual({ x: 106, y: 87, width: 38, height: 36, pixelRatio: 2 })
   })
 
   it('draws nothing when there are only blurs, no shapes, or none in the crop', async () => {
-    expect(await exportShapes([blur], crop, 2)).toEqual({
-      rgba: null,
-      x: 0,
-      y: 0,
-      width: 0,
-      height: 0,
+    expect(await exportShapes([blur], crop, two)).toEqual({
+      layer: null,
       blurs: [{ x: 2, y: 4, width: 6, height: 8 }],
     })
-    expect((await exportShapes([], crop, 2)).rgba).toBeNull()
-    expect((await exportShapes([{ ...rect, x: 900 }], crop, 2)).rgba).toBeNull()
+    expect((await exportShapes([], crop, two)).layer).toBeNull()
+    expect((await exportShapes([{ ...rect, x: 900 }], crop, two)).layer).toBeNull()
     expect(stages).toEqual([])
   })
 })

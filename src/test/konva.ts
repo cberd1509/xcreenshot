@@ -88,8 +88,11 @@ class Stage extends FakeNode {
 
 class Layer extends FakeNode {
   draws = 0
-  constructor() {
-    super('Layer')
+  constructor(attrs: Attrs = {}) {
+    super('Layer', attrs)
+  }
+  clip(rect: Attrs) {
+    this.attrs.clip = rect
   }
   batchDraw() {
     this.draws++

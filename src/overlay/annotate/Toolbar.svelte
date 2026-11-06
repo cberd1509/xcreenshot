@@ -8,7 +8,6 @@
   export type ToolbarActions = {
     copy: () => void
     save: () => void
-    share: () => void
     option: (key: Option, on: boolean) => void
   }
 </script>
@@ -96,9 +95,9 @@
     return open
   }
 
-  // Keys that would also act on the overlay (Enter copies, arrows nudge) stay in the toolbar.
-  function onkeydown(e: KeyboardEvent) {
-    if (e.key === 'Enter' || e.key === ' ' || e.key.startsWith('Arrow')) e.stopPropagation()
+  /** Whether the color or ⋯ menu is open: it owns the keyboard meanwhile. */
+  export function menuOpen(): boolean {
+    return colorsOpen || moreOpen
   }
 </script>
 
@@ -161,7 +160,6 @@
     role="toolbar"
     aria-label="Annotate"
     tabindex="-1"
-    {onkeydown}
   >
     <ToggleGroup.Root
       type="single"
@@ -189,7 +187,7 @@
 
     <Popover.Root bind:open={colorsOpen}>
       {@render tip(colorButton, 'Color and size')}
-      <Popover.Content class="w-auto p-2" side="bottom" escapeKeydownBehavior="ignore" {onkeydown}>
+      <Popover.Content class="w-auto p-2" side="bottom" escapeKeydownBehavior="ignore">
         <ToggleGroup.Root
           type="single"
           spacing={1}
@@ -234,7 +232,7 @@
 
     <DropdownMenu.Root bind:open={moreOpen}>
       {@render tip(moreButton, 'More')}
-      <DropdownMenu.Content side="bottom" align="end" escapeKeydownBehavior="ignore" {onkeydown}>
+      <DropdownMenu.Content side="bottom" align="end" escapeKeydownBehavior="ignore">
         <DropdownMenu.CheckboxItem
           checked={options.rememberRegion}
           onCheckedChange={(on) => actions.option('rememberRegion', on)}
@@ -254,7 +252,8 @@
 
     {@render action('Copy', `${mod}C`, CopyIcon, actions.copy)}
     {@render action('Save', `${mod}S`, SaveIcon, actions.save)}
-    <Button variant="ghost" size="sm" onclick={actions.share}>
+    <!-- Share comes in #19. -->
+    <Button variant="ghost" size="sm" disabled>
       <ShareIcon />
       Share
     </Button>

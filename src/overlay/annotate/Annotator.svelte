@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte'
-  import { nudge, type Point, type Rect, type Scale, type Size } from '../geometry'
+  import { contains, nudge, type Point, type Rect, type Scale, type Size } from '../geometry'
+  import { shortcut } from '../keys'
   import { Board, exportShapes, loadKonva, type AnnotationExport } from './board'
   import { commit, empty, redo, replace, undo, without, type History, type Shapes } from './history'
   import { toolbarPosition } from './placement'
@@ -11,9 +12,9 @@
     clampTo,
     draw,
     keepInside,
+    paintedBounds,
     toolForKey,
     translate,
-    type Shape,
     type Tool,
   } from './shapes'
   import type ToolbarComponent from './Toolbar.svelte'
@@ -30,7 +31,6 @@
     scale,
     options,
     actions: given = {},
-    annotated = $bindable(false),
   }: {
     selection: Rect | null
     display: Size
@@ -38,18 +38,10 @@
     scale: Scale
     options: Record<Option, boolean>
     actions?: Partial<ToolbarActions>
-    /** Whether there are any shapes. */
-    annotated?: boolean
   } = $props()
 
   const noop = () => {}
-  const actions: ToolbarActions = $derived({
-    copy: noop,
-    save: noop,
-    share: noop,
-    option: noop,
-    ...given,
-  })
+  const actions: ToolbarActions = $derived({ copy: noop, save: noop, option: noop, ...given })
 
   let container: HTMLDivElement = $state()!
   let Toolbar = $state<typeof ToolbarComponent | null>(null)
@@ -65,6 +57,7 @@
   let start: Point | null = null
   let ids = 0
   let bar = $state<Size>({ width: 0, height: 0 })
+  let cursor = $state('')
 
   const drawing = $derived(tool !== null && READY.has(tool) && !failed)
 
@@ -107,11 +100,8 @@
       .finally(() => (loading = false))
   })
 
-  $effect(() => board?.place(selection))
+  $effect(() => board?.place(selection, display))
   $effect(() => board?.render(history.present, selected))
-  $effect(() => {
-    annotated = history.present.length > 0
-  })
 
   /** Moves history, dropping the shape selection if that shape is gone. */
   function move(next: History) {
@@ -119,6 +109,15 @@
     if (selected && !next.present.some((s) => s.id === selected)) selected = null
   }
   const set = (shapes: Shapes) => move(commit(history, shapes))
+
+  /** Whether there are any shapes. */
+  export const annotated = () => history.present.length > 0
+
+  /** The box all the shapes paint, or `null` without shapes. */
+  export const painted = () => paintedBounds(history.present)
+
+  /** Whether a toolbar menu is open: it owns the keyboard meanwhile. */
+  export const menuOpen = () => toolbar?.menuOpen() ?? false
 
   /** Drops every annotation, the tool and the shape being drawn. Not undoable. */
   export function reset() {
@@ -140,17 +139,20 @@
     // On a shape or its handles: Konva moves or resizes it.
     if (board.hits(at(e))) return e.stopPropagation()
     selected = null
-    // With no drawing tool, the press goes on to the overlay, which moves the selection.
-    if (!drawing) return
+    // Without a drawing tool, or outside the selection, the press goes on to the overlay.
+    if (!drawing || !contains(selection, at(e))) return
     e.stopPropagation()
-    start = clampTo(at(e), selection)
+    start = at(e)
     container.setPointerCapture?.(e.pointerId)
   }
 
   function onpointermove(e: PointerEvent) {
-    if (start && tool && selection) {
+    if (!selection) return
+    if (start && tool) {
       board?.preview(draw(tool, 'draft', start, clampTo(at(e), selection), style))
     }
+    // Over the selection: crosshair to draw, else move it. Elsewhere, the overlay's cursor.
+    cursor = !contains(selection, at(e)) ? '' : drawing ? 'crosshair' : 'move'
   }
 
   function onpointerup(e: PointerEvent) {
@@ -165,37 +167,33 @@
 
   /** Handles an annotation key. Returns whether it did, so the overlay skips it. */
   export function key(e: KeyboardEvent): boolean {
-    if (!selection || typing(e.target)) return false
-    const mod = e.metaKey || e.ctrlKey
-    if (mod && !e.altKey && e.key.toLowerCase() === 'z') {
+    if (!selection || menuOpen() || typing(e.target)) return false
+    const redoing = shortcut(e, 'z', true)
+    if (redoing || shortcut(e, 'z')) {
       e.preventDefault()
-      move(e.shiftKey ? redo(history) : undo(history))
+      move(redoing ? redo(history) : undo(history))
       return true
     }
-    if (mod || e.altKey) return false
-    const shape = selected ? history.present.find((s) => s.id === selected) : undefined
+    if (e.metaKey || e.ctrlKey || e.altKey) return false
+    const shape = history.present.find((s) => s.id === selected)
     if (shape && (e.key === 'Backspace' || e.key === 'Delete')) {
       e.preventDefault()
       set(without(history.present, shape.id))
       return true
     }
-    if (shape) {
-      const b = bounds(shape)
-      const moved = nudge(b, e.key, e.shiftKey ? 10 : 1, scale, display)
-      if (moved) {
-        e.preventDefault()
-        const next = keepInside(translate(shape, moved.x - b.x, moved.y - b.y), selection)
-        set(replace(history.present, next))
-        return true
-      }
-    }
-    const next = toolForKey(e.key)
-    if (next && READY.has(next) && !failed) {
+    const b = shape && bounds(shape)
+    const moved = b && nudge(b, e.key, e.shiftKey ? 10 : 1, scale, display)
+    if (shape && b && moved) {
       e.preventDefault()
-      tool = next
+      const next = keepInside(translate(shape, moved.x - b.x, moved.y - b.y), selection)
+      set(replace(history.present, next))
       return true
     }
-    return false
+    const next = toolForKey(e.key)
+    if (!next || !READY.has(next) || failed) return false
+    e.preventDefault()
+    tool = next
+    return true
   }
 
   /**
@@ -203,28 +201,21 @@
    * tool. Returns whether it undid anything; if not, the overlay handles Esc.
    */
   export function escape(): boolean {
-    if (start) {
-      cancel()
-      return true
-    }
-    if (toolbar?.closeMenus()) return true
-    if (selected) {
-      selected = null
-      return true
-    }
-    if (tool) {
-      tool = null
-      return true
-    }
-    return false
+    if (start) cancel()
+    else if (toolbar?.closeMenus()) return true
+    else if (selected) selected = null
+    else if (tool) tool = null
+    else return false
+    return true
   }
 
   /**
    * The annotations alone at native size, for Rust to composite. `crop` is the physical rect
-   * being captured; `pixelRatio` is physical px per logical px. See docs/annotations.md.
+   * being captured; `ratio` is physical px per logical px on each axis. See
+   * docs/annotations.md.
    */
-  export function exportAnnotations(crop: Rect, pixelRatio: number): Promise<AnnotationExport> {
-    return exportShapes(history.present, crop, pixelRatio)
+  export function exportAnnotations(crop: Rect, ratio: Scale): Promise<AnnotationExport> {
+    return exportShapes(history.present, crop, ratio)
   }
 
   const toolbarAt = $derived(selection && toolbarPosition(selection, bar, display))
@@ -232,11 +223,9 @@
 
 <div
   class="layer"
-  class:drawing
-  style:left="{selection?.x ?? 0}px"
-  style:top="{selection?.y ?? 0}px"
-  style:width="{selection?.width ?? 0}px"
-  style:height="{selection?.height ?? 0}px"
+  style:width="{selection ? display.width : 0}px"
+  style:height="{selection ? display.height : 0}px"
+  style:cursor
   bind:this={container}
   data-testid="annotations"
   role="presentation"
@@ -275,14 +264,11 @@
 {/if}
 
 <style>
+  /* The whole display while there is a selection; presses it does not use go on to the overlay. */
   .layer {
     position: fixed;
-    overflow: hidden;
-    cursor: move;
-  }
-
-  .layer.drawing {
-    cursor: crosshair;
+    left: 0;
+    top: 0;
   }
 
   /* Above the selection outline and the size badge. */

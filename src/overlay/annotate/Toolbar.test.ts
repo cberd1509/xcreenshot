@@ -10,7 +10,6 @@ function setup(props: Props = {}) {
   const actions: ToolbarActions = {
     copy: vi.fn<() => void>(),
     save: vi.fn<() => void>(),
-    share: vi.fn<() => void>(),
     option: vi.fn<ToolbarActions['option']>(),
   }
   const handlers = {
@@ -128,14 +127,13 @@ describe('Toolbar', () => {
     expect(screen.getByTestId('current-color').style.background).not.toBe('')
   })
 
-  it('copies, saves and shares', async () => {
+  it('copies and saves; Share waits for #19', async () => {
     const { actions, user } = setup()
     await user.click(button('Copy'))
     await user.click(button('Save'))
-    await user.click(button('Share'))
     expect(actions.copy).toHaveBeenCalledOnce()
     expect(actions.save).toHaveBeenCalledOnce()
-    expect(actions.share).toHaveBeenCalledOnce()
+    expect(button('Share')).toBeDisabled()
   })
 
   it('toggles options from the menu', async () => {
@@ -151,27 +149,20 @@ describe('Toolbar', () => {
 
   it('closes an open menu for Esc, and says whether one was open', async () => {
     const { user, view } = setup()
-    const bar = view.component as unknown as { closeMenus: () => boolean }
+    const bar = view.component as unknown as {
+      closeMenus: () => boolean
+      menuOpen: () => boolean
+    }
     expect(bar.closeMenus()).toBe(false)
+    expect(bar.menuOpen()).toBe(false)
     await user.click(button('More'))
     await item('Magnifier')
+    expect(bar.menuOpen()).toBe(true)
     expect(bar.closeMenus()).toBe(true)
+    expect(bar.menuOpen()).toBe(false)
     await waitFor(() => expect(screen.queryByText('Magnifier')).not.toBeInTheDocument())
     await user.click(button('Color and size'))
     await screen.findByLabelText('Thick')
     expect(bar.closeMenus()).toBe(true)
-  })
-
-  it('keeps Enter and arrow keys from reaching the overlay', () => {
-    setup()
-    const seen = vi.fn<(e: KeyboardEvent) => void>()
-    window.addEventListener('keydown', seen)
-    const bar = screen.getByRole('toolbar')
-    for (const key of ['Enter', 'ArrowLeft', ' ']) {
-      bar.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
-    }
-    bar.dispatchEvent(new KeyboardEvent('keydown', { key: 'r', bubbles: true }))
-    window.removeEventListener('keydown', seen)
-    expect(seen.mock.calls.map(([e]) => e.key)).toEqual(['r'])
   })
 })

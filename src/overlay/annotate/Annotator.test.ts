@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { stages, type FakeNode } from '../../test/konva'
 import type { Rect } from '../geometry'
 import { fakeContext } from '../../test/canvas'
+import { isMac } from '$lib/settings.svelte'
 import Annotator from './Annotator.svelte'
 import type * as board from './board'
 
@@ -26,12 +27,17 @@ type Api = {
   key: (e: KeyboardEvent) => boolean
   escape: () => boolean
   reset: () => void
-  exportAnnotations: (crop: Rect, scale: number) => Promise<board.AnnotationExport>
+  exportAnnotations: (
+    crop: Rect,
+    scale: { x: number; y: number },
+  ) => Promise<board.AnnotationExport>
+  annotated: () => boolean
+  painted: () => Rect | null
+  menuOpen: () => boolean
 }
 type Props = {
   selection: Rect | null
   actions?: Record<string, (...args: never[]) => void>
-  annotated?: boolean
 }
 
 const props = (p: Props) => ({ display, scale, options, ...p })
@@ -47,17 +53,20 @@ async function setup(p: Props = { selection: sel }) {
 // The toolbar is loaded on demand; the first load in a run compiles it, which can be slow.
 const toolbar = () => screen.findByRole('toolbar', {}, { timeout: 5000 })
 const stage = () => stages[0] as FakeNode & { hit: FakeNode | null }
+/** The shapes' layer, clipped to the selection. */
 const layer = () => stage().children[0]
-const transformer = () =>
-  layer().children.find((n) => n.className === 'Transformer') as FakeNode & {
-    attached: FakeNode[]
-  }
-const nodes = () => layer().children.filter((n) => n.className !== 'Transformer')
+/** The shape being drawn and the handles. */
+const top = () => stage().children[1]
+const transformer = () => top().children[0] as FakeNode & { attached: FakeNode[] }
+const draft = () => top().children[1]
+const nodes = () => layer().children
 const kinds = () => nodes().map((n) => n.className)
 const element = () => screen.getByTestId('annotations')
 const at = (x: number, y: number) => ({ clientX: x, clientY: y, button: 0, pointerId: 1 })
 const press = (key: string, init: KeyboardEventInit = {}) =>
   new KeyboardEvent('keydown', { key, cancelable: true, ...init })
+/** ⌘ on macOS, Ctrl elsewhere. */
+const mod = isMac ? { metaKey: true } : { ctrlKey: true }
 
 /** Drags on the annotation layer, in window px. */
 async function drag(x1: number, y1: number, x2: number, y2: number) {
@@ -92,15 +101,11 @@ describe('Annotator', () => {
     await toolbar()
   })
 
-  it('covers the selection, and shrinks to nothing without one', async () => {
+  it('covers the display and clips to the selection, and shrinks to nothing without one', async () => {
     const { view } = await setup()
-    expect(element().style).toMatchObject({
-      left: '100px',
-      top: '100px',
-      width: '400px',
-      height: '300px',
-    })
-    expect(stage().attrs).toMatchObject({ width: 400, height: 300 })
+    expect(element().style).toMatchObject({ width: '1000px', height: '700px' })
+    expect(stage().attrs).toMatchObject(display)
+    expect(layer().attrs.clip).toEqual(sel)
     await view.rerender(props({ selection: null }))
     expect(stage().attrs).toMatchObject({ width: 0, height: 0 })
     expect(screen.queryByRole('toolbar')).not.toBeInTheDocument()
@@ -134,7 +139,7 @@ describe('Annotator', () => {
     await drag(150, 150, 250, 250)
     await view.rerender(props({ selection: { ...sel, x: 120, y: 90 } }))
     expect(nodes()[0].attrs).toMatchObject({ x: 150, y: 150 })
-    expect(layer().attrs).toMatchObject({ x: -120, y: -90 })
+    expect(layer().attrs.clip).toEqual({ ...sel, x: 120, y: 90 })
   })
 
   it('shows the shape while it is drawn, and drops it on cancel', async () => {
@@ -142,7 +147,7 @@ describe('Annotator', () => {
     api.key(press('r'))
     await fireEvent.pointerDown(element(), at(150, 150))
     await fireEvent.pointerMove(element(), at(200, 220))
-    expect(nodes()[0].attrs).toMatchObject({ width: 50, height: 70, listening: false })
+    expect(draft().attrs).toMatchObject({ width: 50, height: 70, listening: false })
     await fireEvent.pointerCancel(element(), at(200, 220))
     expect(kinds()).toEqual([])
     // A click (no drag) draws nothing either.
@@ -152,6 +157,34 @@ describe('Annotator', () => {
     await fireEvent.pointerMove(element(), at(300, 300))
     await fireEvent.pointerUp(element(), at(300, 300))
     expect(kinds()).toEqual([])
+  })
+
+  it('lets a press outside the selection through, even with a tool', async () => {
+    const { api } = await setup()
+    api.key(press('r'))
+    await drag(600, 500, 700, 600)
+    expect(kinds()).toEqual([])
+    expect(passed).toHaveBeenCalledOnce()
+  })
+
+  it('shows a cursor for what a press on the selection does', async () => {
+    const { api } = await setup()
+    await fireEvent.pointerMove(element(), at(150, 150))
+    expect(element().style.cursor).toBe('move')
+    api.key(press('r'))
+    await fireEvent.pointerMove(element(), at(150, 151))
+    expect(element().style.cursor).toBe('crosshair')
+    await fireEvent.pointerMove(element(), at(600, 500))
+    expect(element().style.cursor).toBe('')
+  })
+
+  it('leaves keys to an open menu', async () => {
+    const user = userEvent.setup()
+    const { api } = await setup()
+    await user.click(screen.getByRole('button', { name: 'More' }))
+    await screen.findByText('Magnifier')
+    expect(api.menuOpen()).toBe(true)
+    expect(api.key(press('r'))).toBe(false)
   })
 
   it('lets a press with no tool through to the overlay, to move the selection', async () => {
@@ -186,14 +219,14 @@ describe('Annotator', () => {
 
     expect(api.key(press('Backspace'))).toBe(true)
     await waitFor(() => expect(kinds()).toEqual([]))
-    api.key(press('z', { metaKey: true }))
+    api.key(press('z', mod))
     await waitFor(() => expect(kinds()).toEqual(['Rect']))
     expect(nodes()[0].attrs).toMatchObject({ x: 170.5, y: 185 })
-    api.key(press('z', { ctrlKey: true }))
-    api.key(press('z', { ctrlKey: true }))
-    api.key(press('z', { ctrlKey: true }))
+    api.key(press('z', mod))
+    api.key(press('z', mod))
+    api.key(press('z', mod))
     await waitFor(() => expect(nodes()[0].attrs).toMatchObject({ x: 150, y: 150 }))
-    api.key(press('Z', { metaKey: true, shiftKey: true }))
+    api.key(press('Z', { ...mod, shiftKey: true }))
     await waitFor(() => expect(nodes()[0].attrs).toMatchObject({ x: 170, y: 180 }))
   })
 
@@ -214,9 +247,9 @@ describe('Annotator', () => {
     await drag(150, 150, 250, 250)
     nodes()[0].fire('pointerdown')
     await waitFor(() => expect(transformer().attached).toHaveLength(1))
-    api.key(press('z', { metaKey: true }))
+    api.key(press('z', mod))
     await waitFor(() => expect(transformer().attached).toEqual([]))
-    api.key(press('z', { metaKey: true, shiftKey: true }))
+    api.key(press('z', { ...mod, shiftKey: true }))
     await waitFor(() => expect(kinds()).toEqual(['Rect']))
     // Nothing selected now: Delete is not ours.
     expect(api.key(press('Delete'))).toBe(false)
@@ -291,7 +324,9 @@ describe('Annotator', () => {
     Object.defineProperty(typed, 'target', { value: input })
     expect(api.key(typed)).toBe(false)
     expect(api.key(press('r', { altKey: true }))).toBe(false)
-    expect(api.key(press('c', { metaKey: true }))).toBe(false)
+    expect(api.key(press('c', mod))).toBe(false)
+    // Ctrl on macOS, or ⌘ elsewhere, is not undo.
+    expect(api.key(press('z', isMac ? { ctrlKey: true } : { metaKey: true }))).toBe(false)
     expect(api.key(press('p'))).toBe(false)
     expect(api.key(press('x'))).toBe(false)
     expect(api.key(press('ArrowLeft'))).toBe(false)
@@ -304,27 +339,17 @@ describe('Annotator', () => {
     expect(api.key(press('r'))).toBe(false)
   })
 
-  it('says whether there are annotations, and resets', async () => {
-    let annotated = false
-    const view = render(Annotator, {
-      props: {
-        ...props({ selection: sel }),
-        get annotated() {
-          return annotated
-        },
-        set annotated(v: boolean) {
-          annotated = v
-        },
-      },
-    })
-    await waitFor(() => expect(stages).toHaveLength(1))
-    const api = view.component as unknown as Api
+  it('says whether there are annotations and where they paint, and resets', async () => {
+    const { api } = await setup()
+    expect(api.annotated()).toBe(false)
+    expect(api.painted()).toBeNull()
     api.key(press('r'))
     await drag(150, 150, 250, 250)
-    await waitFor(() => expect(annotated).toBe(true))
+    expect(api.annotated()).toBe(true)
+    expect(api.painted()).toEqual({ x: 146, y: 146, width: 108, height: 108 })
     api.reset()
-    await waitFor(() => expect(annotated).toBe(false))
-    expect(kinds()).toEqual([])
+    expect(api.annotated()).toBe(false)
+    await waitFor(() => expect(kinds()).toEqual([]))
     // The tool went too.
     await drag(150, 150, 250, 250)
     expect(kinds()).toEqual([])
@@ -344,8 +369,9 @@ describe('Annotator', () => {
     const { api } = await setup()
     api.key(press('r'))
     await drag(150, 150, 250, 250)
-    const out = await api.exportAnnotations({ x: 200, y: 200, width: 800, height: 600 }, 2)
-    expect(out).toMatchObject({ x: 92, y: 92, width: 216, height: 216, blurs: [] })
+    const out = await api.exportAnnotations({ x: 200, y: 200, width: 800, height: 600 }, scale)
+    expect(out.layer).toMatchObject({ x: 92, y: 92, width: 216, height: 216 })
+    expect(out.blurs).toEqual([])
   })
 
   it('runs the given actions', async () => {
@@ -357,7 +383,6 @@ describe('Annotator', () => {
     expect(copy).toHaveBeenCalledOnce()
     // The defaults do nothing yet.
     await user.click(screen.getByRole('button', { name: 'Save' }))
-    await user.click(screen.getByRole('button', { name: 'Share' }))
     await user.click(screen.getByRole('button', { name: 'More' }))
     await user.click((await screen.findByText('Magnifier')).closest('[role=menuitemcheckbox]')!)
     expect(option).toHaveBeenCalledWith('magnifier', true)

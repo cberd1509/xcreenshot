@@ -6,8 +6,6 @@
 //! Rust keeps each original frame while the overlay is open and sends the page a copy, so the
 //! crop is cut from the exact captured pixels (see `docs/spikes/capture.md`).
 
-/// Annotations on the copied or saved image.
-pub(crate) mod compose;
 #[cfg(debug_assertions)]
 pub mod debug;
 /// Public to the crate so `generate_handler!` can reach the commands.

@@ -3,12 +3,13 @@
   import { emit, listen } from '@tauri-apps/api/event'
   import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
   import { onMount } from 'svelte'
-  import { isMac, setSetting, settings } from '$lib/settings.svelte'
+  import { setSetting, settings } from '$lib/settings.svelte'
   import {
     CURSORS,
     badgePosition,
     contains,
     fromPoints,
+    intersect,
     isEmpty,
     loupePosition,
     move,
@@ -16,6 +17,7 @@
     resize,
     resizeTo,
     toPhysical,
+    union,
     type Handle,
     type Point,
     type Rect,
@@ -23,6 +25,7 @@
   } from './geometry'
   import Annotator from './annotate/Annotator.svelte'
   import { outputRequest } from './annotate/output'
+  import { shortcut } from './keys'
   import Magnifier from './Magnifier.svelte'
   import Selection from './Selection.svelte'
   import SizeBadge from './SizeBadge.svelte'
@@ -42,13 +45,13 @@
 
   /** Broadcast to every overlay page, so only one display has a selection. */
   const SELECTED = 'overlay:selected'
-  /** `fresh`: the user started a new selection there, so this display drops its annotations. */
-  type Selected = { label: string; active: boolean; fresh: boolean }
+  type Selected = { label: string; active: boolean }
 
   type Drag =
     | { kind: 'draw'; start: Point }
     | { kind: 'move'; start: Point; origin: Rect }
-    | { kind: 'resize'; start: Point; origin: Rect; handle: Handle }
+    /** `keep`: annotations the resize may not cut, so none ends up outside the selection. */
+    | { kind: 'resize'; start: Point; origin: Rect; handle: Handle; keep: Rect | null }
 
   /** Show the pixel loupe while dragging. Defaults to the magnifier setting. */
   let { magnifier }: { magnifier?: boolean } = $props()
@@ -81,7 +84,6 @@
   let notice = $state<string | null>(null)
   let noticeTimer: ReturnType<typeof setTimeout> | undefined
   let annotator = $state<ReturnType<typeof Annotator>>()
-  let annotated = $state(false)
 
   const physical = $derived(selection && toPhysical(selection, scale, frame))
   const cursor = $derived(
@@ -150,12 +152,9 @@
    */
   function select(next: Rect | null) {
     const rect = next && !isEmpty(toPhysical(next, scale, frame)) ? next : null
-    // Resizing an annotated selection to nothing keeps the last size, so nothing is lost.
-    if (!rect && annotated && drag?.kind === 'resize') return
     const active = rect !== null
     if (active !== (selection !== null)) {
-      const fresh = drag?.kind === 'draw'
-      void emit(SELECTED, { label: view.label, active, fresh } satisfies Selected)
+      void emit(SELECTED, { label: view.label, active } satisfies Selected)
     }
     selection = rect
   }
@@ -168,17 +167,20 @@
   }
 
   /**
-   * Esc from Rust: undo one thing here (the size edit, else the selection or drag) and say
-   * whether anything was undone. Rust closes the overlay when no page undid anything.
+   * Undoes one thing for Esc: the size edit, else one annotation step (the shape being drawn,
+   * a menu, the selected shape, the tool), else the selection or drag. Returns whether it did.
    */
-  function escape({ session, token }: EscapeEvent) {
-    let handled = true
-    if (annotator?.escape()) {
-      // The annotations undid one step: the shape drawn, a menu, the shape selection, a tool.
-    } else if (editing) editing = false
+  function undoOne(): boolean {
+    if (editing) editing = false
+    else if (annotator?.escape()) return true
     else if (selection || drag) clear()
-    else handled = false
-    void invoke('overlay_escaped', { session, token, handled })
+    else return false
+    return true
+  }
+
+  /** Esc from Rust. Rust closes the overlay when no page undid anything. */
+  function escape({ session, token }: EscapeEvent) {
+    void invoke('overlay_escaped', { session, token, handled: undoOne() })
   }
 
   function show(message: string) {
@@ -197,7 +199,7 @@
     busy = true
     try {
       const session = current
-      const marks = await annotator?.exportAnnotations(rect, scale.x)
+      const marks = await annotator?.exportAnnotations(rect, scale)
       const { body, headers } = outputRequest(session, rect, marks)
       await invoke(command, body, { headers })
     } catch (e) {
@@ -219,31 +221,26 @@
     notice = null
   }
 
-  /**
-   * ⌘ on macOS, Ctrl elsewhere, plus `key` (a Latin letter), with no other modifier. On a
-   * non-Latin layout the physical key counts, as in other apps.
-   */
-  function shortcut(e: KeyboardEvent, key: string) {
-    const mod = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
-    const latin = /^[a-z]$/i.test(e.key)
-    const pressed = latin ? e.key.toLowerCase() === key : e.code === `Key${key.toUpperCase()}`
-    return mod && !e.altKey && !e.shiftKey && pressed
-  }
-
   const at = (e: PointerEvent): Point => ({ x: e.clientX, y: e.clientY })
+
+  // Keys go to the display pressed, whoever handles the press (the annotations stop theirs).
+  function onpointerdowncapture(e: PointerEvent) {
+    if (e.button !== 0 || frame.width === 0) return
+    view.setFocus().catch((err) => console.error('could not focus the overlay', err))
+  }
 
   function onpointerdown(e: PointerEvent) {
     if (e.button !== 0 || frame.width === 0) return
-    // Keys go to the display with the selection.
-    view.setFocus().catch((err) => console.error('could not focus the overlay', err))
     const start = at(e)
     pointer = start
     const handle = (e.target as Element).closest<HTMLElement>('[data-handle]')?.dataset.handle
     if (selection && handle) {
-      drag = { kind: 'resize', start, origin: selection, handle: handle as Handle }
+      const painted = annotator?.painted()
+      const keep = painted ? intersect(painted, selection) : null
+      drag = { kind: 'resize', start, origin: selection, handle: handle as Handle, keep }
     } else if (selection && contains(selection, start)) {
       drag = { kind: 'move', start, origin: selection }
-    } else if (annotated) {
+    } else if (annotator?.annotated()) {
       // A new selection would drop the annotations: ignore the press instead.
       return
     } else {
@@ -262,11 +259,10 @@
     const dx = pointer.x - drag.start.x
     const dy = pointer.y - drag.start.y
     if (drag.kind === 'move') return select(move(drag.origin, dx, dy, display))
-    const rect =
-      drag.kind === 'draw'
-        ? fromPoints(drag.start, pointer, display)
-        : resize(drag.origin, drag.handle, dx, dy, display)
-    select(rect)
+    if (drag.kind === 'draw') return select(fromPoints(drag.start, pointer, display))
+    const rect = resize(drag.origin, drag.handle, dx, dy, display)
+    // It cannot shrink past the annotations shown in it.
+    select(drag.keep ? union(rect, drag.keep) : rect)
   }
 
   function onpointerup() {
@@ -282,7 +278,8 @@
     }
     // Typing in the size badge: Enter applies the size there.
     if (e.target instanceof Element && e.target.closest('[data-size-badge]')) return
-    if (annotator?.key(e)) return
+    // An open toolbar menu owns the keyboard.
+    if (annotator?.menuOpen() || annotator?.key(e)) return
     if (!selection || !physical) return
     if (e.key === 'Enter' || shortcut(e, 'c')) {
       e.preventDefault()
@@ -312,10 +309,7 @@
       view.listen('overlay:closed', free),
       // A selection started on another display clears this one's, annotations included.
       listen<Selected>(SELECTED, ({ payload }) => {
-        if (payload.label === view.label || !payload.active || !payload.fresh) return
-        drag = null
-        selection = null
-        annotator?.reset()
+        if (payload.label !== view.label && payload.active) reset()
       }),
     ])
     // Asked only once the listeners are registered, so a frame sent while this window was
@@ -335,6 +329,7 @@
   style:cursor
   data-testid="overlay"
   role="presentation"
+  {onpointerdowncapture}
   {onpointerdown}
   {onpointermove}
   {onpointerup}
@@ -343,7 +338,6 @@
   <canvas bind:this={canvas} width="0" height="0"></canvas>
   <Annotator
     bind:this={annotator}
-    bind:annotated
     {selection}
     {display}
     {scale}
