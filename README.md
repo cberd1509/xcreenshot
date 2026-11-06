@@ -19,8 +19,7 @@ Press a shortcut, drag, annotate, done. Nothing ever leaves your computer.
 [![Svelte](https://img.shields.io/badge/Svelte-5-FF3E00?logo=svelte&logoColor=white)](https://svelte.dev)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-<!-- TODO: replace with a real screenshot of the capture overlay (docs/screenshots/overlay.png) -->
-<img src="https://placehold.co/1200x720/18181b/fafafa?text=Screenshot+coming+soon" alt="xcreenshot capture overlay with annotations" width="820" />
+<img src="docs/media/overlay.png" alt="xcreenshot capture overlay with annotations" width="820" />
 
 </div>
 
@@ -35,9 +34,8 @@ Press a shortcut, drag, annotate, done. Nothing ever leaves your computer.
 - **Private by design.** No accounts, no tracking, no uploads.
 - **Tiny and native-feeling.** A small menu bar app, not a browser in disguise.
 
-<!-- TODO: short demo GIF (docs/screenshots/demo.gif) -->
 <p align="center">
-  <img src="https://placehold.co/800x450/f4f4f5/18181b?text=Demo+GIF+coming+soon" alt="Demo: capture, annotate and copy" width="640" />
+  <img src="docs/media/demo.gif" alt="Demo: capture, annotate and copy" width="640" />
 </p>
 
 ## Install
@@ -75,9 +73,13 @@ On first launch, macOS asks for **Screen Recording** permission. xcreenshot walk
 
 > **Windows 11 tip:** to use <kbd>PrtSc</kbd> alone, turn off _Settings › Accessibility › Keyboard › Use the Print screen key to open screen capture_, then pick <kbd>PrtSc</kbd> in Settings.
 
+<p align="center">
+  <img src="docs/media/settings.png" alt="xcreenshot Settings" width="560" />
+</p>
+
 ## Privacy
 
-Your screenshots stay on your computer. xcreenshot has no accounts, no analytics and no telemetry, and it never uploads anything. The only network requests are update checks and downloads from GitHub Releases; a switch to turn them off is coming with Settings. See [PRIVACY.md](PRIVACY.md).
+Your screenshots stay on your computer. xcreenshot has no accounts, no analytics and no telemetry, and it never uploads anything. The only network requests are update checks and downloads from GitHub Releases. Automatic update checks can be turned off in Settings. See [PRIVACY.md](PRIVACY.md).
 
 ## Build from source
 

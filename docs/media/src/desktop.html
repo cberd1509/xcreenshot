@@ -1,0 +1,367 @@
+<!doctype html>
+<!-- A made-up desktop, rendered at 1440 x 900 @2x as the frozen frame of the README media. -->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Demo desktop</title>
+    <link rel="stylesheet" href="/node_modules/@fontsource-variable/inter/index.css" />
+    <link rel="stylesheet" href="/node_modules/@fontsource-variable/jetbrains-mono/index.css" />
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        width: 1440px;
+        height: 900px;
+        overflow: hidden;
+        position: relative;
+        font-family: 'Inter Variable', system-ui, sans-serif;
+        color: #18181b;
+        background:
+          radial-gradient(1200px 800px at 85% 110%, #f472b6 0%, transparent 60%),
+          radial-gradient(1000px 700px at 10% 100%, #6366f1 0%, transparent 65%),
+          radial-gradient(900px 600px at 60% -10%, #38bdf8 0%, transparent 60%),
+          linear-gradient(135deg, #312e81 0%, #4c1d95 50%, #831843 100%);
+      }
+      .menubar {
+        position: absolute;
+        inset: 0 0 auto 0;
+        height: 28px;
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        padding: 0 18px;
+        font-size: 13px;
+        color: #fff;
+        background: rgb(15 23 42 / 0.35);
+        backdrop-filter: blur(20px);
+      }
+      .menubar b {
+        font-weight: 700;
+      }
+      .menubar .right {
+        margin-left: auto;
+        display: flex;
+        gap: 16px;
+        align-items: center;
+      }
+      .window {
+        position: absolute;
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow:
+          0 30px 70px rgb(0 0 0 / 0.4),
+          0 0 0 1px rgb(0 0 0 / 0.15);
+      }
+      .lights {
+        display: flex;
+        gap: 8px;
+      }
+      .lights span {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+      }
+      .lights span:nth-child(1) {
+        background: #ff5f57;
+      }
+      .lights span:nth-child(2) {
+        background: #febc2e;
+      }
+      .lights span:nth-child(3) {
+        background: #28c840;
+      }
+
+      /* Browser with a settings page. */
+      .browser {
+        left: 90px;
+        top: 74px;
+        width: 860px;
+        height: 640px;
+        background: #fff;
+      }
+      .browser .bar {
+        height: 44px;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 0 14px;
+        background: #f4f4f5;
+        border-bottom: 1px solid #e4e4e7;
+      }
+      .url {
+        margin: 0 auto;
+        width: 440px;
+        height: 28px;
+        border-radius: 8px;
+        background: #fff;
+        border: 1px solid #e4e4e7;
+        font-size: 12px;
+        color: #52525b;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+      }
+      .side {
+        position: absolute;
+        left: 0;
+        top: 44px;
+        bottom: 0;
+        width: 190px;
+        padding: 20px 12px;
+        background: #fafafa;
+        border-right: 1px solid #e4e4e7;
+        font-size: 13px;
+        color: #52525b;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: 700;
+        color: #18181b;
+        margin: 0 8px 18px;
+      }
+      .brand i {
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+        background: linear-gradient(135deg, #22c55e, #0ea5e9);
+      }
+      .side div.item {
+        padding: 7px 10px;
+        border-radius: 6px;
+        margin-bottom: 2px;
+      }
+      .side div.on {
+        background: #e4e4e7;
+        color: #18181b;
+        font-weight: 500;
+      }
+      .main {
+        position: absolute;
+        left: 190px;
+        top: 44px;
+        right: 0;
+        bottom: 0;
+        padding: 30px 40px;
+      }
+      h1 {
+        font-size: 22px;
+        margin: 0 0 6px;
+      }
+      .sub {
+        font-size: 13px;
+        color: #71717a;
+        margin-bottom: 24px;
+      }
+      .card {
+        border: 1px solid #e4e4e7;
+        border-radius: 10px;
+        padding: 20px 24px;
+        margin-bottom: 18px;
+      }
+      .card h2 {
+        font-size: 15px;
+        margin: 0 0 16px;
+      }
+      label {
+        display: block;
+        font-size: 12px;
+        font-weight: 500;
+        color: #3f3f46;
+        margin-bottom: 6px;
+      }
+      .field {
+        height: 36px;
+        border: 1px solid #e4e4e7;
+        border-radius: 6px;
+        padding: 0 12px;
+        display: flex;
+        align-items: center;
+        font-size: 13px;
+        margin-bottom: 16px;
+      }
+      .row {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+      .btn {
+        height: 34px;
+        padding: 0 14px;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: 500;
+        display: flex;
+        align-items: center;
+        border: 1px solid #e4e4e7;
+      }
+      .btn.dark {
+        background: #18181b;
+        color: #fff;
+        border-color: #18181b;
+      }
+      .toggle {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 13px;
+        padding: 6px 0;
+      }
+      .toggle small {
+        display: block;
+        color: #71717a;
+        font-size: 12px;
+        margin-top: 2px;
+      }
+      .switch {
+        width: 34px;
+        height: 20px;
+        border-radius: 10px;
+        background: #18181b;
+        position: relative;
+      }
+      .switch::after {
+        content: '';
+        position: absolute;
+        right: 2px;
+        top: 2px;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: #fff;
+      }
+      .switch.off {
+        background: #d4d4d8;
+      }
+      .switch.off::after {
+        right: auto;
+        left: 2px;
+      }
+
+      /* Code editor. */
+      .editor {
+        left: 975px;
+        top: 150px;
+        width: 420px;
+        height: 520px;
+        background: #0f172a;
+        font-family: 'JetBrains Mono Variable', ui-monospace, monospace;
+        font-size: 12px;
+        line-height: 22px;
+      }
+      .editor .bar {
+        height: 38px;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 0 14px;
+        background: #1e293b;
+        color: #94a3b8;
+        font-family: 'Inter Variable', system-ui, sans-serif;
+      }
+      .tab {
+        padding: 4px 10px;
+        border-radius: 6px;
+        background: #0f172a;
+        color: #e2e8f0;
+      }
+      pre {
+        margin: 0;
+        padding: 14px 0;
+        color: #cbd5e1;
+        counter-reset: line;
+      }
+      pre span.l {
+        display: block;
+        padding-left: 52px;
+        position: relative;
+      }
+      pre span.l::before {
+        counter-increment: line;
+        content: counter(line);
+        position: absolute;
+        left: 0;
+        width: 36px;
+        text-align: right;
+        color: #475569;
+      }
+      .k {
+        color: #c084fc;
+      }
+      .f {
+        color: #7dd3fc;
+      }
+      .s {
+        color: #86efac;
+      }
+      .c {
+        color: #64748b;
+      }
+      .n {
+        color: #fdba74;
+      }
+
+    </style>
+  </head>
+  <body>
+    <div class="menubar">
+      <b>Files</b><span>File</span><span>Edit</span><span>View</span><span>Window</span
+      ><span>Help</span>
+      <div class="right"><span>Wi-Fi</span><span>Thu 9:41</span></div>
+    </div>
+
+    <div class="window browser">
+      <div class="bar">
+        <div class="lights"><span></span><span></span><span></span></div>
+        <div class="url">app.example.com/settings</div>
+      </div>
+      <div class="side">
+        <div class="brand"><i></i>Fieldwork</div>
+        <div class="item">Overview</div>
+        <div class="item">Projects</div>
+        <div class="item">Reports</div>
+        <div class="item on">Settings</div>
+        <div class="item">Members</div>
+        <div class="item">Billing</div>
+      </div>
+      <div class="main">
+        <h1>Project settings</h1>
+        <div class="sub">Manage your project's name, contact and notifications.</div>
+        <div class="card" data-spot="general">
+          <h2>General</h2>
+          <label>Project name</label>
+          <div class="field">field-notes</div>
+          <label>Contact email</label>
+          <div class="field" data-spot="email">alex.morgan@example.com</div>
+          <div class="row">
+            <div class="btn">Cancel</div>
+            <div class="btn dark" data-spot="save">Save changes</div>
+          </div>
+        </div>
+        <div class="card" data-spot="notifications">
+          <h2>Notifications</h2>
+          <div class="toggle">
+            <div>Weekly summary<small>A short report every Monday.</small></div>
+            <div class="switch"></div>
+          </div>
+          <div class="toggle">
+            <div>Build failures<small>Email me when a build fails.</small></div>
+            <div class="switch off"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="window editor">
+      <div class="bar">
+        <div class="lights"><span></span><span></span><span></span></div>
+        <span class="tab">report.ts</span><span>utils.ts</span>
+      </div>
+      <pre><span class="l"><span class="k">import</span> { sum } <span class="k">from</span> <span class="s">'./utils'</span></span><span class="l"> </span><span class="l"><span class="k">export type</span> Entry = { day: <span class="f">string</span>; hours: <span class="f">number</span> }</span><span class="l"> </span><span class="l"><span class="c">// Totals per week, newest first.</span></span><span class="l"><span class="k">export function</span> <span class="f">weekly</span>(entries: Entry[]) {</span><span class="l">  <span class="k">const</span> weeks = <span class="k">new</span> Map&lt;<span class="f">string</span>, <span class="f">number</span>[]&gt;()</span><span class="l">  <span class="k">for</span> (<span class="k">const</span> e <span class="k">of</span> entries) {</span><span class="l">    <span class="k">const</span> key = e.day.<span class="f">slice</span>(<span class="n">0</span>, <span class="n">7</span>)</span><span class="l">    weeks.<span class="f">set</span>(key, [...(weeks.<span class="f">get</span>(key) ?? []), e.hours])</span><span class="l">  }</span><span class="l">  <span class="k">return</span> [...weeks]</span><span class="l">    .<span class="f">map</span>(([week, h]) =&gt; ({ week, total: <span class="f">sum</span>(h) }))</span><span class="l">    .<span class="f">sort</span>((a, b) =&gt; b.week.<span class="f">localeCompare</span>(a.week))</span><span class="l">}</span><span class="l"> </span><span class="l"><span class="k">export const</span> LIMIT = <span class="n">40</span></span></pre>
+    </div>
+  </body>
+</html>
