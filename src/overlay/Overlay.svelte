@@ -3,7 +3,7 @@
   import { emit, listen } from '@tauri-apps/api/event'
   import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
   import { onMount } from 'svelte'
-  import { settings } from '$lib/settings.svelte'
+  import { isMac, settings } from '$lib/settings.svelte'
   import {
     CURSORS,
     badgePosition,
@@ -56,6 +56,8 @@
   // The latest session asked to draw, so a show event and the load check never draw twice
   // and an older fetch never paints over a newer one.
   let current = -1
+  // Bumped when the overlay closes, so a draw still fetching its frame never paints after.
+  let generation = 0
   /** The drawn frame: its size in physical px and its display's size in logical px. */
   let frame = $state<Size>({ width: 0, height: 0 })
   let display = $state<Size>({ width: 0, height: 0 })
@@ -70,6 +72,11 @@
   let pointer = $state<Point>({ x: 0, y: 0 })
   let badge = $state<Size>({ width: 0, height: 0 })
   let loupe = $state<Size>({ width: 0, height: 0 })
+  /** A copy or save is running: keys wait for it. */
+  let busy = false
+  /** A short error message, shown for a few seconds. */
+  let notice = $state<string | null>(null)
+  let noticeTimer: ReturnType<typeof setTimeout> | undefined
 
   const physical = $derived(selection && toPhysical(selection, scale, frame))
   const cursor = $derived(
@@ -100,13 +107,14 @@
     // Session ids only grow: an older (or the same) session never redraws.
     if (info.session <= current) return
     current = info.session
+    const drawing = generation
     escapeShortcut = info.escapeShortcut
     reset()
     try {
       const data = await invoke<ArrayBuffer | Uint8Array<ArrayBuffer>>('overlay_frame', {
         session: info.session,
       })
-      if (current !== info.session) return
+      if (current !== info.session || generation !== drawing) return
       // Raw RGBA. Tauri returns an ArrayBuffer; accept a view too.
       const pixels =
         data instanceof ArrayBuffer
@@ -161,21 +169,50 @@
     void invoke('overlay_escaped', { session, token, handled })
   }
 
-  function confirm(rect: Rect) {
-    const session = current
-    invoke('overlay_confirm', { session, rect }).catch((e) => {
-      console.error('could not confirm the selection', e)
-      close(session)
-    })
+  function show(message: string) {
+    clearTimeout(noticeTimer)
+    notice = message
+    noticeTimer = setTimeout(() => (notice = null), 3000)
   }
 
-  // Frees the frame once the window is hidden after a capture. The next frame is drawn
-  // before the window shows again, so nothing stale or empty is ever seen.
-  function onvisibilitychange() {
-    if (!document.hidden) return
+  /**
+   * Copies (closing the overlay) or saves (Rust hides the windows while the Save dialog is
+   * open, then closes, or shows them again on cancel). On failure the overlay stays open and
+   * says so.
+   */
+  async function finish(command: 'overlay_copy' | 'overlay_save', rect: Rect) {
+    if (busy) return
+    busy = true
+    try {
+      await invoke(command, { session: current, rect })
+    } catch (e) {
+      console.error(`${command} failed`, e)
+      show(command === 'overlay_copy' ? "Couldn't copy" : "Couldn't save")
+    } finally {
+      busy = false
+    }
+  }
+
+  // The overlay closed: free the frame. The next frame is drawn before the window shows
+  // again, so nothing stale or empty is ever seen. Hiding for the Save dialog keeps it.
+  function free() {
+    generation++
     canvas.width = 0
     canvas.height = 0
     reset()
+    clearTimeout(noticeTimer)
+    notice = null
+  }
+
+  /**
+   * ⌘ on macOS, Ctrl elsewhere, plus `key` (a Latin letter), with no other modifier. On a
+   * non-Latin layout the physical key counts, as in other apps.
+   */
+  function shortcut(e: KeyboardEvent, key: string) {
+    const mod = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
+    const latin = /^[a-z]$/i.test(e.key)
+    const pressed = latin ? e.key.toLowerCase() === key : e.code === `Key${key.toUpperCase()}`
+    return mod && !e.altKey && !e.shiftKey && pressed
   }
 
   const at = (e: PointerEvent): Point => ({ x: e.clientX, y: e.clientY })
@@ -228,9 +265,14 @@
     // Typing in the size badge: Enter applies the size there.
     if (e.target instanceof Element && e.target.closest('[data-size-badge]')) return
     if (!selection || !physical) return
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' || shortcut(e, 'c')) {
       e.preventDefault()
-      confirm(physical)
+      void finish('overlay_copy', physical)
+      return
+    }
+    if (shortcut(e, 's')) {
+      e.preventDefault()
+      void finish('overlay_save', physical)
       return
     }
     const moved = nudge(selection, e.key, e.shiftKey ? 10 : 1, scale, display)
@@ -248,6 +290,7 @@
     const listeners = Promise.all([
       view.listen<FrameInfo>('overlay:show', (e) => void draw(e.payload)),
       view.listen<EscapeEvent>('overlay:escape', (e) => escape(e.payload)),
+      view.listen('overlay:closed', free),
       // A selection started on another display clears this one's.
       listen<Selected>(SELECTED, ({ payload }) => {
         if (payload.label === view.label || !payload.active) return
@@ -265,7 +308,6 @@
 </script>
 
 <svelte:window {onkeydown} />
-<svelte:document {onvisibilitychange} />
 
 <div
   class="root"
@@ -306,6 +348,14 @@
       bind:offsetHeight={loupe.height}
     >
       <Magnifier source={canvas} {frame} at={loupeAt} />
+    </div>
+  {/if}
+  {#if notice}
+    <div
+      class="pointer-events-none fixed bottom-8 left-1/2 -translate-x-1/2 rounded-md bg-popover/90 px-3 py-2 text-sm text-popover-foreground shadow-md"
+      role="alert"
+    >
+      {notice}
     </div>
   {/if}
 </div>

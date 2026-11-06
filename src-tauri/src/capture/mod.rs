@@ -56,6 +56,12 @@ pub enum CaptureError {
     EmptySelection,
     Backend(String),
     Encode(String),
+    /// Copying the crop to the clipboard failed.
+    Clipboard(String),
+    /// Writing the saved file failed.
+    Write(String),
+    /// The Save dialog failed (not a cancel).
+    Dialog(String),
 }
 
 impl CaptureError {
@@ -67,6 +73,9 @@ impl CaptureError {
             Self::EmptySelection => "emptySelection",
             Self::Backend(_) => "backend",
             Self::Encode(_) => "encode",
+            Self::Clipboard(_) => "clipboard",
+            Self::Write(_) => "write",
+            Self::Dialog(_) => "dialog",
         }
     }
 }
@@ -80,6 +89,9 @@ impl fmt::Display for CaptureError {
             Self::EmptySelection => f.write_str("the selection is empty"),
             Self::Backend(e) => write!(f, "screen capture failed: {e}"),
             Self::Encode(e) => write!(f, "PNG encoding failed: {e}"),
+            Self::Clipboard(e) => write!(f, "could not copy to the clipboard: {e}"),
+            Self::Write(e) => write!(f, "could not save the file: {e}"),
+            Self::Dialog(e) => write!(f, "the Save dialog failed: {e}"),
         }
     }
 }
@@ -206,10 +218,12 @@ fn keep_captured(
     Ok(frames)
 }
 
-/// Encodes the final crop as PNG for saving or copying.
+/// Encodes the crop as PNG for copy and save. `Fast` compression: on a full Retina display it
+/// is several times faster than any level that is smaller, and those save only a few percent
+/// (see `docs/spikes/capture.md`). The PNG holds only the pixels: no text or EXIF chunks.
 pub fn encode_png(image: &RgbaImage) -> Result<Vec<u8>, CaptureError> {
     let mut out = Vec::new();
-    PngEncoder::new_with_quality(&mut out, CompressionType::Default, FilterType::Adaptive)
+    PngEncoder::new_with_quality(&mut out, CompressionType::Fast, FilterType::Adaptive)
         .write_image(
             image.as_raw(),
             image.width(),
@@ -492,11 +506,22 @@ mod tests {
             CaptureError::NoDisplays,
             CaptureError::EmptySelection,
             CaptureError::Encode("y".into()),
+            CaptureError::Clipboard("z".into()),
+            CaptureError::Write("w".into()),
+            CaptureError::Dialog("d".into()),
         ]
         .map(|e| json(e)["kind"].as_str().unwrap().to_owned());
         assert_eq!(
             kinds,
-            ["emptyImage", "noDisplays", "emptySelection", "encode"]
+            [
+                "emptyImage",
+                "noDisplays",
+                "emptySelection",
+                "encode",
+                "clipboard",
+                "write",
+                "dialog"
+            ]
         );
     }
 

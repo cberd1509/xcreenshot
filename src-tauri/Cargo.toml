@@ -17,21 +17,29 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.7.4", features = [] }
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 log = "0.4"
-serde = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tauri = { version = "2.12.5", features = ["tray-icon"] }
+tauri-plugin-dialog = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-log = "2"
 tauri-plugin-single-instance = "2"
+tauri-plugin-store = "2"
+tempfile = "3"
 xcap = "0.9.8"
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+tauri-plugin-clipboard-manager = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 open = "5.4.5"
 objc2 = "0.6.5"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSResponder", "NSWindow"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSBitmapImageRep", "NSImageRep", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSWindow"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSString"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGDirectDisplay", "CGDisplayConfiguration", "CGWindow"] }
 
 [dev-dependencies]
-serde_json = "1"
 tauri = { version = "2.12.5", features = ["test"] }

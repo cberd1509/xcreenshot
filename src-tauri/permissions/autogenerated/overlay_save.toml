@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-overlay-save"
+description = "Enables the overlay_save command without any pre-configured scope."
+commands.allow = ["overlay_save"]
+
+[[permission]]
+identifier = "deny-overlay-save"
+description = "Denies the overlay_save command without any pre-configured scope."
+commands.deny = ["overlay_save"]

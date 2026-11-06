@@ -1,19 +1,20 @@
 //! Tauri glue for the overlay.
 //!
-//! Hotkey (main thread): claim the [`Phase`], register Esc, start the capture on a worker
+//! Hotkey (main thread): claim the [`Phase`], take Esc, start the capture on a worker
 //! thread and place the hidden windows while it runs. Capture done (worker): open the session
 //! and send `overlay:show` with each frame's size. Each window fetches its frame
 //! (`overlay_frame`: a copy of the raw RGBA buffer), draws it and calls `overlay_painted`,
 //! which shows that window. Esc goes to every page (`overlay:escape` with a token); each
 //! answers `overlay_escaped`, saying whether it undid something (a size edit, a selection).
 //! Rust closes when every shown page had nothing to undo, or when no page answers in time.
-//! Enter sends `overlay_confirm`. `close_overlay`, closing a window or the watchdog hide
-//! everything; calls from a page only ever close their own session.
-//! Window and shortcut calls stay on the main thread.
+//! Copy and save are in `export.rs`. `close_overlay`, closing a window or the watchdog hide
+//! everything and tell the pages to free their frames (`overlay:closed`); calls from a page
+//! only ever close their own session.
+//! Rust holds Esc exactly when [`Phase::wants_escape`] says so: [`sync_escape`] runs after every
+//! phase change. Window and shortcut calls stay on the main thread.
 
 use super::{FrameInfo, Phase, diff, display_at, display_id, label};
-use crate::capture::{self, Bounds, CaptureError, Display, DisplayFrame, PixelRect};
-use image::RgbaImage;
+use crate::capture::{self, Bounds, CaptureError, Display, DisplayFrame};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -26,6 +27,8 @@ use tauri::{
 use tauri_plugin_global_shortcut::{GlobalShortcut, ShortcutState};
 
 const SHOW_EVENT: &str = "overlay:show";
+/// The overlay closed: the pages free their frames and selections.
+const CLOSED_EVENT: &str = "overlay:closed";
 /// Esc, forwarded to every overlay page.
 const ESCAPE_EVENT: &str = "overlay:escape";
 const ESCAPE: &str = "Escape";
@@ -42,16 +45,50 @@ static NEXT_ESCAPE: AtomicU64 = AtomicU64::new(1);
 #[derive(Default)]
 pub struct Overlay {
     phase: Mutex<Phase>,
+    /// The displays whose overlay window is on screen, as Rust last showed or hid them.
+    shown: Mutex<Vec<u32>>,
 }
 
 impl Overlay {
-    fn phase(&self) -> MutexGuard<'_, Phase> {
+    pub(super) fn phase(&self) -> MutexGuard<'_, Phase> {
         self.phase.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
 pub(super) fn phase<R: Runtime>(app: &AppHandle<R>) -> MutexGuard<'_, Phase> {
     app.state::<Overlay>().inner().phase()
+}
+
+/// Shows or hides an overlay window and records which are on screen ([`shown`]).
+fn set_shown<R: Runtime>(window: &WebviewWindow<R>, on: bool) -> tauri::Result<()> {
+    if on {
+        window.show()?;
+    } else {
+        window.hide()?;
+    }
+    if let Some(display) = display_id(window.label()) {
+        let overlay = window.state::<Overlay>();
+        let mut shown = overlay.shown.lock().unwrap_or_else(PoisonError::into_inner);
+        shown.retain(|&d| d != display);
+        if on {
+            shown.push(display);
+        }
+    }
+    Ok(())
+}
+
+/// The displays whose overlay window is on screen. Tests check it; the mock runtime has no
+/// visibility of its own.
+#[cfg(test)]
+pub(super) fn shown<R: Runtime>(app: &AppHandle<R>) -> Vec<u32> {
+    let overlay = app.state::<Overlay>();
+    let mut shown = overlay
+        .shown
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    shown.sort_unstable();
+    shown
 }
 
 /// The OS side of a capture: permission, listing displays and grabbing them. Faked in tests.
@@ -132,7 +169,7 @@ fn start_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) -> Option<u64
         return None;
     };
     // Before the capture, so the pages learn whether Rust owns Esc.
-    let escape_shortcut = set_escape(app, true);
+    let escape_shortcut = sync_escape(app);
     let worker = app.clone();
     let listed = displays.clone();
     std::thread::spawn(move || {
@@ -170,6 +207,9 @@ fn finish<R: Runtime>(
     let Some(shows) = phase(app).open(session, frames, focus, escape_shortcut) else {
         return;
     };
+    on_main(app, |app| {
+        sync_escape(app);
+    });
     for (display, info) in shows {
         if let Err(e) = app.emit_to(label(display).as_str(), SHOW_EVENT, info) {
             log::warn!("could not tell overlay {display} to draw: {e}");
@@ -182,7 +222,10 @@ fn finish<R: Runtime>(
     });
 }
 
-fn on_main<R: Runtime>(app: &AppHandle<R>, f: impl FnOnce(&AppHandle<R>) + Send + 'static) {
+pub(super) fn on_main<R: Runtime>(
+    app: &AppHandle<R>,
+    f: impl FnOnce(&AppHandle<R>) + Send + 'static,
+) {
     let handle = app.clone();
     if let Err(e) = app.run_on_main_thread(move || f(&handle)) {
         log::error!("could not run on the main thread: {e}");
@@ -205,17 +248,24 @@ pub fn close_session<R: Runtime>(app: &AppHandle<R>, session: u64) {
     }
 }
 
-/// Hides every overlay, frees the frames, releases Esc and allows the next capture.
-/// Main thread only. Safe to call twice.
+/// Hides every overlay, frees the frames, releases Esc and allows the next capture. Does
+/// nothing while the Save dialog is open: the save ends the session itself, so a save is never
+/// lost to a close. Main thread only. Safe to call twice.
 pub fn close<R: Runtime>(app: &AppHandle<R>) {
-    *phase(app) = Phase::Idle;
-    set_escape(app, false);
+    {
+        let mut phase = phase(app);
+        if phase.saving() {
+            log::info!("not closing the overlay while the Save dialog is open");
+            return;
+        }
+        *phase = Phase::Idle;
+    }
+    sync_escape(app);
+    hide(app);
     let windows = app.webview_windows();
-    for (label, window) in windows.iter().filter(|(l, _)| display_id(l).is_some()) {
-        if let Err(e) = window.hide() {
-            // A window left on screen would block input: remove it; `sync` rebuilds it.
-            log::warn!("could not hide {label}, destroying it: {e}");
-            let _ = window.destroy();
+    for label in windows.keys().filter(|l| display_id(l).is_some()) {
+        if let Err(e) = app.emit_to(label.as_str(), CLOSED_EVENT, ()) {
+            log::warn!("could not tell {label} to free its frame: {e}");
         }
     }
     // Give focus back to the app the user was in, unless Settings is open.
@@ -228,10 +278,57 @@ pub fn close<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// Hides every overlay window, keeping the session (the Save dialog hides them this way).
+/// Main thread only.
+pub(super) fn hide<R: Runtime>(app: &AppHandle<R>) {
+    for (label, window) in app.webview_windows() {
+        if display_id(&label).is_some()
+            && let Err(e) = set_shown(&window, false)
+        {
+            // A window left on screen would block input: remove it; `sync` rebuilds it.
+            log::warn!("could not hide {label}, destroying it: {e}");
+            let _ = window.destroy();
+        }
+    }
+}
+
+/// Shows `displays` again after [`hide`], focusing `focus`, and takes Esc back if Rust held it.
+/// Closes the overlay instead if that fails, so it never stays open without a way out.
+/// Main thread only.
+pub(super) fn reshow<R: Runtime>(app: &AppHandle<R>, displays: &[u32], focus: u32) {
+    if !sync_escape(app) {
+        log::error!("could not take Esc back; closing the overlay");
+        return close(app);
+    }
+    for &display in displays {
+        let shown = app
+            .get_webview_window(&label(display))
+            .map(|w| set_shown(&w, true).map(|()| w));
+        match shown {
+            Some(Ok(w)) if display == focus => {
+                let _ = w.set_focus();
+            }
+            Some(Ok(_)) => {}
+            Some(Err(e)) => {
+                log::error!("could not show the overlay again: {e}");
+                return close(app);
+            }
+            None => {
+                log::error!("overlay {display} is gone; closing the overlay");
+                return close(app);
+            }
+        }
+    }
+}
+
 /// Forwards Esc to the pages, which know what to undo. Closes if nothing is shown yet, or if
 /// no page answers within `timeout` (a hung page never locks the user out). Returns the Esc
 /// token if it was forwarded.
 fn escape<R: Runtime>(app: &AppHandle<R>, timeout: Duration) -> Option<u64> {
+    // The Save dialog is open: Esc is the dialog's.
+    if phase(app).saving() {
+        return None;
+    }
     let token = NEXT_ESCAPE.fetch_add(1, Ordering::Relaxed);
     let forwarded = phase(app).forward_escape(token);
     let Some(session) = forwarded else {
@@ -267,23 +364,44 @@ struct EscapeEvent {
     token: u64,
 }
 
-/// Esc belongs to the app while the overlay is open, so it works even if the page is broken.
-/// Returns whether the shortcut is now registered (on) or released (off).
-fn set_escape<R: Runtime>(app: &AppHandle<R>, on: bool) -> bool {
-    // Missing only in tests, where the plugin is not installed.
+/// Takes (`true`) or releases (`false`) the Esc shortcut and returns whether that worked. The
+/// app manages [`global_escape`]; tests manage a stand-in, since the OS allows one shortcut
+/// manager per process.
+pub struct EscapeKey<R: Runtime>(pub Box<SetEscape<R>>);
+
+type SetEscape<R> = dyn Fn(&AppHandle<R>, bool) -> bool + Send + Sync;
+
+/// Esc as a global shortcut, so it works even if the page is broken.
+pub fn global_escape<R: Runtime>() -> EscapeKey<R> {
+    EscapeKey(Box::new(set_global_escape))
+}
+
+/// Holds Esc exactly when the phase wants it ([`Phase::wants_escape`]). Returns whether Esc is
+/// where the phase wants it. Call after every phase change. Main thread only.
+pub(super) fn sync_escape<R: Runtime>(app: &AppHandle<R>) -> bool {
+    let wants = phase(app).wants_escape();
+    match app.try_state::<EscapeKey<R>>() {
+        Some(key) => (key.0)(app, wants),
+        // Only in tests without Esc.
+        None => !wants,
+    }
+}
+
+fn set_global_escape<R: Runtime>(app: &AppHandle<R>, on: bool) -> bool {
     let Some(shortcuts) = app.try_state::<GlobalShortcut<R>>() else {
         return false;
     };
+    if on == shortcuts.is_registered(ESCAPE) {
+        return true;
+    }
     let result = if on {
         shortcuts.on_shortcut(ESCAPE, |app, _, event| {
             if event.state() == ShortcutState::Pressed {
                 let _ = escape(app, ESCAPE_TIMEOUT);
             }
         })
-    } else if shortcuts.is_registered(ESCAPE) {
-        shortcuts.unregister(ESCAPE)
     } else {
-        Ok(())
+        shortcuts.unregister(ESCAPE)
     };
     if let Err(e) = result {
         log::warn!("could not update the Esc shortcut: {e}");
@@ -446,42 +564,6 @@ pub(crate) fn overlay_escape<R: Runtime>(app: AppHandle<R>) {
     let _ = escape(&app, ESCAPE_TIMEOUT);
 }
 
-/// Enter: crops the selection (native pixels on the calling window's display, as the page's
-/// size badge showed it) from the original frame and closes the overlay. Copy and save come
-/// in #12; for now the crop is only logged. An empty rect is an error and closes nothing.
-#[tauri::command]
-pub(crate) fn overlay_confirm<R: Runtime>(
-    window: WebviewWindow<R>,
-    state: tauri::State<'_, Overlay>,
-    session: u64,
-    rect: PixelRect,
-) -> Result<(), CaptureError> {
-    let Some(image) = crop_selection(&window, &state, session, rect)? else {
-        return Ok(());
-    };
-    log::info!(
-        "confirmed a {}x{} px selection on {} ({rect:?})",
-        image.width(),
-        image.height(),
-        window.label()
-    );
-    close_session(window.app_handle(), session);
-    Ok(())
-}
-
-/// The confirmed crop, or `None` if the session or window is not an open overlay.
-fn crop_selection<R: Runtime>(
-    window: &WebviewWindow<R>,
-    state: &Overlay,
-    session: u64,
-    rect: PixelRect,
-) -> Result<Option<RgbaImage>, CaptureError> {
-    let frame = display_id(window.label()).and_then(|d| state.phase().image(session, d));
-    frame
-        .map(|frame| capture::crop_pixels(&frame, rect))
-        .transpose()
-}
-
 /// The window drew its frame: show it (only if its session is still open), focus the
 /// display under the cursor, and log the time on the first paint.
 #[tauri::command]
@@ -496,8 +578,11 @@ pub(crate) fn overlay_painted<R: Runtime>(
     let Some(paint) = state.phase().painted(session, display) else {
         return;
     };
+    if paint.hidden {
+        return;
+    }
     let app = window.app_handle();
-    if let Err(e) = window.show() {
+    if let Err(e) = set_shown(&window, true) {
         log::error!("could not show the overlay: {e}");
         return close(app);
     }
@@ -509,21 +594,21 @@ pub(crate) fn overlay_painted<R: Runtime>(
     }
 }
 
-/// The page gave up on `session` (it could not draw or confirm).
+/// The page gave up on `session` (it could not draw its frame).
 #[tauri::command]
 pub(crate) fn close_overlay<R: Runtime>(app: AppHandle<R>, session: u64) {
     close_session(&app, session);
 }
 
 #[cfg(test)]
-mod tests {
-    use super::super::tests::{frame, px};
+pub(super) mod tests {
+    use super::super::tests::frame;
     use super::*;
     use std::sync::mpsc;
     use tauri::ipc::{InvokeResponseBody, IpcResponse};
     use tauri::test::{MockRuntime, mock_builder, mock_context, noop_assets};
 
-    type Handle = AppHandle<MockRuntime>;
+    pub(crate) type Handle = AppHandle<MockRuntime>;
 
     /// Displays `ids`. Its capture waits for the test: `true` captures, `false` fails.
     struct Fake {
@@ -576,11 +661,46 @@ mod tests {
         )
     }
 
-    fn app() -> tauri::App<MockRuntime> {
+    pub(crate) fn app() -> tauri::App<MockRuntime> {
         mock_builder()
             .manage(Overlay::default())
             .build(mock_context(noop_assets()))
             .unwrap()
+    }
+
+    /// Whether the stand-in Esc shortcut is held.
+    #[derive(Default)]
+    struct HeldEscape(std::sync::atomic::AtomicBool);
+
+    /// An app whose Esc stand-in answers taking (`true`) or releasing (`false`) Esc with
+    /// `works`.
+    pub(crate) fn app_with_escape_by(
+        works: impl Fn(bool) -> bool + Send + Sync + 'static,
+    ) -> tauri::App<MockRuntime> {
+        let key = EscapeKey::<MockRuntime>(Box::new(move |app, on| {
+            let ok = works(on);
+            if ok {
+                app.state::<HeldEscape>().0.store(on, Ordering::Relaxed);
+            }
+            ok
+        }));
+        mock_builder()
+            .manage(Overlay::default())
+            .manage(HeldEscape::default())
+            .manage(key)
+            .build(mock_context(noop_assets()))
+            .unwrap()
+    }
+
+    /// An app that holds Esc (through a stand-in), like the real one.
+    pub(crate) fn app_with_escape() -> tauri::App<MockRuntime> {
+        app_with_escape_by(|_| true)
+    }
+
+    /// Whether the app holds Esc now.
+    pub(crate) fn esc_held(app: &Handle) -> bool {
+        app.try_state::<HeldEscape>()
+            .is_some_and(|f| f.0.load(Ordering::Relaxed))
     }
 
     fn overlay_labels(app: &Handle) -> Vec<String> {
@@ -593,7 +713,7 @@ mod tests {
         labels
     }
 
-    fn wait_until(what: &str, done: impl Fn() -> bool) {
+    pub(crate) fn wait_until(what: &str, done: impl Fn() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while !done() {
             assert!(Instant::now() < deadline, "timed out waiting for {what}");
@@ -601,33 +721,33 @@ mod tests {
         }
     }
 
-    fn is_open(app: &Handle, session: u64) -> bool {
+    pub(crate) fn is_open(app: &Handle, session: u64) -> bool {
         matches!(&*phase(app), Phase::Open(_)) && phase(app).session() == Some(session)
     }
 
-    fn is_idle(app: &Handle) -> bool {
+    pub(crate) fn is_idle(app: &Handle) -> bool {
         matches!(*phase(app), Phase::Idle)
     }
 
     /// Presses the hotkey on fake displays; the capture finishes when `release` is sent.
-    fn press(app: &Handle, ids: &[u32]) -> (u64, mpsc::Sender<bool>) {
+    pub(crate) fn press(app: &Handle, ids: &[u32]) -> (u64, mpsc::Sender<bool>) {
         let (screen, release) = fake(true, ids);
         (start_with(app, screen).unwrap(), release)
     }
 
     /// Presses the hotkey and lets the capture finish.
-    fn open(app: &Handle, ids: &[u32]) -> u64 {
+    pub(crate) fn open(app: &Handle, ids: &[u32]) -> u64 {
         let (session, release) = press(app, ids);
         release.send(true).unwrap();
         wait_until("the session to open", || is_open(app, session));
         session
     }
 
-    fn window(app: &Handle, display: u32) -> WebviewWindow<MockRuntime> {
+    pub(crate) fn window(app: &Handle, display: u32) -> WebviewWindow<MockRuntime> {
         app.get_webview_window(&label(display)).unwrap()
     }
 
-    fn fetch(app: &Handle, display: u32, session: u64) -> Vec<u8> {
+    pub(crate) fn fetch(app: &Handle, display: u32, session: u64) -> Vec<u8> {
         let state = app.state::<Overlay>();
         let response =
             tauri::async_runtime::block_on(overlay_frame(window(app, display), state, session));
@@ -798,15 +918,18 @@ mod tests {
 
     #[test]
     fn esc_is_held_only_while_the_overlay_is_open() {
+        // The one test with the real global shortcut (one manager per process).
         let app = mock_builder()
             .plugin(tauri_plugin_global_shortcut::Builder::new().build())
             .manage(Overlay::default())
+            .manage(global_escape::<MockRuntime>())
             .build(mock_context(noop_assets()))
             .unwrap();
         let h = app.handle();
         let shortcuts = h.state::<GlobalShortcut<MockRuntime>>();
         let session = open(h, &[1]);
         assert!(shortcuts.is_registered(ESCAPE));
+        assert!(sync_escape(h), "already held");
         close_session(h, session);
         assert!(!shortcuts.is_registered(ESCAPE));
         close(h);
@@ -814,7 +937,7 @@ mod tests {
     }
 
     /// Opens a session on `ids` with every window painted.
-    fn shown(app: &Handle, ids: &[u32]) -> u64 {
+    pub(crate) fn shown(app: &Handle, ids: &[u32]) -> u64 {
         let session = open(app, ids);
         for &id in ids {
             overlay_painted(window(app, id), app.state(), session);
@@ -871,48 +994,6 @@ mod tests {
     }
 
     #[test]
-    fn confirm_crops_exactly_the_pixel_rect() {
-        let app = app();
-        let h = app.handle();
-        let session = open(h, &[1]);
-        assert!(
-            !fetch(h, 1, session).is_empty(),
-            "after the page got its copy"
-        );
-        let state = h.state::<Overlay>();
-        let crop = crop_selection(&window(h, 1), &state, session, px(1, 0, 2, 2));
-        let crop = crop.unwrap().unwrap();
-        // `frame` colors pixel (x, y) as (x, y, 9).
-        let expected = RgbaImage::from_fn(2, 2, |x, y| image::Rgba([1 + x as u8, y as u8, 9, 255]));
-        assert_eq!(crop, expected);
-        let clamped = crop_selection(&window(h, 1), &state, session, px(3, 1, 10, 10));
-        assert_eq!(clamped.unwrap().unwrap().dimensions(), (1, 1));
-        assert_eq!(
-            crop_selection(&window(h, 1), &state, session + 1, px(0, 0, 1, 1)),
-            Ok(None)
-        );
-    }
-
-    #[test]
-    fn confirm_closes_only_its_own_session() {
-        let app = app();
-        let h = app.handle();
-        let session = open(h, &[1]);
-        let empty = overlay_confirm(window(h, 1), h.state(), session, px(0, 0, 0, 1));
-        assert_eq!(empty, Err(CaptureError::EmptySelection));
-        assert!(
-            is_open(h, session),
-            "an empty selection keeps the overlay open"
-        );
-        let old = overlay_confirm(window(h, 1), h.state(), session + 1, px(0, 0, 1, 1));
-        assert_eq!(old, Ok(()));
-        assert!(is_open(h, session), "another session's confirm is ignored");
-        let ok = overlay_confirm(window(h, 1), h.state(), session, px(0, 0, 4, 2));
-        assert_eq!(ok, Ok(()));
-        assert!(is_idle(h));
-    }
-
-    #[test]
     fn calls_from_other_windows_are_ignored() {
         let app = app();
         let h = app.handle();
@@ -921,11 +1002,6 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(overlay_ready(settings.clone(), h.state()), None);
-        let r = px(0, 0, 1, 1);
-        assert_eq!(
-            overlay_confirm(settings.clone(), h.state(), session, r),
-            Ok(())
-        );
         overlay_painted(settings, h.state(), session);
         assert!(phase(h).stalled(session));
     }

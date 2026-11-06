@@ -9,9 +9,11 @@
 #[cfg(debug_assertions)]
 pub mod debug;
 /// Public to the crate so `generate_handler!` can reach the commands.
+pub(crate) mod export;
+/// Public to the crate so `generate_handler!` can reach the commands.
 pub(crate) mod window;
 
-pub use window::{Overlay, prewarm, start_capture};
+pub use window::{Overlay, global_escape, prewarm, start_capture};
 
 use crate::capture::{Display, DisplayFrame};
 use image::RgbaImage;
@@ -111,6 +113,10 @@ pub struct Session {
     painted: Vec<u32>,
     /// The Esc forwarded to the pages that is still waiting for their answers.
     escape: Option<EscapeWait>,
+    /// The Save dialog is open and the windows are hidden.
+    saving: bool,
+    /// Whether Rust held Esc when the session opened (see [`Phase::wants_escape`]).
+    escape_shortcut: bool,
 }
 
 /// One Esc press, until a page handles it or every shown page says it had nothing to undo.
@@ -137,6 +143,8 @@ pub struct Paint {
     pub focus: Option<u32>,
     /// Set on the first paint of the session: hotkey-to-paint and capture time, in ms.
     pub first: Option<(f64, f64)>,
+    /// The Save dialog is open: keep the window hidden; it shows when the dialog closes.
+    pub hidden: bool,
 }
 
 fn ms_since(t: Instant) -> f64 {
@@ -204,6 +212,8 @@ impl Phase {
             focus,
             painted: Vec::new(),
             escape: None,
+            saving: false,
+            escape_shortcut,
         });
         Some(shows)
     }
@@ -317,7 +327,48 @@ impl Phase {
             Some(_) => None,
             None => s.painted.first().copied(),
         };
-        Some(Paint { focus, first })
+        Some(Paint {
+            focus,
+            first,
+            hidden: s.saving,
+        })
+    }
+
+    /// Starts a save in `session`: its windows hide while the Save dialog is open. `false`
+    /// unless the session is open, shown and not already saving.
+    pub fn begin_save(&mut self, session: u64) -> bool {
+        match self.current(session) {
+            Some(s) if !s.saving && !s.painted.is_empty() => {
+                s.saving = true;
+                s.escape = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The Save dialog closed. Returns the displays to show again if `session` is still the
+    /// one saving (one lock, so nothing can close it in between), or `None`.
+    pub fn end_save(&mut self, session: u64) -> Option<Vec<u32>> {
+        let s = self.current(session).filter(|s| s.saving)?;
+        s.saving = false;
+        Some(s.painted.clone())
+    }
+
+    /// Whether Rust should hold Esc now: while capturing, and while the overlay is open unless
+    /// the Save dialog is up (Esc is the dialog's) or Esc could not be registered at the start
+    /// (the pages forward their own Esc instead, so holding it would act twice).
+    pub fn wants_escape(&self) -> bool {
+        match self {
+            Phase::Idle => false,
+            Phase::Capturing { .. } => true,
+            Phase::Open(s) => s.escape_shortcut && !s.saving,
+        }
+    }
+
+    /// Whether the Save dialog is open (the windows are hidden).
+    pub fn saving(&self) -> bool {
+        matches!(self, Phase::Open(s) if s.saving)
     }
 
     /// Whether this session is still open with nothing painted (the overlay page is broken).
@@ -580,6 +631,43 @@ pub(crate) mod tests {
             assert_eq!(p.painted(7, 2).unwrap().focus, Some(2));
             assert_eq!(p.painted(7, 1).unwrap().focus, Some(2));
         }
+    }
+
+    #[test]
+    fn a_save_hides_a_shown_session_once() {
+        let mut p = open(None);
+        assert!(!p.begin_save(7), "nothing shown yet");
+        p.painted(7, 2);
+        p.forward_escape(1);
+        assert!(!p.begin_save(6), "other session");
+        assert!(!p.saving());
+        assert!(p.begin_save(7));
+        assert!(p.saving());
+        assert!(!p.escape_unhandled(1), "a pending Esc is dropped");
+        assert!(!p.begin_save(7), "already saving");
+        // A display that paints during the dialog stays hidden, and shows with the others.
+        assert!(p.painted(7, 1).unwrap().hidden);
+        assert_eq!(p.painted(7, 1), None);
+        assert_eq!(p.end_save(6), None, "other session");
+        assert!(!p.wants_escape(), "Esc is the dialog's");
+        assert_eq!(p.end_save(7), Some(vec![2, 1]));
+        assert!(p.wants_escape());
+        assert!(!p.saving());
+        assert_eq!(p.end_save(7), None, "not saving any more");
+        assert!(!Phase::Idle.begin_save(7));
+        assert!(!Phase::Idle.saving());
+        assert_eq!(Phase::Idle.end_save(7), None);
+    }
+
+    #[test]
+    fn esc_is_held_while_capturing_and_open_if_it_was_registered() {
+        let mut p = Phase::default();
+        assert!(!p.wants_escape());
+        p.begin(1, Instant::now());
+        assert!(p.wants_escape());
+        p.open(1, vec![frame(1, 4, 2)], None, false).unwrap();
+        assert!(!p.wants_escape(), "the pages forward Esc");
+        assert!(open(None).wants_escape());
     }
 
     #[test]
