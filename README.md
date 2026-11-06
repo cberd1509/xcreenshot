@@ -7,6 +7,8 @@
 **Fast, private screenshots for macOS and Windows.**
 Press a shortcut, drag, annotate, done. Nothing ever leaves your computer.
 
+Website: https://cberd1509.github.io/xcreenshot/
+
 [![CI](https://github.com/cberd1509/xcreenshot/actions/workflows/ci.yml/badge.svg)](https://github.com/cberd1509/xcreenshot/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/cberd1509/xcreenshot/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/cberd1509/xcreenshot/security/code-scanning)
 [![Latest release](https://img.shields.io/github/v/release/cberd1509/xcreenshot?include_prereleases&sort=semver)](https://github.com/cberd1509/xcreenshot/releases)

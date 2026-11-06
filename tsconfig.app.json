@@ -19,5 +19,11 @@
     "strict": true,
     "paths": { "$lib": ["./src/lib"], "$lib/*": ["./src/lib/*"] }
   },
-  "include": ["src/**/*.ts", "src/**/*.js", "src/**/*.svelte", "docs/media/src/**/*.ts"]
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.js",
+    "src/**/*.svelte",
+    "docs/media/src/**/*.ts",
+    "site/src/**/*.ts"
+  ]
 }
