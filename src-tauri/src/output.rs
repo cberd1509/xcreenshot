@@ -309,15 +309,10 @@ pub(crate) mod tests {
         chunks
     }
 
-    /// Exactly IHDR, pHYs, IDAT… and IEND (no text, EXIF or anything else), with `density` in
-    /// pHYs, decoding to exactly `image`.
+    /// Exactly IHDR, pHYs, IDAT and IEND (no text, EXIF or anything else), with `density` in
+    /// pHYs, decoding to exactly `image`. The encoder splits IDAT only past 2 GiB.
     pub(crate) fn assert_clean_png(png: &[u8], image: &RgbaImage, density: Density) {
-        let chunks = png_chunks(png);
-        let idats = chunks.len().saturating_sub(3).max(1);
-        let mut allowed = vec!["IHDR", "pHYs"];
-        allowed.extend(std::iter::repeat_n("IDAT", idats));
-        allowed.push("IEND");
-        assert_eq!(chunks, allowed);
+        assert_eq!(png_chunks(png), ["IHDR", "pHYs", "IDAT", "IEND"]);
         let reader = png::Decoder::new(io::Cursor::new(png)).read_info().unwrap();
         let dims = reader.info().pixel_dims.unwrap();
         assert_eq!((dims.xppu, dims.yppu), density.pixels_per_metre());
@@ -345,21 +340,10 @@ pub(crate) mod tests {
     #[test]
     fn encoded_pngs_carry_only_the_pixels_and_density() {
         let image = sample(33, 17);
-        for density in [Density::ONE, Density { x: 1.5, y: 2.0 }] {
+        let d = |x, y| Density { x, y };
+        for density in [Density::ONE, d(2.0, 2.0), d(1.5, 1.5), d(1.25, 2.0)] {
             assert_clean_png(&encode_png(&image, density).unwrap(), &image, density);
         }
-    }
-
-    #[test]
-    fn rejects_other_chunks() {
-        let image = sample(3, 2);
-        let png = encode_png(&image, Density::ONE).unwrap();
-        // A tEXt chunk after IHDR (8 + 25 bytes): the CRC is not checked by `png_chunks`.
-        let mut text = png[..33].to_vec();
-        text.extend_from_slice(&[0, 0, 0, 1, b't', b'E', b'X', b't', b'x', 0, 0, 0, 0]);
-        text.extend_from_slice(&png[33..]);
-        let caught = std::panic::catch_unwind(|| assert_clean_png(&text, &image, Density::ONE));
-        assert!(caught.is_err(), "a tEXt chunk fails the check");
     }
 
     #[test]

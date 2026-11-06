@@ -253,11 +253,21 @@ impl Density {
         }
     }
 
-    /// The PNG `pHYs` value per axis: 72 DPI times the scale, in pixels per metre. 2835 at 1×,
-    /// 5669 (144 DPI) at 2×.
+    /// The PNG `pHYs` value per axis, in pixels per metre: the scale times the DPI of one
+    /// logical unit, 72 for a macOS point and 96 for a Windows DIP. On macOS that is 2835 at 1×
+    /// and 5669 (144 DPI) at 2×.
     pub fn pixels_per_metre(self) -> (u32, u32) {
+        let dpi = if cfg!(target_os = "windows") {
+            96.0
+        } else {
+            72.0
+        };
+        self.pixels_per_metre_at(dpi)
+    }
+
+    fn pixels_per_metre_at(self, dpi: f64) -> (u32, u32) {
         // `as` saturates, and turns NaN into 0 rather than failing.
-        let ppm = |scale: f64| (72.0 * scale / 0.0254).round() as u32;
+        let ppm = |scale: f64| (dpi * scale / 0.0254).round() as u32;
         (ppm(self.x), ppm(self.y))
     }
 }
@@ -582,23 +592,27 @@ mod tests {
         assert!(matches!(r, Err(CaptureError::Encode(_))));
     }
 
-    /// The `pHYs` value a decoder reads back.
-    fn phys(png: &[u8]) -> (u32, u32, png::Unit) {
-        let reader = png::Decoder::new(std::io::Cursor::new(png))
-            .read_info()
-            .unwrap();
-        let d = reader.info().pixel_dims.expect("a pHYs chunk");
-        (d.xppu, d.yppu, d.unit)
-    }
-
     #[test]
-    fn density_is_72_dpi_times_the_scale() {
-        let ppm = |x, y| Density { x, y }.pixels_per_metre();
+    fn density_is_the_logical_dpi_times_the_scale() {
+        // macOS: a point is 1/72 inch.
+        let ppm = |x, y| Density { x, y }.pixels_per_metre_at(72.0);
         assert_eq!(ppm(1.0, 1.0), (2835, 2835), "72 DPI");
         assert_eq!(ppm(2.0, 2.0), (5669, 5669), "144 DPI");
         assert_eq!(ppm(1.5, 1.5), (4252, 4252), "108 DPI");
         assert_eq!(ppm(2.0, 1.0), (5669, 2835), "per axis");
         assert_eq!(ppm(f64::NAN, f64::INFINITY), (0, u32::MAX), "never panics");
+        // Windows: a DIP is 1/96 inch.
+        let win = |s| Density { x: s, y: s }.pixels_per_metre_at(96.0).0;
+        assert_eq!((win(1.0), win(1.25), win(1.5)), (3780, 4724, 5669));
+        let native = if cfg!(target_os = "windows") {
+            96.0
+        } else {
+            72.0
+        };
+        assert_eq!(
+            Density::ONE.pixels_per_metre(),
+            Density::ONE.pixels_per_metre_at(native)
+        );
     }
 
     #[test]
@@ -612,16 +626,6 @@ mod tests {
             d(1.0, 2.0),
             "no logical size"
         );
-    }
-
-    #[test]
-    fn pngs_carry_the_density() {
-        let img = RgbaImage::new(4, 3);
-        let at = |x, y| phys(&encode_png(&img, Density { x, y }).unwrap());
-        assert_eq!(at(1.0, 1.0), (2835, 2835, png::Unit::Meter));
-        assert_eq!(at(2.0, 2.0), (5669, 5669, png::Unit::Meter));
-        assert_eq!(at(1.5, 1.5), (4252, 4252, png::Unit::Meter));
-        assert_eq!(at(1.25, 2.0), (3543, 5669, png::Unit::Meter));
     }
 
     #[test]

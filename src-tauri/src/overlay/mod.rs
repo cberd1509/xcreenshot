@@ -105,6 +105,16 @@ pub struct FrameInfo {
     pub region: Option<LogicalRect>,
 }
 
+impl FrameInfo {
+    /// That same scale, for the PNG's pixel density.
+    pub fn density(&self) -> Density {
+        Density::of(
+            (self.width, self.height),
+            (self.logical_width, self.logical_height),
+        )
+    }
+}
+
 /// The overlay's whole state. One capture at a time: the hotkey is ignored unless `Idle`.
 #[derive(Debug, Default)]
 pub enum Phase {
@@ -314,11 +324,8 @@ impl Phase {
 
     /// A display's original frame, to crop outside the lock, and its pixel density.
     pub fn image(&mut self, session: u64, display: u32) -> Option<(Arc<RgbaImage>, Density)> {
-        self.slot(session, display).map(|slot| {
-            let i = slot.info;
-            let density = Density::of((i.width, i.height), (i.logical_width, i.logical_height));
-            (Arc::clone(&slot.image), density)
-        })
+        self.slot(session, display)
+            .map(|slot| (Arc::clone(&slot.image), slot.info.density()))
     }
 
     /// Esc was pressed. Returns the session if Esc goes to its pages (one may have a size edit
