@@ -1,8 +1,9 @@
 //! App wiring only: menu bar, global shortcut and windows. Logic lives in the modules below.
 
 mod actions;
-/// Public so the overlay (#8) can use it; nothing in the app calls it yet.
+/// Public for `examples/capture.rs`.
 pub mod capture;
+mod overlay;
 mod shortcut;
 
 use actions::Action;
@@ -30,6 +31,13 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .manage(overlay::Overlay::default())
+        .invoke_handler(tauri::generate_handler![
+            overlay::window::overlay_ready,
+            overlay::window::overlay_frame,
+            overlay::window::overlay_painted,
+            overlay::window::close_overlay,
+        ])
         .setup(|app| {
             // Menu bar app: no Dock icon.
             #[cfg(target_os = "macos")]
@@ -50,6 +58,9 @@ pub fn run() {
                     shortcut::DEFAULT
                 );
             }
+            overlay::prewarm(app.handle());
+            #[cfg(debug_assertions)]
+            overlay::debug::schedule(app.handle());
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -110,7 +121,11 @@ fn tray_icon() -> tauri::image::Image<'static> {
 
 fn handle(app: &AppHandle, action: Action) {
     match action {
-        Action::Capture => start_capture(app),
+        // Ignored while the overlay is open: the menu item shows the same accelerator as the
+        // global shortcut, so both can fire at once.
+        Action::Capture => {
+            overlay::start_capture(app);
+        }
         Action::OpenSettings => {
             if let Err(e) = open_settings(app) {
                 log::error!("could not open settings: {e}");
@@ -120,14 +135,8 @@ fn handle(app: &AppHandle, action: Action) {
     }
 }
 
-/// The capture overlay comes in #8. It must ignore requests while one is open: the menu
-/// item shows the same accelerator as the global shortcut, so both can fire at once.
-fn start_capture(_app: &AppHandle) {
-    log::info!("capture requested");
-}
-
-/// The Settings webview is created on demand and destroyed on close,
-/// so the idle menu bar app holds no webview.
+/// The Settings webview is created on demand and destroyed on close. The only webviews kept
+/// while idle are the hidden overlay windows, prewarmed so the hotkey is fast.
 fn open_settings(app: &AppHandle) -> tauri::Result<()> {
     let window = match app.get_webview_window(SETTINGS_WINDOW) {
         Some(w) => w,
