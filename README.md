@@ -81,7 +81,7 @@ Your screenshots stay on your computer. xcreenshot has no accounts, no analytics
 
 ## Build from source
 
-You need [Node 24+](https://nodejs.org), [pnpm](https://pnpm.io) and [Rust](https://rustup.rs) (plus Xcode Command Line Tools on macOS, or the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) on Windows).
+You need [Node 26+](https://nodejs.org) (LTS), [pnpm](https://pnpm.io) and [Rust](https://rustup.rs) (plus Xcode Command Line Tools on macOS, or the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) on Windows).
 
 ```sh
 git clone https://github.com/cberd1509/xcreenshot.git
