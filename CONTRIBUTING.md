@@ -4,7 +4,7 @@ Thanks for helping out! xcreenshot aims to stay small, fast and private.
 
 ## Setup
 
-You need [Node 24+](https://nodejs.org), [pnpm](https://pnpm.io) and [Rust](https://rustup.rs).
+You need [Node 26+](https://nodejs.org) (LTS), [pnpm](https://pnpm.io) and [Rust](https://rustup.rs).
 On macOS, also install Xcode Command Line Tools (`xcode-select --install`).
 On Windows, see the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
 
