@@ -11,7 +11,7 @@
 3. Download the DMG from the draft, install it and check that it works.
 4. Publish the draft. Publishing creates the `v<version>` tag, and the updater starts offering the new version.
 
-A waiting draft is left alone by later merges that don't change the version. To rebuild it from the latest `main`, run **Release** from the Actions tab on `main`. The old draft is replaced only after the new build succeeds. A published release is never rebuilt.
+A waiting draft is left alone by later merges that don't change the version. To rebuild it from the latest `main`, run **Release** from the Actions tab on `main`: it deletes the draft and builds a new one. If that build fails or is cancelled, its unfinished draft is deleted too, so there's no draft until the next successful run. A published release is never rebuilt or deleted.
 
 ## Secrets
 

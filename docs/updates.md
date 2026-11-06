@@ -42,41 +42,35 @@ pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
 `pnpm tauri dev` and `pnpm tauri build --no-bundle` (what CI runs) don't sign anything and need no key.
 
-## What the release workflow must publish (#26)
+## What a release publishes
 
-For each release, a **published** GitHub release (not a draft or prerelease, and marked "latest", so `releases/latest/download/` resolves to it) with:
+The **Release** workflow (`.github/workflows/release.yml`, see [releasing.md](releasing.md)) builds one universal macOS app (Apple silicon and Intel) with [`tauri-apps/tauri-action`](https://github.com/tauri-apps/tauri-action) and uploads to the GitHub release:
 
-| Platform | Update file | Signature |
-| --- | --- | --- |
-| macOS (Apple silicon) | `xcreenshot_aarch64.app.tar.gz` | `xcreenshot_aarch64.app.tar.gz.sig` |
-| macOS (Intel), if built | `xcreenshot_x64.app.tar.gz` | `xcreenshot_x64.app.tar.gz.sig` |
-| Windows | `xcreenshot_<version>_x64-setup.exe` (NSIS) | `xcreenshot_<version>_x64-setup.exe.sig` |
+| File                                             | Used by                     |
+| ------------------------------------------------ | --------------------------- |
+| `xcreenshot_<version>_universal.dmg`             | people installing the app   |
+| `xcreenshot_<version>_universal.app.tar.gz`      | the updater (the update)    |
+| `xcreenshot_<version>_universal.app.tar.gz.sig`  | reference copy of the signature |
+| `latest.json` (signed builds only)               | the updater (the manifest)  |
 
-plus `latest.json`, built from them:
+The updater only sees it once the release is **published** (not a draft or prerelease, and marked "latest"), so `releases/latest/download/latest.json` resolves to it. tauri-action writes `latest.json` like this; all four macOS entries point at the same universal `.app.tar.gz`:
 
 ```json
 {
   "version": "1.2.0",
-  "notes": "See the release notes on GitHub.",
-  "pub_date": "2026-11-06T12:00:00Z",
+  "notes": "<the release notes>",
+  "pub_date": "2026-11-06T12:00:00.000Z",
   "platforms": {
-    "darwin-aarch64": {
-      "signature": "<contents of xcreenshot_aarch64.app.tar.gz.sig>",
-      "url": "https://github.com/cberd1509/xcreenshot/releases/download/v1.2.0/xcreenshot_aarch64.app.tar.gz"
-    },
-    "darwin-x86_64": {
-      "signature": "<contents of xcreenshot_x64.app.tar.gz.sig>",
-      "url": "https://github.com/cberd1509/xcreenshot/releases/download/v1.2.0/xcreenshot_x64.app.tar.gz"
-    },
-    "windows-x86_64": {
-      "signature": "<contents of xcreenshot_1.2.0_x64-setup.exe.sig>",
-      "url": "https://github.com/cberd1509/xcreenshot/releases/download/v1.2.0/xcreenshot_1.2.0_x64-setup.exe"
-    }
+    "darwin-aarch64": { "signature": "<contents of the .sig>", "url": "<universal .app.tar.gz>" },
+    "darwin-x86_64": { "signature": "<contents of the .sig>", "url": "<universal .app.tar.gz>" },
+    "darwin-aarch64-app": { "signature": "<contents of the .sig>", "url": "<universal .app.tar.gz>" },
+    "darwin-x86_64-app": { "signature": "<contents of the .sig>", "url": "<universal .app.tar.gz>" }
   }
 }
 ```
 
 - `version` is the `package.json` version (SemVer, no `v`). The app only offers versions newer than its own.
 - `signature` is the text of the `.sig` file, not a URL.
-- Bundle file names can differ by Tauri version; use the names the build actually produced.
-- [`tauri-apps/tauri-action`](https://github.com/tauri-apps/tauri-action) does all of this when given the two signing secrets (`includeUpdaterJson` is on by default). Uploading the `.sig` files to the release is optional; only `latest.json` and the update files are read by the app.
+- `url` is the GitHub API URL of the release asset (`https://api.github.com/repos/cberd1509/xcreenshot/releases/assets/<id>`), which the updater downloads directly. It stays valid when the draft is published.
+- Unsigned test builds (no Developer ID certificate) don't upload `latest.json`, so the updater never offers them.
+- Windows isn't built yet. When it is, its NSIS installer adds a `windows-x86_64` entry.

@@ -47,8 +47,6 @@ jobs:
     outputs:
       version: ${{ steps.plan.outputs.version }}
       build: ${{ steps.plan.outputs.build }}
-      tag: ${{ steps.plan.outputs.tag }}
-      replace: ${{ steps.plan.outputs.replace }}
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -69,23 +67,15 @@ jobs:
           if [ "$draft" = false ]; then
             echo "v$version is already published, nothing to build."; exit 0
           fi
-          if [ "$draft" != true ]; then
-            echo "tag=v$version" >> "$GITHUB_OUTPUT"
-          else
-            # A draft waiting to be published is rebuilt only when the version changed or on a
-            # manual run, not on every unrelated merge.
-            if [ "$GITHUB_EVENT_NAME" = push ]; then
-              before=$(gh api "repos/$GH_REPO/contents/package.json?ref=$BEFORE" --jq .content \
-                2> /dev/null | base64 -d | jq -r .version 2> /dev/null || true)
-              if [ "$before" = "$version" ]; then
-                echo "The v$version draft exists and the version didn't change, nothing to build."
-                exit 0
-              fi
+          # A draft waiting to be published is rebuilt only when the version changed or on a
+          # manual run, not on every unrelated merge. The build job replaces it.
+          if [ "$draft" = true ] && [ "$GITHUB_EVENT_NAME" = push ]; then
+            before=$(gh api "repos/$GH_REPO/contents/package.json?ref=$BEFORE" --jq .content \
+              2> /dev/null | base64 -d | jq -r .version 2> /dev/null || true)
+            if [ "$before" = "$version" ]; then
+              echo "The v$version draft exists and the version didn't change, nothing to build."
+              exit 0
             fi
-            # Build into a temporary draft; the build job swaps it in only after it succeeds.
-            echo "Rebuilding the v$version draft."
-            echo "tag=v$version-rebuild-$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
-            echo "replace=true" >> "$GITHUB_OUTPUT"
           fi
           echo "build=true" >> "$GITHUB_OUTPUT"
 
@@ -96,7 +86,6 @@ jobs:
     runs-on: macos-latest
     env:
       VERSION: ${{ needs.plan.outputs.version }}
-      TAG: ${{ needs.plan.outputs.tag }}
       DMG: src-tauri/target/universal-apple-darwin/release/bundle/dmg/xcreenshot_${{ needs.plan.outputs.version }}_universal.dmg
       APP: src-tauri/target/universal-apple-darwin/release/bundle/macos/xcreenshot.app
       GH_TOKEN: ${{ github.token }}
@@ -168,6 +157,22 @@ jobs:
             echo 'END_OF_NOTES'
           } >> "$GITHUB_OUTPUT"
 
+      # Checked again right before building, since the maintainer may have published it meanwhile.
+      # A published release is never touched. A failed rebuild leaves no draft until the next run.
+      - name: Remove the existing draft
+        id: start
+        run: |
+          draft=$(gh release view "v$VERSION" --json isDraft --jq .isDraft 2> /dev/null || true)
+          if [ "$draft" = false ]; then
+            echo "::error::v$VERSION was published while this run was starting; not rebuilding it."
+            exit 1
+          fi
+          if [ "$draft" = true ]; then
+            echo "Deleting the existing v$VERSION draft to rebuild it from this commit."
+            gh release delete "v$VERSION" --yes
+          fi
+          echo "started=true" >> "$GITHUB_OUTPUT"
+
       # Builds, signs and notarizes the app (when signing), signs the updater bundle, then creates
       # the draft release and uploads the DMG, .app.tar.gz, .sig and (signed builds only) latest.json.
       # Tauri skips the Finder step that lays out the DMG window when CI=true;
@@ -184,7 +189,7 @@ jobs:
         with:
           tauriScript: pnpm tauri
           args: --target universal-apple-darwin --bundles app,dmg
-          tagName: ${{ needs.plan.outputs.tag }}
+          tagName: v__VERSION__
           releaseName: xcreenshot __VERSION__
           releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: true
@@ -213,7 +218,7 @@ jobs:
         with:
           tauriScript: pnpm tauri
           args: --target universal-apple-darwin --bundles app,dmg
-          tagName: ${{ needs.plan.outputs.tag }}
+          tagName: v__VERSION__
           releaseName: xcreenshot __VERSION__
           releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: true
@@ -236,18 +241,15 @@ jobs:
           xcrun notarytool submit "$DMG" --key "$APPLE_API_KEY_PATH" \
             --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait
           xcrun stapler staple "$DMG"
-          gh release upload "$TAG" "$DMG" --clobber
+          gh release upload "v$VERSION" "$DMG" --clobber
 
-      # Drafts have no git tag, so deleting the old draft and retagging the new one touches no tags.
-      - name: Replace the old draft
-        if: needs.plan.outputs.replace == 'true'
+      # Don't leave a half-built draft (e.g. a DMG that failed notarization) for someone to publish.
+      # Only drafts this run may have created; a published release is never deleted.
+      - name: Delete the unfinished draft
+        if: (failure() || cancelled()) && steps.start.outputs.started == 'true'
         run: |
-          gh release delete "v$VERSION" --yes
-          gh release edit "$TAG" --tag "v$VERSION"
-
-      - name: Delete the unfinished rebuild draft
-        if: failure() && needs.plan.outputs.replace == 'true'
-        run: gh release delete "$TAG" --yes || true
+          draft=$(gh release view "v$VERSION" --json isDraft --jq .isDraft 2> /dev/null || true)
+          if [ "$draft" = true ]; then gh release delete "v$VERSION" --yes; fi
 
       - name: Remove the API key
         if: always()
