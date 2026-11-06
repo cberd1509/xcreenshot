@@ -230,27 +230,33 @@ fn keep_captured(
 /// Written into every PNG, so other apps show it at the size it had on screen.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Density {
-    pub x: f64,
-    pub y: f64,
+    x: f64,
+    y: f64,
 }
 
 impl Density {
     pub const ONE: Self = Self { x: 1.0, y: 1.0 };
 
+    /// The scale per axis. An axis that is not finite and above 0 counts as 1×.
+    pub const fn new(x: f64, y: f64) -> Self {
+        const fn valid(scale: f64) -> f64 {
+            if scale.is_finite() && scale > 0.0 {
+                scale
+            } else {
+                1.0
+            }
+        }
+        Self {
+            x: valid(x),
+            y: valid(y),
+        }
+    }
+
     /// A frame's `pixels` over its `logical` size, per axis. An axis with no logical size
     /// counts as 1×.
     pub fn of(pixels: (u32, u32), logical: (u32, u32)) -> Self {
-        let axis = |px: u32, logical: u32| {
-            if logical == 0 {
-                1.0
-            } else {
-                f64::from(px) / f64::from(logical)
-            }
-        };
-        Self {
-            x: axis(pixels.0, logical.0),
-            y: axis(pixels.1, logical.1),
-        }
+        let axis = |px: u32, logical: u32| f64::from(px) / f64::from(logical);
+        Self::new(axis(pixels.0, logical.0), axis(pixels.1, logical.1))
     }
 
     /// The PNG `pHYs` value per axis, in pixels per metre: the scale times the DPI of one
@@ -266,8 +272,9 @@ impl Density {
     }
 
     fn pixels_per_metre_at(self, dpi: f64) -> (u32, u32) {
-        // `as` saturates, and turns NaN into 0 rather than failing.
-        let ppm = |scale: f64| (dpi * scale / 0.0254).round() as u32;
+        // The scale is finite and above 0. `as` saturates a huge one, and 0 would mean no
+        // density, so the least is 1.
+        let ppm = |scale: f64| ((dpi * scale / 0.0254).round() as u32).max(1);
         (ppm(self.x), ppm(self.y))
     }
 }
@@ -585,7 +592,7 @@ mod tests {
     #[test]
     fn png_round_trips() {
         let img = RgbaImage::from_fn(20, 10, |x, y| image::Rgba([x as u8, y as u8, 7, 255]));
-        let png = encode_png(&img, Density { x: 2.0, y: 2.0 }).unwrap();
+        let png = encode_png(&img, Density::new(2.0, 2.0)).unwrap();
         assert_eq!(image::load_from_memory(&png).unwrap().to_rgba8(), img);
         // The encoder rejects zero-sized images.
         let r = encode_png(&RgbaImage::new(0, 0), Density::ONE);
@@ -595,14 +602,15 @@ mod tests {
     #[test]
     fn density_is_the_logical_dpi_times_the_scale() {
         // macOS: a point is 1/72 inch.
-        let ppm = |x, y| Density { x, y }.pixels_per_metre_at(72.0);
+        let ppm = |x, y| Density::new(x, y).pixels_per_metre_at(72.0);
         assert_eq!(ppm(1.0, 1.0), (2835, 2835), "72 DPI");
         assert_eq!(ppm(2.0, 2.0), (5669, 5669), "144 DPI");
         assert_eq!(ppm(1.5, 1.5), (4252, 4252), "108 DPI");
         assert_eq!(ppm(2.0, 1.0), (5669, 2835), "per axis");
-        assert_eq!(ppm(f64::NAN, f64::INFINITY), (0, u32::MAX), "never panics");
+        // Never 0 (no density) and never wrapped.
+        assert_eq!(ppm(1e-9, 1e300), (1, u32::MAX), "clamped");
         // Windows: a DIP is 1/96 inch.
-        let win = |s| Density { x: s, y: s }.pixels_per_metre_at(96.0).0;
+        let win = |s| Density::new(s, s).pixels_per_metre_at(96.0).0;
         assert_eq!((win(1.0), win(1.25), win(1.5)), (3780, 4724, 5669));
         let native = if cfg!(target_os = "windows") {
             96.0
@@ -617,7 +625,7 @@ mod tests {
 
     #[test]
     fn density_is_pixels_over_logical_size() {
-        let d = |x, y| Density { x, y };
+        let d = Density::new;
         assert_eq!(Density::of((3456, 2234), (1728, 1117)), d(2.0, 2.0));
         assert_eq!(Density::of((2880, 1620), (1920, 1080)), d(1.5, 1.5));
         assert_eq!(Density::of((200, 100), (100, 100)), d(2.0, 1.0));
@@ -626,6 +634,18 @@ mod tests {
             d(1.0, 2.0),
             "no logical size"
         );
+        assert_eq!(Density::of((0, 0), (0, 10)), Density::ONE, "no pixels");
+    }
+
+    #[test]
+    fn an_invalid_scale_counts_as_1x() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -0.0, -2.0] {
+            assert_eq!(Density::new(bad, 2.0), Density::new(1.0, 2.0), "{bad}");
+            assert_eq!(Density::new(2.0, bad), Density::new(2.0, 1.0), "{bad}");
+        }
+        assert_eq!(Density::new(f64::NAN, -1.0), Density::ONE);
+        let ppm = Density::new(f64::NAN, f64::INFINITY).pixels_per_metre_at(72.0);
+        assert_eq!(ppm, (2835, 2835));
     }
 
     #[test]

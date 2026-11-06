@@ -454,7 +454,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     /// The test frames have twice as many pixels as points.
-    const RETINA: Density = Density { x: 2.0, y: 2.0 };
+    const RETINA: Density = Density::new(2.0, 2.0);
 
     /// A clipboard that records what it got, or fails. Every image comes at the frame's density.
     fn clipboard(fail: bool) -> (Clipboard, Arc<Mutex<Vec<RgbaImage>>>) {
@@ -516,6 +516,31 @@ mod tests {
         assert_eq!(copy(h, session, px(1, 0, 2, 2), c), Ok(()));
         assert_eq!(*images.lock().unwrap(), [expected(1, 0, 2, 2)]);
         assert!(is_idle(h));
+    }
+
+    /// The macOS clipboard as `os_clipboard` builds it, on a private pasteboard: the copied
+    /// PNG has the session's density.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_copy_puts_the_frames_density_on_the_pasteboard() {
+        use objc2_app_kit::{NSPasteboard, NSPasteboardTypePNG};
+        let app = app();
+        let h = app.handle();
+        let session = shown(h, &[1]);
+        let pasted = Arc::new(Mutex::new(Vec::new()));
+        let record = Arc::clone(&pasted);
+        let c = output::png_clipboard(move |png| {
+            let pasteboard = NSPasteboard::pasteboardWithUniqueName();
+            output::macos::write(&pasteboard, png)?;
+            // SAFETY: an AppKit constant, valid for the life of the process.
+            let data = pasteboard.dataForType(unsafe { NSPasteboardTypePNG });
+            *record.lock().unwrap() = data.unwrap().to_vec();
+            Ok(())
+        });
+        assert_eq!(copy(h, session, px(1, 0, 2, 2), c), Ok(()));
+        // The test frames are 2× (pixels over points): 144 DPI.
+        assert_clean_png(&pasted.lock().unwrap(), &expected(1, 0, 2, 2), RETINA);
+        assert_eq!(RETINA.pixels_per_metre(), (5669, 5669));
     }
 
     #[test]

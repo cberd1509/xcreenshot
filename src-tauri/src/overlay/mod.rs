@@ -713,11 +713,7 @@ pub(crate) mod tests {
         // The original is shared, not moved.
         let (kept, density) = p.image(7, 1).unwrap();
         assert!(Arc::ptr_eq(&image, &kept));
-        assert_eq!(
-            density,
-            Density { x: 2.0, y: 2.0 },
-            "pixels over logical size"
-        );
+        assert_eq!(density, Density::new(2.0, 2.0), "pixels over logical size");
         assert_eq!(p.image(7, 9), None);
         assert_eq!(p.image(6, 1), None);
     }

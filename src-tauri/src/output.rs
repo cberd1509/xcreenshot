@@ -113,13 +113,12 @@ pub type Clipboard = Box<dyn Fn(&RgbaImage, Density) -> Result<(), CaptureError>
 
 /// The real clipboard. macOS: a PNG with its density, plus TIFF on request (`macos::write`),
 /// written on the main thread. Windows: the clipboard plugin, which adds the PNG and bitmap
-/// formats, both without a density.
+/// formats, both without a density (#78).
 pub fn os_clipboard<R: Runtime>(app: &AppHandle<R>) -> Clipboard {
     let app = app.clone();
-    Box::new(move |image, density| {
-        #[cfg(target_os = "macos")]
-        {
-            let png = crate::capture::encode_png(image, density)?;
+    #[cfg(target_os = "macos")]
+    {
+        png_clipboard(move |png| {
             let (tx, rx) = std::sync::mpsc::channel();
             app.run_on_main_thread(move || {
                 let pasteboard = objc2_app_kit::NSPasteboard::generalPasteboard();
@@ -128,24 +127,34 @@ pub fn os_clipboard<R: Runtime>(app: &AppHandle<R>) -> Clipboard {
             .map_err(|e| CaptureError::Clipboard(e.to_string()))?;
             rx.recv()
                 .map_err(|e| CaptureError::Clipboard(e.to_string()))?
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Box::new(move |image, _density| {
             use tauri_plugin_clipboard_manager::ClipboardExt;
-            let _ = density;
             let image = tauri::image::Image::new(image.as_raw(), image.width(), image.height());
             app.clipboard()
                 .write_image(&image)
                 .map_err(|e| CaptureError::Clipboard(e.to_string()))
-        }
-    })
+        })
+    }
+}
+
+/// A clipboard that encodes the image at its density, off the main thread, and hands `put` the
+/// PNG. Tests give it a private pasteboard.
+#[cfg(target_os = "macos")]
+pub(crate) fn png_clipboard(
+    put: impl Fn(Vec<u8>) -> Result<(), CaptureError> + Send + Sync + 'static,
+) -> Clipboard {
+    Box::new(move |image, density| put(crate::capture::encode_png(image, density)?))
 }
 
 /// The macOS pasteboard: the PNG as `public.png`, and TIFF for apps that only read that. TIFF
 /// is made only if an app asks for it (an `NSPasteboardItem` data provider), so copying costs
 /// the PNG alone. Main thread only.
 #[cfg(target_os = "macos")]
-mod macos {
+pub(crate) mod macos {
     use crate::capture::CaptureError;
     use objc2::rc::Retained;
     use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
@@ -255,7 +264,7 @@ mod macos {
             // A private pasteboard: the user's clipboard is left alone.
             let pasteboard = NSPasteboard::pasteboardWithUniqueName();
             let image = RgbaImage::from_fn(7, 3, |x, y| image::Rgba([x as u8, y as u8, 1, 255]));
-            let density = Density { x: 2.0, y: 1.5 };
+            let density = Density::new(2.0, 1.5);
             let png = encode_png(&image, density).unwrap();
             write(&pasteboard, png.clone()).unwrap();
             let (png_type, tiff_type) = unsafe { (NSPasteboardTypePNG, NSPasteboardTypeTIFF) };
@@ -340,7 +349,7 @@ pub(crate) mod tests {
     #[test]
     fn encoded_pngs_carry_only_the_pixels_and_density() {
         let image = sample(33, 17);
-        let d = |x, y| Density { x, y };
+        let d = Density::new;
         for density in [Density::ONE, d(2.0, 2.0), d(1.5, 1.5), d(1.25, 2.0)] {
             assert_clean_png(&encode_png(&image, density).unwrap(), &image, density);
         }
