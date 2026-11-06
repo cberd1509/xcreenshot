@@ -458,7 +458,8 @@ impl Phase {
         }
     }
 
-    /// Whether the Save dialog is open (the windows are hidden).
+    /// Whether the Save dialog is open (the windows are hidden). Tests tell it from sharing.
+    #[cfg(test)]
     pub fn saving(&self) -> bool {
         matches!(self, Phase::Open(s) if s.saving)
     }

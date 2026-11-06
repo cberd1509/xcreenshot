@@ -291,8 +291,8 @@ pub fn close_session<R: Runtime>(app: &AppHandle<R>, session: u64) {
 }
 
 /// Hides every overlay, frees the frames, releases Esc and allows the next capture. Does
-/// nothing while the Save dialog is open: the save ends the session itself, so a save is never
-/// lost to a close. Main thread only. Safe to call twice.
+/// nothing while the Save dialog or share sheet is open: they end the session themselves, so a
+/// save or share is never lost to a close. Main thread only. Safe to call twice.
 pub fn close<R: Runtime>(app: &AppHandle<R>) {
     close_if(app, |_| true);
 }
@@ -313,8 +313,8 @@ pub(super) fn close_for_share<R: Runtime>(app: &AppHandle<R>, session: u64) {
 fn end_if<R: Runtime>(app: &AppHandle<R>, ok: impl FnOnce(&Phase) -> bool, give_back: bool) {
     {
         let mut phase = phase(app);
-        if phase.saving() {
-            log::info!("not closing the overlay while the Save dialog is open");
+        if phase.in_dialog() {
+            log::info!("not closing the overlay while the Save dialog or share sheet is open");
             return;
         }
         if !ok(&phase) {

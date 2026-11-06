@@ -29,10 +29,11 @@ The overlay's Share button (macOS only; it is hidden where there is no share she
 
 The overlay sits at the screen saver level (1000), which would hide the menu (a pop-up menu window, level 101). `share_png` lowers it to 100 while the menu is open: still over the menu bar and Dock. So the overlay:
 
-1. Releases its global Esc shortcut before calling `share_png`, or Esc goes to the overlay instead of closing the menu. While the sheet is open, copy, save, another share and Esc from the page do nothing.
+1. Releases its global Esc shortcut before calling `share_png`, or Esc goes to the overlay instead of closing the menu. While the sheet is open, copy, save, another share, Esc from the page and closing the overlay do nothing.
 2. In `on_done`:
    - `Chosen`: remembers the region (like Copy and Save), closes the overlay right away without hiding the app, then calls `restore_level(&window)`. The window stays at 100 until then, so the service's own UI (AirDrop, Mail…) is not hidden behind it. Hiding the app, as other closes do to give focus back, would hide that UI too.
    - `Cancelled`: the level is already back. It takes Esc back (or closes, if it can't); the overlay stays open with the selection.
+   - Never called (a picker dropped after 10 minutes without reporting): counts as `Cancelled`, so the overlay is never stuck.
 
 The level is only restored if nobody changed it since, and a second share while the window is still lowered keeps the original level on record.
 

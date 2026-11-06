@@ -9,6 +9,7 @@ type Props = Partial<{
   tool: Tool | null
   canUndo: boolean
   mac: boolean
+  canShare: boolean
   drawable: boolean
   text: ShownTextOptions | null
   ontext: (t: Partial<TextOptions>) => void
@@ -47,6 +48,7 @@ function setup(props: Props = {}) {
       options: { rememberRegion: true, magnifier: false },
       actions,
       mac: true,
+      canShare: true,
       ...handlers,
       ...props,
     },
@@ -259,8 +261,8 @@ describe('Toolbar', () => {
     expect(actions.share).toHaveBeenCalledExactlyOnceWith(at)
   })
 
-  it('has no Share button off macOS, where there is no share sheet yet', () => {
-    setup({ mac: false })
+  it('has no Share button without a share sheet', () => {
+    setup({ canShare: false })
     expect(button('Save')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Share' })).toBeNull()
   })

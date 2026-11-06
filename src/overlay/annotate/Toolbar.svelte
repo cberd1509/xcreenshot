@@ -51,6 +51,7 @@
     options,
     actions,
     mac = isMac,
+    canShare = isMac,
   }: {
     /** The selection, in logical px on the display. */
     selection: Rect
@@ -76,8 +77,10 @@
     onclear: () => void
     options: Record<Option, boolean>
     actions: ToolbarActions
-    /** macOS: keys show as ⌘ and ⇧, and Share is there (no share sheet elsewhere yet). */
+    /** macOS: keys show as ⌘ and ⇧. */
     mac?: boolean
+    /** Whether there is a share sheet: macOS only until Windows gets one (#30). */
+    canShare?: boolean
   } = $props()
 
   const { mod, shift } = $derived(keyLabels(mac))
@@ -143,7 +146,7 @@
     onpointerdown={stop}
     role="presentation"
   >
-    <ActionBar {actions} {options} bind:moreOpen {keepFocus} {mod} canShare={mac} />
+    <ActionBar {actions} {options} bind:moreOpen {keepFocus} {mod} {canShare} />
   </div>
 </Tooltip.Provider>
 

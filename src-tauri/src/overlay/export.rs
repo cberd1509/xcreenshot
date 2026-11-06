@@ -458,9 +458,13 @@ async fn share_with<R: Runtime>(
             log::warn!("could not release Esc for the share sheet");
         }
     });
-    let target = window.clone();
-    let done: OnShared =
-        Box::new(move |outcome| shared(&target, session, outcome, region, remember));
+    let answer = Answer {
+        window: window.clone(),
+        session,
+        region,
+        remember: Some(remember),
+    };
+    let done: OnShared = Box::new(move |outcome| answer.give(outcome));
     let sheet = window.clone();
     let shown = spawn_blocking(move || show(&sheet, &png, anchor, done))
         .await
@@ -472,30 +476,52 @@ async fn share_with<R: Runtime>(
     })
 }
 
-/// The share sheet closed (main thread). A chosen service closes the overlay, leaving the app
-/// active for the service's own UI, and remembers the region; a dismissed sheet keeps it open.
-fn shared<R: Runtime>(
-    window: &WebviewWindow<R>,
+/// What to do when the share sheet closes (main thread). A chosen service closes the overlay,
+/// leaving the app active for its own UI, and remembers the region; a dismissal keeps it open.
+///
+/// If the share module drops it unanswered (an expired picker), the sheet counts as dismissed,
+/// so the overlay is never left stuck sharing.
+struct Answer<R: Runtime> {
+    window: WebviewWindow<R>,
     session: u64,
-    outcome: ShareOutcome,
     region: Option<Region>,
-    remember: Remember,
-) {
-    let app = window.app_handle();
-    match outcome {
-        ShareOutcome::Chosen(service) => {
-            log::info!("shared with {service}");
-            if let Some(region) = region {
-                remember(region);
+    /// Taken when the answer is given.
+    remember: Option<Remember>,
+}
+
+impl<R: Runtime> Answer<R> {
+    fn give(mut self, outcome: ShareOutcome) {
+        let Some(remember) = self.remember.take() else {
+            return;
+        };
+        let (window, session) = (&self.window, self.session);
+        let app = window.app_handle();
+        match outcome {
+            ShareOutcome::Chosen(service) => {
+                log::info!("shared with {service}");
+                // Only for the session still sharing: a stale answer changes nothing.
+                if phase(app).end_share(session) {
+                    if let Some(region) = self.region.take() {
+                        remember(region);
+                    }
+                    close_for_share(app, session);
+                }
+                // The sheet left the window lowered, so the service's UI shows over it.
+                share::restore_level(window);
             }
-            phase(app).end_share(session);
-            close_for_share(app, session);
-            // The sheet left the window lowered, so the service's UI shows over it.
-            share::restore_level(window);
+            ShareOutcome::Cancelled => {
+                log::info!("share cancelled");
+                unshare(app, session);
+            }
         }
-        ShareOutcome::Cancelled => {
-            log::info!("share cancelled");
-            unshare(app, session);
+    }
+}
+
+impl<R: Runtime> Drop for Answer<R> {
+    fn drop(&mut self) {
+        if self.remember.is_some() {
+            let session = self.session;
+            on_main(self.window.app_handle(), move |app| unshare(app, session));
         }
     }
 }
@@ -1395,24 +1421,55 @@ mod tests {
     }
 
     #[test]
-    fn a_sheet_answered_after_the_overlay_closed_changes_nothing() {
+    fn nothing_closes_the_overlay_under_the_sheet() {
         let app = app_with_escape();
         let h = app.handle();
         let session = shown(h, &[1]);
         let (show, seen) = sheet(false);
         share_out(h, &anchored(session, px(0, 0, 2, 2)), show, forget()).unwrap();
         close(h);
-        assert!(is_idle(h));
-        let next = shown(h, &[1]);
+        close_session(h, session);
+        assert!(is_open(h, session));
+        assert_eq!(on_screen(h), [1]);
         answer(&seen, ShareOutcome::Cancelled);
-        assert!(is_open(h, next), "a newer session is left alone");
+        assert!(is_open(h, session));
         assert!(esc_held(h));
+    }
+
+    #[test]
+    fn a_sheet_dropped_unanswered_counts_as_dismissed() {
+        // The share module gives up on a picker that never reports (it expired).
+        let app = app_with_escape();
+        let h = app.handle();
+        let session = shown(h, &[1]);
         let (show, seen) = sheet(false);
-        share_out(h, &anchored(next, px(0, 0, 2, 2)), show, forget()).unwrap();
-        close(h);
-        let last = shown(h, &[1]);
-        answer(&seen, ShareOutcome::Chosen("Mail".into()));
-        assert!(is_open(h, last), "a newer session is left alone");
+        share_out(h, &anchored(session, px(0, 0, 2, 2)), show, forget()).unwrap();
+        assert!(!esc_held(h));
+        drop(seen.lock().unwrap().done.take());
+        wait_until("Esc to come back", || esc_held(h));
+        assert!(is_open(h, session));
+        let (c, images) = clipboard(false);
+        copy(h, session, px(0, 0, 1, 1), c).unwrap();
+        assert_eq!(images.lock().unwrap().len(), 1, "usable again");
+    }
+
+    #[test]
+    fn a_stale_choice_neither_remembers_nor_closes() {
+        let app = app_with_escape();
+        let h = app.handle();
+        let session = shown(h, &[1]);
+        let (remember, regions) = remembering();
+        let region = phase(h).region(session, 1, px(0, 0, 2, 2));
+        let answer = Answer {
+            window: window(h, 1),
+            session,
+            region,
+            remember: Some(remember),
+        };
+        // This session is not sharing: the answer belongs to an older sheet.
+        answer.give(ShareOutcome::Chosen("Mail".into()));
+        assert!(regions.lock().unwrap().is_empty());
+        assert!(is_open(h, session));
     }
 
     fn headers(json: &str) -> HeaderMap {
