@@ -19,7 +19,6 @@ tauri-build = { version = "2.7.4", features = [] }
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
 log = "0.4"
-open = "5.4.5"
 serde = "1"
 tauri = { version = "2.12.5", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2"
@@ -28,6 +27,7 @@ tauri-plugin-single-instance = "2"
 xcap = "0.9.8"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+open = "5.4.5"
 objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSResponder", "NSWindow"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGDirectDisplay", "CGDisplayConfiguration", "CGWindow"] }

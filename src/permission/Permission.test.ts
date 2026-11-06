@@ -1,106 +1,165 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/svelte'
-import userEvent from '@testing-library/user-event'
-import { emit } from '@tauri-apps/api/event'
+import { cleanup, fireEvent, render, screen } from '@testing-library/svelte'
 import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { settings, shortcutKeys } from '$lib/settings.svelte'
+import { shortcutKeys } from '$lib/settings.svelte'
+import { tick } from '../test/tick'
 import Permission from './Permission.svelte'
 
 let calls: string[]
-let grantedNow: boolean
-let fail: string | null
+let granted: boolean
+let shortcut: string | null
+let failing: Set<string>
 
-const tick = () => new Promise((r) => setTimeout(r, 0))
+const count = (cmd: string) => calls.filter((c) => c === cmd).length
+const button = (name: string) => screen.getByRole('button', { name })
+const isPrimary = (el: HTMLElement) => el.className.includes('bg-primary ')
+/** Lets the mocked IPC answer, then moves the clock on. */
+const after = async (ms: number) => {
+  await vi.advanceTimersByTimeAsync(ms)
+  await tick()
+}
 
-/** Renders and waits until the page has asked for the current state. */
 async function mount() {
-  const view = render(Permission)
-  await waitFor(() => expect(calls).toContain('permission_granted'))
-  return view
+  render(Permission)
+  await after(0)
 }
 
 describe('Permission', () => {
   beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     calls = []
-    grantedNow = false
-    fail = null
+    granted = false
+    shortcut = 'Control+Shift+Super+S'
+    failing = new Set()
     mockWindows('permission')
-    mockIPC(
-      (cmd) => {
-        calls.push(cmd)
-        if (cmd === fail) throw new Error('nope')
-        if (cmd === 'permission_granted') return grantedNow
-      },
-      { shouldMockEvents: true },
-    )
+    mockIPC((cmd) => {
+      calls.push(cmd)
+      if (failing.has(cmd)) throw new Error('nope')
+      if (cmd === 'permission_granted') return granted
+      if (cmd === 'capture_shortcut') return shortcut
+    })
   })
 
   afterEach(async () => {
     cleanup()
     await tick()
     clearMocks()
+    vi.useRealTimers()
     vi.restoreAllMocks()
   })
 
-  it('shows the three steps', async () => {
+  it('shows the three steps and checks right away', async () => {
     await mount()
     expect(screen.getByRole('heading', { name: 'Allow Screen Recording' })).toBeInTheDocument()
-    const steps = screen.getAllByRole('listitem')
-    expect(steps.map((s) => s.querySelector('.font-medium')?.textContent)).toEqual([
-      'Open System Settings',
-      'Turn on xcreenshot',
-      'Quit and reopen',
-    ])
+    expect(screen.getAllByRole('listitem')).toHaveLength(3)
+    expect(screen.getByText('Turn on xcreenshot')).toBeInTheDocument()
     expect(screen.getByText(/Privacy & Security › Screen Recording/)).toBeInTheDocument()
+    expect(count('permission_granted')).toBe(1)
+    expect(isPrimary(button('Open System Settings'))).toBe(true)
+  })
+
+  it('re-checks every second and shows the shortcut once granted', async () => {
+    await mount()
+    await after(1000)
+    expect(count('permission_granted')).toBe(2)
+    granted = true
+    await after(1000)
+    expect(screen.getByRole('heading', { name: 'All set.' })).toBeInTheDocument()
+    for (const key of shortcutKeys('Control+Shift+Super+S')) {
+      expect(screen.getByText(key)).toBeInTheDocument()
+    }
+    await after(3000)
+    expect(count('permission_granted')).toBe(3)
+  })
+
+  it('asks for a shortcut when none is registered', async () => {
+    shortcut = null
+    granted = true
+    await mount()
+    expect(screen.getByText('Set a shortcut in Settings.')).toBeInTheDocument()
   })
 
   it('opens System Settings and restarts from the buttons', async () => {
     await mount()
-    await userEvent.click(screen.getByRole('button', { name: 'Open System Settings' }))
-    await userEvent.click(screen.getByRole('button', { name: 'Restart xcreenshot' }))
-    expect(calls).toEqual(['permission_granted', 'open_permission_settings', 'restart_app'])
+    await fireEvent.click(button('Open System Settings'))
+    await fireEvent.click(button('Restart xcreenshot'))
+    await tick()
+    expect(calls).toContain('open_permission_settings')
+    expect(calls).toContain('restart_app')
   })
 
-  it('logs a command that fails', async () => {
-    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
-    fail = 'open_permission_settings'
+  it('offers the restart from the done screen', async () => {
+    granted = true
     await mount()
-    await userEvent.click(screen.getByRole('button', { name: 'Open System Settings' }))
-    await waitFor(() => expect(error).toHaveBeenCalledOnce())
-    expect(error.mock.calls[0][0]).toBe('open_permission_settings failed')
+    expect(screen.getByText(/Screenshots look empty\?/)).toBeInTheDocument()
+    await fireEvent.click(button('Restart xcreenshot'))
+    await tick()
+    expect(calls).toContain('restart_app')
   })
 
-  it('shows the shortcut once the permission is granted', async () => {
+  it('asks for a restart when back from System Settings without the permission', async () => {
     await mount()
-    await emit('permission:granted')
-    expect(await screen.findByRole('heading', { name: 'All set.' })).toBeInTheDocument()
-    expect(screen.getByText(/to take a screenshot/)).toBeInTheDocument()
-    for (const key of shortcutKeys(settings.shortcut)) {
-      expect(screen.getByText(key)).toBeInTheDocument()
-    }
-    expect(screen.queryByRole('button')).toBeNull()
+    await fireEvent.focus(window)
+    await tick()
+    expect(isPrimary(button('Restart xcreenshot'))).toBe(false)
+
+    await fireEvent.click(button('Open System Settings'))
+    await fireEvent.focus(window)
+    await tick()
+    expect(screen.getByText(/macOS needs xcreenshot to restart/)).toBeInTheDocument()
+    expect(isPrimary(button('Restart xcreenshot'))).toBe(true)
+    expect(isPrimary(button('Open System Settings'))).toBe(false)
   })
 
-  it('shows the shortcut right away if already granted', async () => {
-    grantedNow = true
+  it('shows done when back from System Settings with the permission', async () => {
     await mount()
-    expect(await screen.findByRole('heading', { name: 'All set.' })).toBeInTheDocument()
-  })
-
-  it('stays done if the check answers after the grant', async () => {
-    let answer: ((granted: boolean) => void) | undefined
-    const pending = new Promise<boolean>((resolve) => (answer = resolve))
-    mockIPC(
-      (cmd) => {
-        calls.push(cmd)
-        if (cmd === 'permission_granted') return pending
-      },
-      { shouldMockEvents: true },
-    )
-    await mount()
-    await emit('permission:granted')
-    answer?.(false)
+    await fireEvent.click(button('Open System Settings'))
+    granted = true
+    await fireEvent.focus(window)
     await tick()
     expect(screen.getByRole('heading', { name: 'All set.' })).toBeInTheDocument()
+    await fireEvent.focus(window)
+    await tick()
+    expect(count('permission_granted')).toBe(2)
+  })
+
+  it('stops checking when the window closes', async () => {
+    await mount()
+    cleanup()
+    await after(3000)
+    expect(count('permission_granted')).toBe(1)
+  })
+
+  it('logs every failed command', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    failing = new Set([
+      'permission_granted',
+      'capture_shortcut',
+      'open_permission_settings',
+      'restart_app',
+    ])
+    await mount()
+    await fireEvent.click(button('Open System Settings'))
+    await fireEvent.focus(window)
+    await fireEvent.click(button('Restart xcreenshot'))
+    await tick()
+    const logged = error.mock.calls.map((c) => c[0])
+    expect(logged).toEqual(
+      expect.arrayContaining([
+        'permission_granted failed',
+        'capture_shortcut failed',
+        'open_permission_settings failed',
+        'restart_app failed',
+      ]),
+    )
+    expect(logged.filter((m) => m === 'permission_granted failed')).toHaveLength(2)
+  })
+
+  it('treats a failed shortcut lookup as no shortcut', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    failing = new Set(['capture_shortcut'])
+    granted = true
+    await mount()
+    expect(screen.getByText('Set a shortcut in Settings.')).toBeInTheDocument()
   })
 })

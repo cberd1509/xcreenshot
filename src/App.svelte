@@ -1,10 +1,10 @@
 <script lang="ts">
   import { getVersion } from '@tauri-apps/api/app'
-  import { Kbd, KbdGroup } from '$lib/components/ui/kbd'
   import { Separator } from '$lib/components/ui/separator'
   import { Switch } from '$lib/components/ui/switch'
   import SettingRow from '$lib/components/SettingRow.svelte'
-  import { settings, shortcutKeys, type ToggleKey } from '$lib/settings.svelte'
+  import ShortcutKbd from '$lib/components/ShortcutKbd.svelte'
+  import { settings, type ToggleKey } from '$lib/settings.svelte'
 
   type Section = {
     id: string
@@ -77,9 +77,7 @@
         {#if s.id === 'shortcuts'}
           <!-- Display only; recording a new shortcut comes in #21. -->
           <SettingRow title="Take a screenshot" description="Works from any app.">
-            <KbdGroup>
-              {#each shortcutKeys(settings.shortcut) as key, k (k)}<Kbd>{key}</Kbd>{/each}
-            </KbdGroup>
+            <ShortcutKbd accelerator={settings.shortcut} />
           </SettingRow>
         {/if}
         {#each s.toggles as t (t.key)}

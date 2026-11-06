@@ -11,6 +11,7 @@ fn main() {
         "permission_granted",
         "open_permission_settings",
         "restart_app",
+        "capture_shortcut",
     ];
     let mut attributes = tauri_build::Attributes::new()
         .app_manifest(tauri_build::AppManifest::new().commands(commands));
