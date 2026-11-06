@@ -4,6 +4,7 @@ mod actions;
 /// Public for `examples/capture.rs`.
 pub mod capture;
 mod overlay;
+mod permission;
 mod shortcut;
 
 use actions::Action;
@@ -40,6 +41,9 @@ pub fn run() {
             overlay::window::overlay_escape,
             overlay::window::overlay_confirm,
             overlay::window::close_overlay,
+            permission::permission_granted,
+            permission::open_permission_settings,
+            permission::restart_app,
         ])
         .setup(|app| {
             // Menu bar app: no Dock icon.
@@ -62,6 +66,8 @@ pub fn run() {
                 );
             }
             overlay::prewarm(app.handle());
+            // First launch (or permission removed): show how to allow Screen Recording.
+            permission::ensure(app.handle());
             #[cfg(debug_assertions)]
             overlay::debug::schedule(app.handle());
             Ok(())
@@ -127,7 +133,9 @@ fn handle(app: &AppHandle, action: Action) {
         // Ignored while the overlay is open: the menu item shows the same accelerator as the
         // global shortcut, so both can fire at once.
         Action::Capture => {
-            overlay::start_capture(app);
+            if permission::ensure(app) {
+                overlay::start_capture(app);
+            }
         }
         Action::OpenSettings => {
             if let Err(e) = open_settings(app) {

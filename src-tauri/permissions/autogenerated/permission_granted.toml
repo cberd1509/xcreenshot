@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-permission-granted"
+description = "Enables the permission_granted command without any pre-configured scope."
+commands.allow = ["permission_granted"]
+
+[[permission]]
+identifier = "deny-permission-granted"
+description = "Denies the permission_granted command without any pre-configured scope."
+commands.deny = ["permission_granted"]

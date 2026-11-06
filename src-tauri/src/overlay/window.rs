@@ -72,7 +72,7 @@ impl Screen for Os {
         if capture::has_permission() {
             return true;
         }
-        // TODO(#23): show the permission screen instead of only the system prompt.
+        // Fallback only: `permission::ensure` opens the steps window before the hotkey gets here.
         let granted = capture::request_permission();
         log::warn!("Screen Recording permission requested (granted: {granted})");
         false

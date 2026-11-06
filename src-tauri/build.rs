@@ -1,5 +1,5 @@
 fn main() {
-    // App commands get `allow-<command>` permissions, so only the overlay windows can call them.
+    // App commands get `allow-<command>` permissions, so each window gets only its own.
     let commands = &[
         "overlay_ready",
         "overlay_frame",
@@ -8,6 +8,9 @@ fn main() {
         "overlay_escape",
         "overlay_confirm",
         "close_overlay",
+        "permission_granted",
+        "open_permission_settings",
+        "restart_app",
     ];
     let mut attributes = tauri_build::Attributes::new()
         .app_manifest(tauri_build::AppManifest::new().commands(commands));

@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "permission",
+  "description": "Screen Recording steps window: status, open System Settings, restart, granted event",
+  "windows": ["permission"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-permission-granted",
+    "allow-open-permission-settings",
+    "allow-restart-app"
+  ]
+}
