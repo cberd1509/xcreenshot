@@ -784,6 +784,29 @@ describe('Overlay', () => {
       await waitFor(() => expect(shapes()).toHaveLength(1))
     })
 
+    it('leaves every key to the text being typed, and Esc commits it', async () => {
+      await annotated()
+      await userEvent.keyboard('t')
+      fireEvent.pointerDown(layer(), point({ x: 70, y: 30 }))
+      fireEvent.pointerUp(layer(), point({ x: 70, y: 30 }))
+      const field = await screen.findByRole('textbox', { name: 'Text' })
+      await waitFor(() => expect(field).toHaveFocus())
+      // Letters, arrows, Enter and Ctrl+C or Ctrl+S type or move the caret: no tool, nudge, copy
+      // or save.
+      await userEvent.keyboard('ra{ArrowLeft}{Enter}{Control>}cs{/Control}')
+      expect(field).toHaveValue('r\na')
+      expect(rect()).toEqual([10, 10, 100, 50])
+      expect(calls.filter((c) => c.cmd === 'overlay_copy' || c.cmd === 'overlay_save')).toEqual([])
+      expect(screen.getByLabelText('Text', { selector: 'button' })).toHaveAttribute(
+        'data-state',
+        'on',
+      )
+      await esc(1)
+      await waitFor(() => expect(answers()).toEqual([{ session: 9, token: 1, handled: true }]))
+      expect(shapes()).toHaveLength(2)
+      expect(screen.queryByRole('textbox', { name: 'Text' })).toBeNull()
+    })
+
     it('leaves keys to an open toolbar menu', async () => {
       await annotated()
       await userEvent.click(screen.getByRole('button', { name: 'More' }))

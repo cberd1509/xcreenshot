@@ -3,6 +3,7 @@
 // selection only clips what is shown and exported.
 
 import { clamp, span, union, type Point, type Rect, type Scale } from '../geometry'
+import { MAX_FONT, MIN_FONT } from './text'
 
 export type Tool = 'pen' | 'line' | 'arrow' | 'rect' | 'ellipse' | 'highlighter' | 'text' | 'blur'
 
@@ -18,8 +19,8 @@ export const TOOLS: readonly { tool: Tool; key: string; label: string }[] = [
   { tool: 'blur', key: 'B', label: 'Blur to hide info' },
 ]
 
-/** Tools that draw something today. The rest come in #14–#16. */
-export const READY: ReadonlySet<Tool> = new Set<Tool>(['rect', 'arrow'])
+/** Tools that draw something today. The rest come in #14 and #16. */
+export const READY: ReadonlySet<Tool> = new Set<Tool>(['rect', 'arrow', 'text'])
 
 /** The tool for a single-letter shortcut, ignoring case. */
 export function toolForKey(key: string): Tool | null {
@@ -39,7 +40,13 @@ export type RectShape = Base & Rect & { kind: 'rect' }
 export type BlurShape = Base & Rect & { kind: 'blur' }
 /** From (x1, y1) to (x2, y2), the head at the end. */
 export type ArrowShape = Base & { kind: 'arrow'; points: [number, number, number, number] }
-export type Shape = RectShape | BlurShape | ArrowShape
+/**
+ * Text in a box sized to fit it (`width`, `height`, measured by the board). The color comes from
+ * the style; `style.size` is unused.
+ */
+export type TextShape = Base &
+  Rect & { kind: 'text'; text: string; fontSize: number; background: boolean }
+export type Shape = RectShape | BlurShape | ArrowShape | TextShape
 
 /** Shapes smaller than this on both axes are a click, not a drag, and are dropped. */
 export const MIN_SIZE = 3
@@ -82,6 +89,15 @@ export function transform(shape: Shape, t: Transform): Shape {
       points: [t.x, t.y, t.x + (x2 - x1) * t.scaleX, t.y + (y2 - y1) * t.scaleY],
     }
   }
+  if (shape.kind === 'text') {
+    // Text scales as a whole: the font grows or shrinks, it never stretches.
+    const k = clamp(Math.abs(t.scaleY), MIN_FONT / shape.fontSize, MAX_FONT / shape.fontSize)
+    const far = {
+      x: t.x + shape.width * k * Math.sign(t.scaleX || 1),
+      y: t.y + shape.height * k * Math.sign(t.scaleY || 1),
+    }
+    return { ...shape, ...span(t, far), fontSize: shape.fontSize * k }
+  }
   const far = { x: t.x + shape.width * t.scaleX, y: t.y + shape.height * t.scaleY }
   return { ...shape, ...span(t, far) }
 }
@@ -103,7 +119,9 @@ export function bounds(shape: Shape): Rect {
 /** The box a shape paints, strokes and arrow heads included. */
 export function paintBounds(shape: Shape): Rect {
   const b = bounds(shape)
-  const pad = shape.kind === 'arrow' ? shape.style.size * 4 : shape.style.size
+  // Text paints inside its box; 1 px more keeps antialiased edges.
+  const pad =
+    shape.kind === 'arrow' ? shape.style.size * 4 : shape.kind === 'text' ? 1 : shape.style.size
   return { x: b.x - pad, y: b.y - pad, width: b.width + 2 * pad, height: b.height + 2 * pad }
 }
 

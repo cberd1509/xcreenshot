@@ -38,11 +38,15 @@
   import * as Tooltip from '$lib/components/ui/tooltip'
   import { isMac } from '$lib/settings.svelte'
   import { COLORS, READY, SIZES, TOOLS, type Style, type Tool } from './shapes'
+  import type { TextOptions } from './text'
+  import TextOptionsBar from './TextOptions.svelte'
 
   let {
     tool,
     ontool,
     style = $bindable(),
+    text = null,
+    ontext = () => {},
     drawable = true,
     canUndo,
     canRedo,
@@ -57,6 +61,9 @@
     tool: Tool | null
     ontool: (tool: Tool | null) => void
     style: Style
+    /** The text tool's options, shown while it is in use; `null` hides them. */
+    text?: TextOptions | null
+    ontext?: (text: TextOptions) => void
     /** False when the drawing layer could not load: the tools are shown as unavailable. */
     drawable?: boolean
     canUndo: boolean
@@ -184,6 +191,10 @@
         {@render tip(item, t.label, t.key)}
       {/each}
     </ToggleGroup.Root>
+
+    {#if text}
+      <TextOptionsBar options={text} onchange={ontext} />
+    {/if}
 
     <Popover.Root bind:open={colorsOpen}>
       {@render tip(colorButton, 'Color and size')}

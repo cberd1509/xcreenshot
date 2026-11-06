@@ -73,11 +73,24 @@ const press = (key: string, init: KeyboardEventInit = {}) =>
 /** ⌘ on macOS, Ctrl elsewhere. */
 const mod = isMac ? { metaKey: true } : { ctrlKey: true }
 
+/** The text editor, if open. */
+const editor = () => screen.queryByRole<HTMLTextAreaElement>('textbox', { name: 'Text' })
+/** The text drawn by each text node on the board. */
+const texts = () => nodes().map((n) => n.children[1]?.attrs.text)
+
 /** Drags on the annotation layer, in window px. */
 async function drag(x1: number, y1: number, x2: number, y2: number) {
   await fireEvent.pointerDown(element(), at(x1, y1))
   await fireEvent.pointerMove(element(), at(x2, y2))
   await fireEvent.pointerUp(element(), at(x2, y2))
+}
+
+/** Picks the text tool and clicks at (x, y): the editor opens there. */
+async function place(api: Api, x = 150, y = 150) {
+  api.key(press('t'))
+  await drag(x, y, x, y)
+  await waitFor(() => expect(editor()).toHaveFocus())
+  return editor()!
 }
 
 describe('Annotator', () => {
@@ -421,5 +434,191 @@ describe('Annotator', () => {
     const { view } = await setup()
     view.unmount()
     expect(stage().destroyed).toBe(true)
+  })
+
+  describe('text', () => {
+    it('places a caret with a click, and commits the typed text on Esc', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      const field = await place(api)
+      // Medium (24 px) with 7 px padding: the first line is centered on the click.
+      expect(field.style).toMatchObject({ left: '143px', top: '128px', fontSize: '24px' })
+      expect(kinds()).toEqual([])
+      await user.type(field, 'Hello')
+      expect(api.escape()).toBe(true)
+      await waitFor(() => expect(editor()).not.toBeInTheDocument())
+      expect(kinds()).toEqual(['Group'])
+      expect(texts()).toEqual(['Hello'])
+      // Measured as Konva lays it out (the fake: 12 px a character), padding included.
+      expect(nodes()[0].attrs).toMatchObject({ x: 143, y: 128 })
+      expect(nodes()[0].children[0].attrs).toMatchObject({ width: 74, height: 44 })
+      expect(passed).not.toHaveBeenCalled()
+      // One undo step.
+      api.key(press('z', mod))
+      await waitFor(() => expect(kinds()).toEqual([]))
+    })
+
+    it('commits on blur and on a press elsewhere, and drops empty text', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      await user.type(await place(api), 'A')
+      await fireEvent.blur(editor()!)
+      await waitFor(() => expect(texts()).toEqual(['A']))
+
+      await user.type(await place(api, 300, 300), 'B')
+      // A press on the board only commits: it starts nothing and the overlay never sees it.
+      await fireEvent.pointerDown(element(), at(400, 200))
+      await waitFor(() => expect(editor()).not.toBeInTheDocument())
+      expect(texts()).toEqual(['A', 'B'])
+      expect(passed).not.toHaveBeenCalled()
+
+      await user.type(await place(api, 300, 200), '  \n ')
+      api.escape()
+      await place(api, 300, 250)
+      api.escape()
+      await waitFor(() => expect(editor()).not.toBeInTheDocument())
+      expect(texts()).toEqual(['A', 'B'])
+      // The empty ones left no undo step.
+      api.key(press('z', mod))
+      await waitFor(() => expect(texts()).toEqual(['A']))
+    })
+
+    it('keeps presses on the editor from the overlay', async () => {
+      const { api } = await setup()
+      await fireEvent.pointerDown(await place(api), at(150, 150))
+      expect(passed).not.toHaveBeenCalled()
+      expect(editor()).toBeInTheDocument()
+    })
+
+    it('edits a text again on double-click or Enter, as one undo step', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      await user.type(await place(api), 'Hi')
+      api.escape()
+      await waitFor(() => expect(texts()).toEqual(['Hi']))
+
+      // Double-click: the text leaves the board while it is in the editor.
+      nodes()[0].fire('dblclick')
+      await waitFor(() => expect(editor()).toHaveValue('Hi'))
+      expect(editor()!.style).toMatchObject({ left: '143px', top: '128px' })
+      expect(kinds()).toEqual([])
+      await user.type(editor()!, '!')
+      api.escape()
+      await waitFor(() => expect(texts()).toEqual(['Hi!']))
+      api.key(press('z', mod))
+      await waitFor(() => expect(texts()).toEqual(['Hi']))
+
+      // Opened and closed with no change: no undo step.
+      nodes()[0].fire('dblclick')
+      await waitFor(() => expect(editor()).toBeInTheDocument())
+      api.escape()
+      await waitFor(() => expect(texts()).toEqual(['Hi']))
+
+      // Enter on the selected text; emptying it deletes it.
+      nodes()[0].fire('pointerdown')
+      await waitFor(() => expect(transformer().attached).toHaveLength(1))
+      const enter = press('Enter')
+      expect(api.key(enter)).toBe(true)
+      expect(enter.defaultPrevented).toBe(true)
+      await waitFor(() => expect(editor()).toHaveValue('Hi'))
+      expect(transformer().attached).toEqual([])
+      await user.clear(editor()!)
+      api.escape()
+      await waitFor(() => expect(kinds()).toEqual([]))
+      api.key(press('z', mod))
+      await waitFor(() => expect(texts()).toEqual(['Hi']))
+      api.key(press('z', mod))
+      await waitFor(() => expect(kinds()).toEqual([]))
+    })
+
+    it('owns every key while text is edited, leaving it to the textarea', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      await user.type(await place(api), 'A')
+      await fireEvent.blur(editor()!)
+      await place(api, 300, 300)
+      for (const e of [
+        press('r'),
+        press('c', mod),
+        press('s', mod),
+        press('z', mod),
+        press('Enter'),
+        press('ArrowLeft'),
+        press('Backspace'),
+      ]) {
+        expect(api.key(e)).toBe(true)
+        expect(e.defaultPrevented).toBe(false)
+      }
+      // Nothing was undone, and the tool is still Text.
+      expect(texts()).toEqual(['A'])
+      expect(screen.getByLabelText('Text', { selector: 'button' })).toHaveAttribute(
+        'data-state',
+        'on',
+      )
+    })
+
+    it('shows a text cursor over the selection', async () => {
+      const { api } = await setup()
+      api.key(press('t'))
+      await fireEvent.pointerMove(element(), at(150, 150))
+      expect(element().style.cursor).toBe('text')
+    })
+
+    it('applies the text options, also to the text being typed', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      expect(screen.queryByLabelText('Text size')).not.toBeInTheDocument()
+      const field = await place(api)
+      await user.type(field, 'Hi')
+      await user.click(screen.getByLabelText('Large text'))
+      await user.click(screen.getByRole('button', { name: 'Background' }))
+      expect(field.style.fontSize).toBe('36px')
+      expect(field.style.background).not.toBe('transparent')
+      api.escape()
+      await waitFor(() => expect(texts()).toEqual(['Hi']))
+      const [box, label] = nodes()[0].children
+      expect(label.attrs).toMatchObject({ fontSize: 36, fill: '#FFFFFF' })
+      expect(box.attrs.fill).toBe('#FF3B30')
+      // The next text uses them too.
+      await place(api, 300, 300)
+      expect(editor()!.style.fontSize).toBe('36px')
+    })
+
+    it('shows the options of a text edited with another tool, keeping a resized size', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      await user.type(await place(api), 'Hi')
+      api.escape()
+      api.key(press('r'))
+      await waitFor(() => expect(screen.queryByLabelText('Text size')).not.toBeInTheDocument())
+      const node = nodes()[0]
+      node.setAttrs({ scaleX: 1.25, scaleY: 1.25 })
+      node.fire('transformend')
+      await waitFor(() => expect(nodes()[0].children[1].attrs.fontSize).toBe(30))
+      nodes()[0].fire('dblclick')
+      await waitFor(() => expect(editor()!.style.fontSize).toBe('30px'))
+      expect(screen.getByLabelText('Medium text')).toHaveAttribute('data-state', 'on')
+    })
+
+    it('commits the text being typed before exporting', async () => {
+      fakeContext()
+      const user = userEvent.setup()
+      const { api } = await setup()
+      await user.type(await place(api), 'Hi')
+      const out = await api.exportAnnotations({ x: 200, y: 200, width: 800, height: 600 }, scale)
+      // The 38 x 44 box at (143, 128), plus a pixel, at 2x, less the crop.
+      expect(out.layer).toMatchObject({ x: 84, y: 54, width: 80, height: 92 })
+      expect(editor()).not.toBeInTheDocument()
+    })
+
+    it('drops the text being typed on reset', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      await user.type(await place(api), 'Hi')
+      api.reset()
+      await waitFor(() => expect(editor()).not.toBeInTheDocument())
+      expect(kinds()).toEqual([])
+      expect(api.annotated()).toBe(false)
+    })
   })
 })

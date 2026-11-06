@@ -15,8 +15,12 @@
     paintedBounds,
     toolForKey,
     translate,
+    type Style,
+    type TextShape,
     type Tool,
   } from './shapes'
+  import { DEFAULT_TEXT, TEXT_SIZES, boxAt, sizeOf, type TextOptions } from './text'
+  import TextEditor from './TextEditor.svelte'
   import type ToolbarComponent from './Toolbar.svelte'
   import type { Option, ToolbarActions } from './Toolbar.svelte'
 
@@ -59,6 +63,21 @@
   let ids = 0
   let bar = $state<Size>({ width: 0, height: 0 })
   let cursor = $state('')
+  let textOptions = $state<TextOptions>(DEFAULT_TEXT)
+
+  /** The text being typed: a new one, or one taken off the board to edit again. */
+  type Editing = {
+    id: string
+    at: Point
+    text: string
+    fontSize: number
+    background: boolean
+    style: Style
+    existing: boolean
+  }
+  let editing = $state<Editing | null>(null)
+  /** The text hidden from the board while it is edited. */
+  const hidden = $derived(editing?.id)
 
   const drawing = $derived(tool !== null && READY.has(tool) && !failed)
 
@@ -97,6 +116,10 @@
         board = new Board(K, container, {
           onchange: (shape) => set(replace(history.present, keepInside(shape, selection!))),
           onselect: (id) => (selected = id),
+          onedit: (id) => {
+            const shape = history.present.find((s) => s.id === id)
+            if (shape?.kind === 'text') edit(shape)
+          },
         })
       })
       .catch((e: unknown) => {
@@ -106,7 +129,9 @@
   })
 
   $effect(() => board?.place(selection, display))
-  $effect(() => board?.render(history.present, selected))
+  $effect(() =>
+    board?.render(hidden ? without(history.present, hidden) : history.present, selected),
+  )
 
   /** Moves history, dropping the shape selection if that shape is gone. */
   function move(next: History) {
@@ -129,7 +154,67 @@
     history = empty
     selected = null
     tool = null
+    editing = null
     cancel()
+  }
+
+  /** Opens the editor for a new text with its caret at `p`. */
+  function place(p: Point) {
+    const fontSize = TEXT_SIZES[textOptions.size]
+    editing = {
+      id: `s${++ids}`,
+      at: boxAt(p, fontSize),
+      text: '',
+      fontSize,
+      background: textOptions.background,
+      style,
+      existing: false,
+    }
+  }
+
+  /** Opens the editor on a text already on the board. Its options become the tool's. */
+  function edit(shape: TextShape) {
+    const { id, x, y, text, fontSize, background } = shape
+    selected = null
+    editing = { id, at: { x, y }, text, fontSize, background, style: shape.style, existing: true }
+    textOptions = { size: sizeOf(fontSize) ?? textOptions.size, background }
+  }
+
+  /**
+   * Commits the text being edited, as one undo step. Empty text is dropped (an edited text
+   * that is emptied is deleted).
+   */
+  function finish() {
+    const e = editing
+    if (!e || !board) return
+    editing = null
+    const text = e.text.trimEnd()
+    if (!text.trim()) {
+      if (e.existing) set(without(history.present, e.id))
+      return
+    }
+    const { id, fontSize, background } = e
+    const shape: TextShape = {
+      id,
+      kind: 'text',
+      style: e.style,
+      ...e.at,
+      ...board.measure(text, fontSize),
+      text,
+      fontSize,
+      background,
+    }
+    const kept = selection ? keepInside(shape, selection) : shape
+    set(e.existing ? replace(history.present, kept) : [...history.present, kept])
+  }
+
+  /** New text options; the text being edited follows them. */
+  function setText(next: TextOptions) {
+    textOptions = next
+    if (editing) {
+      editing.fontSize = TEXT_SIZES[next.size]
+      editing.background = next.background
+    }
   }
 
   function cancel() {
@@ -141,6 +226,11 @@
 
   function onpointerdown(e: PointerEvent) {
     if (e.button !== 0 || !selection || !board) return
+    // A press anywhere else commits the text being edited, and does nothing more.
+    if (editing) {
+      e.stopPropagation()
+      return finish()
+    }
     // On a shape or its handles: Konva moves or resizes it.
     if (board.hits(at(e))) return e.stopPropagation()
     selected = null
@@ -157,11 +247,22 @@
       board?.preview(draw(tool, 'draft', start, clampTo(at(e), selection), style))
     }
     // Over the selection: crosshair to draw, else move it. Elsewhere, the overlay's cursor.
-    cursor = !contains(selection, at(e)) ? '' : drawing ? 'crosshair' : 'move'
+    cursor = !contains(selection, at(e))
+      ? ''
+      : drawing
+        ? tool === 'text'
+          ? 'text'
+          : 'crosshair'
+        : 'move'
   }
 
   function onpointerup(e: PointerEvent) {
     if (!start || !tool || !selection) return
+    if (tool === 'text') {
+      const p = start
+      cancel()
+      return place(p)
+    }
     const shape = draw(tool, `s${++ids}`, start, clampTo(at(e), selection), style)
     cancel()
     if (shape) set([...history.present, shape])
@@ -172,6 +273,8 @@
 
   /** Handles an annotation key. Returns whether it did, so the overlay skips it. */
   export function key(e: KeyboardEvent): boolean {
+    // While text is edited, every key is the textarea's: no shortcuts, copy or nudges.
+    if (editing) return true
     if (!selection || menuOpen() || typing(e.target)) return false
     const redoing = shortcut(e, 'z', true)
     if (redoing || shortcut(e, 'z')) {
@@ -184,6 +287,11 @@
     if (shape && (e.key === 'Backspace' || e.key === 'Delete')) {
       e.preventDefault()
       set(without(history.present, shape.id))
+      return true
+    }
+    if (shape?.kind === 'text' && e.key === 'Enter') {
+      e.preventDefault()
+      edit(shape)
       return true
     }
     const b = shape && bounds(shape)
@@ -202,11 +310,12 @@
   }
 
   /**
-   * Esc, one step at a time: the shape being drawn, an open menu, the selected shape, then the
+   * Esc, one step at a time: the text being edited (it is kept), the shape being drawn, an open menu, the selected shape, then the
    * tool. Returns whether it undid anything; if not, the overlay handles Esc.
    */
   export function escape(): boolean {
-    if (start) cancel()
+    if (editing) finish()
+    else if (start) cancel()
     else if (toolbar?.closeMenus()) return true
     else if (selected) selected = null
     else if (tool) tool = null
@@ -220,6 +329,7 @@
    * docs/annotations.md.
    */
   export function exportAnnotations(crop: Rect, ratio: Scale): Promise<AnnotationExport> {
+    finish()
     return exportShapes(history.present, crop, ratio)
   }
 
@@ -240,6 +350,18 @@
   onpointercancel={cancel}
 ></div>
 
+{#if editing && board}
+  <TextEditor
+    bind:text={editing.text}
+    at={editing.at}
+    fontSize={editing.fontSize}
+    background={editing.background}
+    color={editing.style.color}
+    measure={(text, size) => board!.measure(text, size)}
+    oncommit={finish}
+  />
+{/if}
+
 {#if Toolbar && toolbarAt}
   <div
     class="toolbar"
@@ -255,6 +377,8 @@
       {tool}
       ontool={(t) => (tool = t)}
       bind:style
+      text={tool === 'text' || editing ? textOptions : null}
+      ontext={setText}
       drawable={!failed}
       canUndo={history.past.length > 0}
       canRedo={history.future.length > 0}

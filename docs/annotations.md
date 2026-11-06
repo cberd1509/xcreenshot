@@ -6,11 +6,14 @@ logic.
 | File               | What it does                                                        |
 | ------------------ | ------------------------------------------------------------------- |
 | `shapes.ts`        | Shape model, tools and their shortcuts, drawing and transform math  |
+| `text.ts`          | Text sizes, font, padding and colors                                |
 | `history.ts`       | Undo and redo as snapshots of the shape list (last 200)             |
 | `placement.ts`     | Where the toolbar goes                                              |
 | `board.ts`         | The Konva stage, and `exportShapes`                                 |
 | `Annotator.svelte` | Pointer input, history, the toolbar, and the API the overlay calls |
 | `Toolbar.svelte`   | The toolbar (presentational, loaded on demand)                      |
+| `TextOptions.svelte` | The text tool's size and background, in the toolbar               |
+| `TextEditor.svelte`  | The textarea that edits a text in place                           |
 
 ## Shape model
 
@@ -21,6 +24,9 @@ exported. A shape dragged out of the selection is pulled back until 8 px of it s
 
 - `rect` and `blur`: `x`, `y`, `width`, `height`
 - `arrow`: `points: [x1, y1, x2, y2]`, head at the end
+- `text`: `x`, `y`, `width`, `height` (its box, measured by Konva), `text`, `fontSize` and
+  `background`. Font sizes are logical px (S 16, M 24, L 36), so they look the same on any
+  display. Resizing scales the font; the box is measured again.
 
 The other tools (#14–#16) add kinds here.
 
@@ -47,6 +53,20 @@ While there are annotations (`annotated()`), a press outside the selection is ig
 starting a new selection, and a resize cannot shrink the selection past what the shapes paint
 inside it (`painted()`). Annotations go on Esc (with the selection), on the next capture, and when
 a selection starts on another display.
+
+## Text
+
+With the Text tool, a click in the selection opens a textarea there, laid out like the Konva text
+it becomes (system UI font, same padding and line height). Double-click a text, or press Enter
+with it selected, to edit it again; it leaves the board meanwhile. Esc, a press elsewhere, or the
+textarea losing focus commits it as one undo step; empty text is dropped (an emptied text is
+deleted). Copy and Save commit it first.
+
+While a text is edited, `key(e)` returns true for every key without `preventDefault`, so the
+overlay runs no shortcut, copy, save or nudge and the textarea gets the key. Esc comes from Rust
+as usual and `escape()` commits the text first. The size and Background buttons do not take
+focus, so the text being typed follows them. With Background, the box is filled with the color
+and the text is black or white, whichever reads better.
 
 ## Speed
 
