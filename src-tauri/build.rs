@@ -11,6 +11,7 @@ fn main() {
         "close_overlay",
         "permission_granted",
         "open_permission_settings",
+        "permission_pane",
         "restart_app",
         "capture_shortcut",
         "get_prefs",
@@ -18,6 +19,9 @@ fn main() {
         "set_capture_option",
         "pause_capture_shortcut",
         "resume_capture_shortcut",
+        "login_item_needs_approval",
+        "open_login_items",
+        "open_repo",
     ];
     let mut attributes = tauri_build::Attributes::new()
         .app_manifest(tauri_build::AppManifest::new().commands(commands));

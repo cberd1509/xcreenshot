@@ -1,5 +1,6 @@
 //! App wiring only: menu bar, global shortcut and windows. Logic lives in the modules below.
 
+mod about;
 mod actions;
 /// Public for `examples/capture.rs`.
 pub mod capture;
@@ -57,11 +58,15 @@ pub fn run() {
         // Used from Rust only: the pages get no updater, dialog, store or autostart permissions.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_store::Builder::new().build())
-        .plugin(tauri_plugin_autostart::Builder::new().build());
-    // macOS writes the clipboard itself (`output::write_png`).
+        .plugin(tauri_plugin_store::Builder::new().build());
+    // macOS writes the clipboard itself (`output::write_png`) and uses SMAppService for the
+    // login item (`login`).
     #[cfg(not(target_os = "macos"))]
-    let builder = builder.plugin(tauri_plugin_clipboard_manager::init());
+    let builder = builder
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_autostart::Builder::new().build());
+    #[cfg(target_os = "macos")]
+    let builder = builder.manage(login::System::default());
     builder
         .manage(overlay::Overlay::default())
         .manage(shortcut::Registered::default())
@@ -77,6 +82,7 @@ pub fn run() {
             overlay::export::overlay_save,
             overlay::window::close_overlay,
             permission::permission_granted,
+            permission::permission_pane,
             #[cfg(target_os = "macos")]
             permission::open_permission_settings,
             permission::restart_app,
@@ -86,6 +92,10 @@ pub fn run() {
             settings::get_prefs,
             settings::set_pref,
             settings::set_capture_option,
+            login::login_item_needs_approval,
+            #[cfg(target_os = "macos")]
+            login::open_login_items,
+            about::open_repo,
         ])
         // The capture shortcut is paused while Settings records a new one: take it back if
         // that page reloads or its window closes mid-recording.
@@ -161,7 +171,7 @@ fn build_tray_icon(app: &AppHandle, capture_accelerator: &str) -> tauri::Result<
     Ok(())
 }
 
-/// The menu bar items. "Restart to update" is only there once an update is downloaded.
+/// The menu bar items, laid out by `Action::menu_rows`.
 fn tray_menu(
     app: &AppHandle,
     capture_accelerator: &str,
@@ -175,13 +185,10 @@ fn tray_menu(
         MenuItem::with_id(app, a.id(), label, true, a.accelerator(capture_accelerator))
     };
     let menu = Menu::new(app)?;
-    for action in Action::MENU {
-        if action == Action::RestartToUpdate && update.is_none() {
-            continue;
-        }
-        menu.append(&item(action)?)?;
-        if action.separator_after() {
-            menu.append(&PredefinedMenuItem::separator(app)?)?;
+    for row in Action::menu_rows(update.is_some()) {
+        match row {
+            Some(action) => menu.append(&item(action)?)?,
+            None => menu.append(&PredefinedMenuItem::separator(app)?)?,
         }
     }
     Ok(menu)

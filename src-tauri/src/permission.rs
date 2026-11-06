@@ -26,7 +26,7 @@ pub fn show<R: Runtime>(app: &AppHandle<R>) {
     let url = WebviewUrl::App("permission.html".into());
     let shown = show_window(app, WINDOW, url, |b| {
         b.title("xcreenshot")
-            .inner_size(460.0, 540.0)
+            .inner_size(560.0, 640.0)
             .resizable(false)
             .center()
     });
@@ -39,6 +39,31 @@ pub fn show<R: Runtime>(app: &AppHandle<R>) {
 #[tauri::command]
 pub fn permission_granted() -> bool {
     capture::has_permission()
+}
+
+/// The System Settings pane's name, which macOS 15 renamed.
+fn pane_name(macos_major: isize) -> &'static str {
+    if macos_major >= 15 {
+        "Screen & System Audio Recording"
+    } else {
+        "Screen Recording"
+    }
+}
+
+/// The running macOS's major version (0 elsewhere).
+fn macos_major() -> isize {
+    #[cfg(target_os = "macos")]
+    return objc2_foundation::NSProcessInfo::processInfo()
+        .operatingSystemVersion()
+        .majorVersion;
+    #[cfg(not(target_os = "macos"))]
+    0
+}
+
+/// The name of the Privacy & Security pane to turn xcreenshot on in, for the steps.
+#[tauri::command]
+pub fn permission_pane() -> &'static str {
+    pane_name(macos_major())
 }
 
 /// Privacy & Security › Screen Recording in System Settings.
@@ -78,6 +103,27 @@ mod tests {
         // Runs the real check; either way at most one window.
         on_startup(app.handle());
         assert_eq!(app.webview_windows().len(), 1);
+    }
+
+    #[test]
+    fn names_the_pane_by_macos_version() {
+        assert_eq!(pane_name(14), "Screen Recording");
+        assert_eq!(pane_name(15), "Screen & System Audio Recording");
+        assert_eq!(pane_name(26), "Screen & System Audio Recording");
+    }
+
+    /// The command's answer matches the version `sw_vers` reports for this Mac.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_command_names_this_macs_pane() {
+        let out = std::process::Command::new("sw_vers")
+            .arg("-productVersion")
+            .output()
+            .unwrap();
+        let version = String::from_utf8(out.stdout).unwrap();
+        let major: isize = version.trim().split('.').next().unwrap().parse().unwrap();
+        assert_eq!(macos_major(), major);
+        assert_eq!(permission_pane(), pane_name(major));
     }
 
     #[test]

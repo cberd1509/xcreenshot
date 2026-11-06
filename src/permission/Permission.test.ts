@@ -12,9 +12,11 @@ let granted: boolean
 let registered: boolean
 let accelerator: string
 let failing: Set<string>
+let pane: string
 
 const count = (cmd: string) => calls.filter((c) => c === cmd).length
 const button = (name: string) => screen.getByRole('button', { name })
+const noRestart = () => screen.queryByRole('button', { name: 'Restart xcreenshot' })
 const isPrimary = (el: HTMLElement) => el.className.includes('bg-primary ')
 const done = () => screen.queryByRole('heading', { name: 'All set.' })
 /** Lets the mocked IPC answer, then moves the (fake) clock on. */
@@ -33,12 +35,14 @@ describe('Permission', () => {
     registered = true
     accelerator = SHORTCUT
     failing = new Set()
+    pane = 'Screen & System Audio Recording'
     mockWindows('permission')
     mockIPC((cmd) => {
       calls.push(cmd)
       if (failing.has(cmd)) throw new Error('nope')
       if (cmd === 'permission_granted') return granted
       if (cmd === 'capture_shortcut') return { accelerator, registered }
+      if (cmd === 'permission_pane') return pane
     })
   })
 
@@ -50,14 +54,64 @@ describe('Permission', () => {
     vi.restoreAllMocks()
   })
 
-  it('shows the three steps and checks right away', async () => {
+  it('shows the three steps, waits for the permission and checks right away', async () => {
     await mount()
-    expect(screen.getByRole('heading', { name: 'Allow Screen Recording' })).toBeInTheDocument()
-    expect(screen.getAllByRole('listitem')).toHaveLength(3)
-    expect(screen.getByText('Turn on xcreenshot')).toBeInTheDocument()
-    expect(screen.getByText(/Privacy & Security › Screen Recording/)).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Allow screen recording' })).toBeInTheDocument()
+    expect(screen.getAllByRole('listitem').map((li) => li.textContent?.trim())).toEqual([
+      expect.stringMatching(/Click Open System Settings below\./),
+      expect.stringMatching(
+        /Go to Privacy & Security › Screen & System Audio Recording\s+and turn on xcreenshot\./,
+      ),
+      expect.stringMatching(/Come back to this window\. It updates on its own\./),
+    ])
+    expect(screen.getByRole('status')).toHaveTextContent('Waiting for permission…')
     expect(count('permission_granted')).toBe(1)
     expect(isPrimary(button('Open System Settings'))).toBe(true)
+    expect(button('Later')).toBeInTheDocument()
+    expect(noRestart()).toBeNull()
+  })
+
+  it('names the Screen Recording pane as macOS 14 does', async () => {
+    pane = 'Screen Recording'
+    await mount()
+    expect(screen.getByText('Privacy & Security › Screen Recording')).toBeInTheDocument()
+  })
+
+  it('names no pane until the version is known', () => {
+    render(Permission)
+    expect(screen.getByText('Privacy & Security')).toBeInTheDocument()
+  })
+
+  it('says "Screen Recording" if the version cannot be read', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    failing = new Set(['permission_pane'])
+    await mount()
+    expect(screen.getByText('Privacy & Security › Screen Recording')).toBeInTheDocument()
+    expect(error).toHaveBeenCalledWith('permission_pane failed', expect.any(Error))
+  })
+
+  it('shows the app icon', async () => {
+    await mount()
+    expect(screen.getByRole('img', { name: 'xcreenshot' })).toHaveAttribute(
+      'src',
+      expect.stringContaining('128x128@2x.png'),
+    )
+  })
+
+  it('closes the window on Later', async () => {
+    await mount()
+    await fireEvent.click(button('Later'))
+    await after()
+    expect(calls).toContain('plugin:window|close')
+  })
+
+  it('logs when the window cannot close', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    failing = new Set(['plugin:window|close'])
+    await mount()
+    await fireEvent.click(button('Later'))
+    await after()
+    expect(error).toHaveBeenCalledWith('close failed', expect.any(Error))
   })
 
   it('re-checks every second and shows the shortcut once granted', async () => {
@@ -82,7 +136,7 @@ describe('Permission', () => {
     await after(1000)
     expect(count('permission_granted')).toBe(2)
     expect(done()).toBeNull()
-    expect(screen.getByRole('heading', { name: 'Allow Screen Recording' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Allow screen recording' })).toBeInTheDocument()
   })
 
   it('says another app has the shortcut when it is not registered', async () => {
@@ -100,13 +154,11 @@ describe('Permission', () => {
     expect(calls).toContain('restart_app')
   })
 
-  it('opens System Settings and restarts from the buttons', async () => {
+  it('opens System Settings from its button', async () => {
     await mount()
     await fireEvent.click(button('Open System Settings'))
-    await fireEvent.click(button('Restart xcreenshot'))
     await after()
     expect(calls).toContain('open_permission_settings')
-    expect(calls).toContain('restart_app')
   })
 
   it('offers the restart from the done screen', async () => {
@@ -118,19 +170,27 @@ describe('Permission', () => {
     expect(calls).toContain('restart_app')
   })
 
-  it('asks for a restart when back from System Settings without the permission', async () => {
+  it('asks for a restart when back from System Settings twice without the permission', async () => {
     await mount()
     await fireEvent.focus(window)
     await after()
-    expect(isPrimary(button('Restart xcreenshot'))).toBe(false)
+    expect(noRestart()).toBeNull()
 
     await fireEvent.click(button('Open System Settings'))
     await after()
     await fireEvent.focus(window)
     await after()
-    expect(screen.getByText(/macOS needs xcreenshot to restart/)).toBeInTheDocument()
+    // Once may just mean the switch isn't on yet.
+    expect(noRestart()).toBeNull()
+    expect(screen.getByRole('status')).toHaveTextContent('Waiting for permission…')
+    await fireEvent.focus(window)
+    await after()
+    expect(screen.getByRole('status')).toHaveTextContent(/macOS needs xcreenshot to restart/)
     expect(isPrimary(button('Restart xcreenshot'))).toBe(true)
     expect(isPrimary(button('Open System Settings'))).toBe(false)
+    await fireEvent.click(button('Restart xcreenshot'))
+    await after()
+    expect(calls).toContain('restart_app')
   })
 
   it('does not ask for a restart if System Settings did not open', async () => {
@@ -141,7 +201,7 @@ describe('Permission', () => {
     await after()
     await fireEvent.focus(window)
     await after()
-    expect(isPrimary(button('Restart xcreenshot'))).toBe(false)
+    expect(noRestart()).toBeNull()
   })
 
   it('shows done when back from System Settings with the permission', async () => {
@@ -185,7 +245,7 @@ describe('Permission', () => {
     failing = new Set(['permission_granted'])
     await fireEvent.focus(window)
     await after()
-    expect(isPrimary(button('Restart xcreenshot'))).toBe(false)
+    expect(noRestart()).toBeNull()
   })
 
   it('stops checking when the window closes', async () => {
@@ -204,9 +264,15 @@ describe('Permission', () => {
 
   it('logs every failed command', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
-    failing = new Set(['capture_shortcut', 'open_permission_settings', 'restart_app'])
+    failing = new Set(['capture_shortcut', 'open_permission_settings'])
     await mount()
     await fireEvent.click(button('Open System Settings'))
+    await after()
+    failing = new Set(['restart_app'])
+    granted = true
+    await after(1000)
+    await fireEvent.focus(window) // Reloads the shortcut, which shows the restart link.
+    await after()
     await fireEvent.click(button('Restart xcreenshot'))
     await after()
     expect(error.mock.calls.map((c) => c[0])).toEqual(

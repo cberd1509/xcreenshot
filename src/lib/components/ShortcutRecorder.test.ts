@@ -28,6 +28,8 @@ let onchange: ReturnType<typeof vi.fn<(a: string) => Promise<void>>>
 let onreset: ReturnType<typeof vi.fn<() => Promise<void>>>
 
 const button = (name: string) => screen.getByRole('button', { name })
+/** The key-cap button, named for the current shortcut while not recording. */
+const changeButton = () => screen.getByRole('button', { name: /^Change shortcut/ })
 const down = (code: string, mods: KeyboardEventInit = {}) =>
   fireEvent.keyDown(window, { code, ...mods })
 /** Releases a key and lets the save go through. */
@@ -37,12 +39,18 @@ const up = async (code: string, mods: KeyboardEventInit = {}) => {
 }
 
 function setup(accelerator = 'Control+Shift+Super+S') {
-  return render(ShortcutRecorder, { accelerator, onchange, onreset })
+  return render(ShortcutRecorder, {
+    title: 'Take a screenshot',
+    description: 'Works from any app.',
+    accelerator,
+    onchange,
+    onreset,
+  })
 }
 
 /** Clicks Change and waits for the shortcut to be let go. */
 async function change() {
-  await userEvent.click(button('Change'))
+  await userEvent.click(changeButton())
   await tick()
 }
 
@@ -75,10 +83,12 @@ describe('ShortcutRecorder', () => {
     vi.restoreAllMocks()
   })
 
-  it('shows the shortcut, Change and Reset to default', () => {
+  it('shows the shortcut as keys in a button named for it, and Reset to default', () => {
     setup('Alt+F5')
-    expect(screen.getByText('F5')).toBeInTheDocument()
-    expect(button('Change')).toBeInTheDocument()
+    expect(screen.getByText('Take a screenshot')).toBeInTheDocument()
+    expect(screen.getByText('Works from any app.')).toBeInTheDocument()
+    expect(changeButton()).toHaveAccessibleName('Change shortcut, currently Alt F5')
+    expect(changeButton()).toHaveTextContent('F5')
     expect(button('Reset to default')).toBeInTheDocument()
   })
 
@@ -101,7 +111,7 @@ describe('ShortcutRecorder', () => {
     expect(onchange).not.toHaveBeenCalled()
     await up('KeyD', { altKey: true, shiftKey: true })
     expect(onchange).toHaveBeenCalledExactlyOnceWith('Alt+Shift+D')
-    expect(button('Change')).toBeInTheDocument()
+    expect(changeButton()).toBeInTheDocument()
   })
 
   it('lets go of the capture shortcut while recording and takes it back before saving', async () => {
@@ -121,20 +131,24 @@ describe('ShortcutRecorder', () => {
     expect(onchange).toHaveBeenCalledExactlyOnceWith('Control+D')
   })
 
-  it('cancels on Esc, Cancel or leaving the window, taking the shortcut back each time', async () => {
+  it('cancels on Esc, Cancel, the key button or leaving the window, taking the shortcut back each time', async () => {
     await record()
     await down('KeyD', { ctrlKey: true })
     await down('Escape')
-    expect(button('Change')).toBeInTheDocument()
+    expect(changeButton()).toBeInTheDocument()
     await change()
+    expect(screen.queryByRole('button', { name: 'Reset to default' })).toBeNull()
     await userEvent.click(button('Cancel'))
-    expect(button('Change')).toBeInTheDocument()
+    expect(changeButton()).toBeInTheDocument()
+    await change()
+    await userEvent.click(button('Recording a shortcut, press to cancel'))
+    expect(changeButton()).toBeInTheDocument()
     await change()
     await fireEvent.blur(window)
-    expect(button('Change')).toBeInTheDocument()
+    expect(changeButton()).toBeInTheDocument()
     await fireEvent.blur(window) // Not recording: nothing to take back.
     expect(onchange).not.toHaveBeenCalled()
-    expect(calls).toEqual([PAUSE, RESUME, PAUSE, RESUME, PAUSE, RESUME])
+    expect(calls).toEqual([PAUSE, RESUME, PAUSE, RESUME, PAUSE, RESUME, PAUSE, RESUME])
   })
 
   it('takes the shortcut back if the page goes away mid-recording', async () => {
@@ -150,7 +164,7 @@ describe('ShortcutRecorder', () => {
     await record()
     await tick()
     expect(screen.getByRole('alert')).toHaveTextContent("Couldn't change the shortcut.")
-    expect(button('Change')).toBeInTheDocument()
+    expect(changeButton()).toBeInTheDocument()
     await down('KeyD', { ctrlKey: true })
     await up('KeyD', { ctrlKey: true })
     expect(onchange).not.toHaveBeenCalled()
@@ -217,8 +231,8 @@ describe('ShortcutRecorder', () => {
     let release = Function.prototype as () => void
     pausing = new Promise((r) => (release = r))
     setup()
-    await userEvent.click(button('Change'))
-    expect(button('Change')).toBeDisabled()
+    await userEvent.click(changeButton())
+    expect(changeButton()).toBeDisabled()
     expect(button('Reset to default')).toBeDisabled()
     // Pressed before it was let go: the capture shortcut takes it, not the recorder.
     await down('KeyD', { ctrlKey: true })
@@ -233,12 +247,12 @@ describe('ShortcutRecorder', () => {
     let release = Function.prototype as () => void
     pausing = new Promise((r) => (release = r))
     setup()
-    await userEvent.click(button('Change'))
+    await userEvent.click(changeButton())
     await fireEvent.blur(window)
     release()
     await tick()
     expect(calls).toEqual([PAUSE, RESUME])
-    expect(button('Change')).not.toBeDisabled()
+    expect(changeButton()).not.toBeDisabled()
   })
 
   it('keeps the buttons waiting until a save answers', async () => {
@@ -246,10 +260,10 @@ describe('ShortcutRecorder', () => {
     onreset.mockImplementationOnce(() => new Promise((r) => (release = r)))
     setup()
     await userEvent.click(button('Reset to default'))
-    expect(button('Change')).toBeDisabled()
+    expect(changeButton()).toBeDisabled()
     expect(button('Reset to default')).toBeDisabled()
     release()
     await tick()
-    expect(button('Change')).not.toBeDisabled()
+    expect(changeButton()).not.toBeDisabled()
   })
 })
