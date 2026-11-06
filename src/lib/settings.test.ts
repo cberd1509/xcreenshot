@@ -1,37 +1,28 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
-
-async function loadOn(userAgent: string) {
-  vi.resetModules()
-  vi.stubGlobal('navigator', { userAgent })
-  return import('./settings.svelte')
-}
-
-afterEach(() => vi.unstubAllGlobals())
+import { describe, expect, it } from 'vitest'
+import { defaultSettings, settings, shortcutKeys } from './settings.svelte'
 
 describe('settings on macOS', () => {
-  it('defaults to ⌃⇧⌘S and shows Mac key symbols', async () => {
-    const s = await loadOn('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)')
-    expect(s.isMac).toBe(true)
-    expect(s.defaultSettings.shortcut).toBe('Control+Shift+Super+S')
-    expect(s.shortcutKeys(s.defaultSettings.shortcut)).toEqual(['⌃', '⇧', '⌘', 'S'])
-    expect(s.shortcutKeys('Alt+CmdOrCtrl+K')).toEqual(['⌥', '⌘', 'K'])
+  it('defaults to ⌃⇧⌘S and shows Mac key symbols', () => {
+    const { shortcut } = defaultSettings(true)
+    expect(shortcut).toBe('Control+Shift+Super+S')
+    expect(shortcutKeys(shortcut, true)).toEqual(['⌃', '⇧', '⌘', 'S'])
+    expect(shortcutKeys('Alt+CmdOrCtrl+K', true)).toEqual(['⌥', '⌘', 'K'])
   })
 })
 
 describe('settings on Windows', () => {
-  it('defaults to PrintScreen and shows Windows key names', async () => {
-    const s = await loadOn('Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
-    expect(s.isMac).toBe(false)
-    expect(s.defaultSettings.shortcut).toBe('PrintScreen')
-    expect(s.shortcutKeys('Control+Super+S')).toEqual(['Control', 'Win', 'S'])
+  it('defaults to PrintScreen and shows Windows key names', () => {
+    expect(defaultSettings(false).shortcut).toBe('PrintScreen')
+    expect(shortcutKeys('Control+Super+S', false)).toEqual(['Control', 'Win', 'S'])
   })
 })
 
 describe('settings state', () => {
-  it('starts from the defaults without sharing the object', async () => {
-    const s = await loadOn('Macintosh')
-    expect(s.settings).toEqual(s.defaultSettings)
-    s.settings.magnifier = true
-    expect(s.defaultSettings.magnifier).toBe(false)
+  it('starts from the defaults for this platform', () => {
+    expect(settings).toEqual(defaultSettings())
+  })
+
+  it('returns a fresh object each time', () => {
+    expect(defaultSettings()).not.toBe(defaultSettings())
   })
 })

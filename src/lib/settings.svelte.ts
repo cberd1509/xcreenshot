@@ -14,15 +14,17 @@ export type ToggleKey = {
   [K in keyof Settings]: Settings[K] extends boolean ? K : never
 }[keyof Settings]
 
-export const defaultSettings: Settings = {
-  shortcut: isMac ? 'Control+Shift+Super+S' : 'PrintScreen',
-  rememberRegion: true,
-  magnifier: false,
-  openAtLogin: true,
-  checkForUpdates: true,
+export function defaultSettings(mac = isMac): Settings {
+  return {
+    shortcut: mac ? 'Control+Shift+Super+S' : 'PrintScreen',
+    rememberRegion: true,
+    magnifier: false,
+    openAtLogin: true,
+    checkForUpdates: true,
+  }
 }
 
-export const settings: Settings = $state({ ...defaultSettings })
+export const settings: Settings = $state(defaultSettings())
 
 const macSymbols: Record<string, string> = {
   Control: '⌃',
@@ -32,9 +34,7 @@ const macSymbols: Record<string, string> = {
   CmdOrCtrl: '⌘',
 }
 
-/** Splits an accelerator into the key labels to show for this platform. */
-export function shortcutKeys(accelerator: string): string[] {
-  return accelerator
-    .split('+')
-    .map((k) => (isMac ? (macSymbols[k] ?? k) : k === 'Super' ? 'Win' : k))
+/** Splits an accelerator into the key labels to show on the given platform. */
+export function shortcutKeys(accelerator: string, mac = isMac): string[] {
+  return accelerator.split('+').map((k) => (mac ? (macSymbols[k] ?? k) : k === 'Super' ? 'Win' : k))
 }

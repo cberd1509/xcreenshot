@@ -29,6 +29,10 @@ CI runs the same checks on macOS and Windows.
 - Frontend: [Vitest](https://vitest.dev) + Testing Library. Tests sit next to the code as `*.test.ts`. Generated shadcn components in `src/lib/components/ui` are excluded.
 - Rust: `cargo test`, coverage with [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) (`brew install cargo-llvm-cov`). Keep `main.rs` and `lib.rs` to app wiring only; put logic in modules with unit tests.
 
+## App icon
+
+The icon sources are `assets/icon.svg` and `assets/tray.svg` (menu bar). After changing them, run `pnpm icons` to regenerate every size (needs `rsvg-convert`: `brew install librsvg`).
+
 ## Guidelines
 
 - **Privacy first.** No telemetry, analytics or network calls. The only exception is the update check.
