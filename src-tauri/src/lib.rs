@@ -36,6 +36,8 @@ pub fn run() {
             overlay::window::overlay_ready,
             overlay::window::overlay_frame,
             overlay::window::overlay_painted,
+            overlay::window::overlay_selection,
+            overlay::window::overlay_confirm,
             overlay::window::close_overlay,
         ])
         .setup(|app| {

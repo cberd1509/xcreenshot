@@ -15,7 +15,7 @@ pub struct Bounds {
 
 /// A selection in logical points, relative to the display's top-left corner.
 /// Negative sizes (dragging up or left) are allowed.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
 pub struct Rect {
     pub x: f64,
     pub y: f64,

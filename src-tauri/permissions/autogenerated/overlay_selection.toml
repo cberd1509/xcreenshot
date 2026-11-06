@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-overlay-selection"
+description = "Enables the overlay_selection command without any pre-configured scope."
+commands.allow = ["overlay_selection"]
+
+[[permission]]
+identifier = "deny-overlay-selection"
+description = "Denies the overlay_selection command without any pre-configured scope."
+commands.deny = ["overlay_selection"]
