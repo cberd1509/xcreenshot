@@ -21,6 +21,7 @@
     type Rect,
     type Size,
   } from './geometry'
+  import Annotator from './annotate/Annotator.svelte'
   import Magnifier from './Magnifier.svelte'
   import Selection from './Selection.svelte'
   import SizeBadge from './SizeBadge.svelte'
@@ -338,6 +339,7 @@
   {:else}
     <div class="dim"></div>
   {/if}
+  <Annotator {selection} {display} {badge} />
   {#if loupeOn && drag && drag.kind !== 'move' && onDisplay}
     {@const p = loupePosition(pointer, loupe, display)}
     <div
