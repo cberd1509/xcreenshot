@@ -483,13 +483,9 @@ pub(crate) mod tests {
         use std::sync::atomic::{AtomicU32, Ordering};
         use tauri::Manager;
         use tauri::async_runtime::block_on;
-        use tauri::test::{MockRuntime, mock_builder, mock_context, noop_assets};
+        use tauri::test::MockRuntime;
         static OPENED: AtomicU32 = AtomicU32::new(0);
-        let app = mock_builder()
-            .manage(crate::overlay::Overlay::default())
-            .manage(notice::Notices::default())
-            .build(mock_context(noop_assets()))
-            .unwrap();
+        let app = notice::tests::app();
         let h = app.handle();
         // Counts the calls; failing also covers the logged error.
         let open: Open<MockRuntime> = |_| {

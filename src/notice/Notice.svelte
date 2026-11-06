@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { failed } from '$lib/log'
   import { invoke } from '@tauri-apps/api/core'
   import { onMount } from 'svelte'
   import ShortcutKbd from '$lib/components/ShortcutKbd.svelte'
@@ -11,8 +12,6 @@
   let primary = $state<HTMLElement | null>(null)
   let answered = false
   const shown = $derived(notice && card(notice))
-
-  const failed = (command: string) => (e: unknown) => console.error(`${command} failed`, e)
 
   onMount(() => {
     invoke<Notice | null>('notice')

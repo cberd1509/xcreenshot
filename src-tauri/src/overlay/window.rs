@@ -220,14 +220,14 @@ fn start_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) -> Option<u64
             WATCHDOG,
         );
     });
-    // After the capture starts, so it isn't delayed. The overlay is always on top: a notice
-    // waits until it closes.
-    crate::notice::hide_for_capture(app);
     if let Err(e) = place(app, &displays) {
         log::error!("could not place the overlay windows: {e}");
         close(app);
         return None;
     }
+    // Last, so neither the capture nor the overlay waits for it. The overlay is always on top:
+    // a notice waits until it closes.
+    crate::notice::hide_for_capture(app);
     Some(session)
 }
 

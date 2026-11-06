@@ -103,8 +103,7 @@ fn open<R: Runtime>(
         // hides it anyway.
         .always_on_top(true)
         .center()
-        .visible(!busy)
-        .focused(!busy);
+        .visible(!busy);
     // The card is the whole window: no title bar, the system's corners, border and shadow.
     #[cfg(target_os = "macos")]
     let builder = builder
@@ -114,7 +113,7 @@ fn open<R: Runtime>(
     let builder = builder.decorations(false);
     let window = builder.build()?;
     #[cfg(all(target_os = "macos", not(test)))]
-    macos::hide_buttons(&window);
+    hide_buttons(&window);
     let handle = app.clone();
     let closed = label.to_owned();
     window.on_window_event(move |event| {
@@ -126,9 +125,10 @@ fn open<R: Runtime>(
         if let Some(pending) = app.state::<Notices>().lock().get_mut(label) {
             pending.hidden = true;
         }
-        return Ok(());
+        Ok(())
+    } else {
+        window.set_focus()
     }
-    window.set_focus()
 }
 
 /// The window closed: its question is dropped, so `ask` resolves to `None`.
@@ -136,43 +136,40 @@ fn forget<R: Runtime>(app: &AppHandle<R>, label: &str) {
     app.state::<Notices>().lock().remove(label);
 }
 
-/// The labels of the notices that are (`hidden`) or aren't hidden for a capture, marking them
-/// the other way.
-fn flip<R: Runtime>(app: &AppHandle<R>, hidden: bool) -> Vec<String> {
+/// Hides (`hide`) or shows again the notices not already that way. Main thread only.
+fn set_hidden<R: Runtime>(app: &AppHandle<R>, hide: bool) {
     let Some(notices) = app.try_state::<Notices>() else {
-        return Vec::new();
+        return;
     };
-    let mut open = notices.lock();
-    open.iter_mut()
-        .filter(|(_, p)| p.hidden == hidden)
+    // Collected first: the lock isn't held while windows hide or show.
+    let labels: Vec<String> = notices
+        .lock()
+        .iter_mut()
+        .filter(|(_, p)| p.hidden != hide)
         .map(|(label, p)| {
-            p.hidden = !hidden;
+            p.hidden = hide;
             label.clone()
         })
-        .collect()
+        .collect();
+    for label in labels {
+        let Some(window) = app.get_webview_window(&label) else {
+            continue;
+        };
+        if let Err(e) = if hide { window.hide() } else { window.show() } {
+            log::warn!("could not hide or show {label}: {e}");
+        }
+    }
 }
 
 /// A capture is starting: hides the open notices. Main thread only.
 pub fn hide_for_capture<R: Runtime>(app: &AppHandle<R>) {
-    for label in flip(app, false) {
-        if let Some(window) = app.get_webview_window(&label)
-            && let Err(e) = window.hide()
-        {
-            log::warn!("could not hide {label}: {e}");
-        }
-    }
+    set_hidden(app, true);
 }
 
 /// The capture closed: shows the notices it hid, without taking focus from the app the user
 /// was in. Main thread only.
 pub fn show_after_capture<R: Runtime>(app: &AppHandle<R>) {
-    for label in flip(app, true) {
-        if let Some(window) = app.get_webview_window(&label)
-            && let Err(e) = window.show()
-        {
-            log::warn!("could not show {label}: {e}");
-        }
-    }
+    set_hidden(app, false);
 }
 
 /// What the calling notice window shows; `None` once it was answered.
@@ -201,25 +198,19 @@ pub(crate) fn notice_answer<R: Runtime>(
 
 /// Hides the traffic lights: the title bar is transparent and the board has none.
 #[cfg(all(target_os = "macos", not(test)))]
-mod macos {
-    use objc2_app_kit::{NSWindow, NSWindowButton};
-    use tauri::{Runtime, WebviewWindow};
-
-    pub fn hide_buttons<R: Runtime>(window: &WebviewWindow<R>) {
-        let ptr = match window.ns_window() {
-            Ok(ptr) => ptr,
-            Err(e) => return log::error!("no NSWindow for {}: {e}", window.label()),
-        };
-        // SAFETY: Tauri returns the live NSWindow of this window; `open` runs on the main thread.
-        let ns_window = unsafe { &*ptr.cast::<NSWindow>() };
-        for button in [
-            NSWindowButton::CloseButton,
-            NSWindowButton::MiniaturizeButton,
-            NSWindowButton::ZoomButton,
-        ] {
-            if let Some(button) = ns_window.standardWindowButton(button) {
-                button.setHidden(true);
-            }
+fn hide_buttons<R: Runtime>(window: &WebviewWindow<R>) {
+    use objc2_app_kit::NSWindowButton;
+    let ns_window = match crate::macos::ns_window(window) {
+        Ok(w) => w,
+        Err(e) => return log::error!("no NSWindow for {}: {e}", window.label()),
+    };
+    for button in [
+        NSWindowButton::CloseButton,
+        NSWindowButton::MiniaturizeButton,
+        NSWindowButton::ZoomButton,
+    ] {
+        if let Some(button) = ns_window.standardWindowButton(button) {
+            button.setHidden(true);
         }
     }
 }
@@ -231,7 +222,8 @@ pub(crate) mod tests {
     use tauri::async_runtime::{JoinHandle, block_on, spawn};
     use tauri::test::{MockRuntime, mock_builder, mock_context, noop_assets};
 
-    fn app() -> tauri::App<MockRuntime> {
+    /// An app with the state a notice needs.
+    pub(crate) fn app() -> tauri::App<MockRuntime> {
         mock_builder()
             .manage(crate::overlay::Overlay::default())
             .manage(Notices::default())
