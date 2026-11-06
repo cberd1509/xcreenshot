@@ -29,6 +29,17 @@ CI runs the same checks on macOS and Windows.
 - Frontend: [Vitest](https://vitest.dev) + Testing Library. Tests sit next to the code as `*.test.ts`. Generated shadcn components in `src/lib/components/ui` are excluded.
 - Rust: `cargo test`, coverage with [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) (`brew install cargo-llvm-cov`). Keep `main.rs` and `lib.rs` to app wiring only; put logic in modules with unit tests.
 
+## Commits and PRs
+
+- Commit messages and PR titles follow [Conventional Commits](https://www.conventionalcommits.org): `feat: …`, `fix: …`, `chore: …`, `docs: …`. A Git hook checks commit messages, and CI checks PR titles (PRs are squash-merged, so the title becomes the commit).
+- `pnpm install` sets up the Git hooks (Husky): staged files are linted and formatted (Oxlint, Prettier, rustfmt) before each commit.
+
+## Versioning and releases
+
+- xcreenshot uses [Semantic Versioning](https://semver.org). Until 1.0, `minor` is for new features and `patch` for fixes; breaking changes to settings also bump `minor`.
+- Every PR adds a **changeset** (`pnpm changeset`) with a one-line, user-facing description. Internal changes use `pnpm changeset --empty`. CI checks for it.
+- After merging to `main`, a bot keeps a **"chore(release): version packages"** PR open with the next version and the updated `CHANGELOG.md`. Merging it bumps the version everywhere (package.json, Cargo.toml; tauri.conf.json reads package.json) and tags `vX.Y.Z`, which builds the release.
+
 ## App icon
 
 The icon sources are `assets/icon.svg` and `assets/tray.svg` (menu bar). After changing them, run `pnpm icons` to regenerate every size (needs `rsvg-convert`: `brew install librsvg`).

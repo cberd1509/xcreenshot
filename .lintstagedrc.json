@@ -1,0 +1,5 @@
+{
+  "*.{ts,js,svelte}": ["oxlint --fix", "prettier --write"],
+  "*.{json,md,css,html,yml,yaml}": "prettier --write",
+  "src-tauri/**/*.rs": "rustfmt --edition 2024"
+}
