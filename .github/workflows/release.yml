@@ -7,11 +7,14 @@ name: Release
 # universal macOS app and DMG and uploads them to a draft GitHub Release. The maintainer checks
 # the draft and publishes it, which creates the tag (docs/releasing.md).
 # Developer ID signing and notarization switch on when the APPLE_CERTIFICATE secret is set.
+# When a release is published, the updater-urls job points latest.json at the tag's download URLs.
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+  release:
+    types: [published]
 
 concurrency: release-${{ github.ref }}
 
@@ -153,7 +156,7 @@ jobs:
           [ "$SIGNED" = true ] || flags+=(--unsigned)
           {
             echo 'body<<END_OF_NOTES'
-            node scripts/release.ts "$VERSION" "${flags[@]}"
+            node scripts/release.ts notes "$VERSION" "${flags[@]}"
             echo 'END_OF_NOTES'
           } >> "$GITHUB_OUTPUT"
 
@@ -254,3 +257,37 @@ jobs:
       - name: Remove the API key
         if: always()
         run: rm -f "$RUNNER_TEMP"/AuthKey_*.p8
+
+  # tauri-action writes GitHub API asset URLs into latest.json, but the app only downloads from
+  # https://github.com/<repo>/releases/download/ (src-tauri/src/updates.rs). Once the release is
+  # published its tag exists, so rewrite each URL to the tag download URL of the same asset.
+  # Drafts are invisible to releases/latest, so the updater can only see the original file for
+  # the few seconds between publishing and this job finishing.
+  updater-urls:
+    name: Point latest.json at the tag
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.event.release.tag_name }}
+      RELEASE_ID: ${{ github.event.release.id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: |
+          dir="$RUNNER_TEMP/updater"
+          mkdir -p "$dir"
+          if ! gh release view "$TAG" --json assets --jq '.assets[].name' | grep -qx latest.json; then
+            echo "No latest.json on $TAG (unsigned build), nothing to rewrite."; exit 0
+          fi
+          gh release download "$TAG" --pattern latest.json --dir "$dir"
+          gh api "repos/$GH_REPO/releases/$RELEASE_ID/assets?per_page=100" \
+            --jq '[.[] | {id, name}]' > "$dir/assets.json"
+          node scripts/release.ts updater-urls "$dir/latest.json" "$dir/assets.json" \
+            "$GH_REPO" "$TAG" > "$dir/rewritten.json"
+          mv "$dir/rewritten.json" "$dir/latest.json"
+          cat "$dir/latest.json"
+          gh release upload "$TAG" "$dir/latest.json" --clobber

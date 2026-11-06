@@ -53,7 +53,7 @@ The **Release** workflow (`.github/workflows/release.yml`, see [releasing.md](re
 | `xcreenshot_<version>_universal.app.tar.gz.sig`  | reference copy of the signature |
 | `latest.json` (signed builds only)               | the updater (the manifest)  |
 
-The updater only sees it once the release is **published** (not a draft or prerelease, and marked "latest"), so `releases/latest/download/latest.json` resolves to it. tauri-action writes `latest.json` like this; all four macOS entries point at the same universal `.app.tar.gz`:
+The updater only sees it once the release is **published** (not a draft or prerelease, and marked "latest"), so `releases/latest/download/latest.json` resolves to it. After publishing, `latest.json` looks like this; all four macOS entries point at the same universal `.app.tar.gz`:
 
 ```json
 {
@@ -61,16 +61,17 @@ The updater only sees it once the release is **published** (not a draft or prere
   "notes": "<the release notes>",
   "pub_date": "2026-11-06T12:00:00.000Z",
   "platforms": {
-    "darwin-aarch64": { "signature": "<contents of the .sig>", "url": "<universal .app.tar.gz>" },
-    "darwin-x86_64": { "signature": "<contents of the .sig>", "url": "<universal .app.tar.gz>" },
-    "darwin-aarch64-app": { "signature": "<contents of the .sig>", "url": "<universal .app.tar.gz>" },
-    "darwin-x86_64-app": { "signature": "<contents of the .sig>", "url": "<universal .app.tar.gz>" }
+    "darwin-aarch64": { "signature": "<contents of the .sig>", "url": "<.../download/v1.2.0/xcreenshot_1.2.0_universal.app.tar.gz>" },
+    "darwin-x86_64": { "signature": "<contents of the .sig>", "url": "<.../download/v1.2.0/xcreenshot_1.2.0_universal.app.tar.gz>" },
+    "darwin-aarch64-app": { "signature": "<contents of the .sig>", "url": "<.../download/v1.2.0/xcreenshot_1.2.0_universal.app.tar.gz>" },
+    "darwin-x86_64-app": { "signature": "<contents of the .sig>", "url": "<.../download/v1.2.0/xcreenshot_1.2.0_universal.app.tar.gz>" }
   }
 }
 ```
 
 - `version` is the `package.json` version (SemVer, no `v`). The app only offers versions newer than its own.
 - `signature` is the text of the `.sig` file, not a URL.
-- `url` is the GitHub API URL of the release asset (`https://api.github.com/repos/cberd1509/xcreenshot/releases/assets/<id>`), which the updater downloads directly. It stays valid when the draft is published.
+- `url` must start with `https://github.com/cberd1509/xcreenshot/releases/download/`, or the app refuses it (`src-tauri/src/updates.rs`). tauri-action writes GitHub API asset URLs instead (`https://api.github.com/repos/cberd1509/xcreenshot/releases/assets/<id>`), and a draft has no tag to build a download URL from. So when the release is published, the workflow's `updater-urls` job rewrites each `url` to `https://github.com/cberd1509/xcreenshot/releases/download/v<version>/<asset name>` and replaces `latest.json`; signatures and the version stay as they were.
+- Nothing reads a draft's `latest.json`: `releases/latest` only sees published releases. The original file is only visible for the few seconds between publishing and that job finishing, and the app refuses its URLs, so at worst an update check in that window finds nothing and the next one gets the update.
 - Unsigned test builds (no Developer ID certificate) don't upload `latest.json`, so the updater never offers them.
 - Windows isn't built yet. When it is, its NSIS installer adds a `windows-x86_64` entry.
