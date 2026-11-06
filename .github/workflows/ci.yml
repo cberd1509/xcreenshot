@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint and type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm check
+      - name: Tests with coverage (90% minimum)
+        run: pnpm coverage
+      - name: cargo fmt
+        working-directory: src-tauri
+        run: cargo fmt --check
+
+  app:
+    name: App (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: pnpm install --frozen-lockfile
+      # Builds the frontend (beforeBuildCommand) and the app with the debug profile,
+      # so the test step below reuses the same compiled dependencies.
+      - name: Build app (debug, no installer)
+        run: pnpm tauri build --debug --no-bundle
+      - name: cargo clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo test
+        if: runner.os == 'Windows'
+        working-directory: src-tauri
+        run: cargo test
+      - name: Install cargo-llvm-cov
+        if: runner.os == 'macOS'
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Rust tests with coverage (90% minimum)
+        if: runner.os == 'macOS'
+        run: ./scripts/rust-coverage.sh

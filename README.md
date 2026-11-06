@@ -24,3 +24,12 @@ A fast, privacy-first, open-source screenshot tool for macOS (Windows coming soo
 ## License
 
 [MIT](LICENSE)
+
+## Development
+
+```sh
+pnpm install
+pnpm tauri dev
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for checks and guidelines, and [PRIVACY.md](PRIVACY.md) for what the app does (and doesn't) do with your data.

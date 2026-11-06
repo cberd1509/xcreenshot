@@ -1,11 +1,23 @@
+# Dependencies and build output
 node_modules/
 dist/
-target/
 src-tauri/target/
 src-tauri/gen/
-.DS_Store
+
+# Logs
 *.log
+
+# Secrets (signing keys, env files)
 .env
 .env.*
+!.env.example
 *.p12
 *.pem
+
+# Editors and OS
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.sw?
+coverage/
