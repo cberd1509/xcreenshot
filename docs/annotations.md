@@ -91,11 +91,12 @@ invoke('overlay_copy' | 'overlay_save', body, { headers: { 'x-xcreenshot-output'
 - `json` is `{ session, rect, layer?: { x, y, width, height }, blurs }`. `rect` is the selection in
   physical px; `layer` is there only when the body has its pixels.
 
-`overlay/export.rs` parses the request (the body must be exactly `width × height × 4` bytes) and
-crops the frame. Then `output/compose.rs`:
+`overlay/export.rs` parses the request (the body must be exactly `width × height × 4` bytes, and
+there may be at most 256 blurs, each clipped to the selection) and crops the frame. Then `output/compose.rs`:
 
 1. pixelates each rect in `blurs`, destructively, in blocks of at least 16 px (larger for large
-   rects), so nothing under a blur survives (issue #16);
+   rects; a shorter remainder joins the block before it). Each block's color matches none of the
+   pixels it covers, so every pixel under a blur changes, even in a flat area (issue #16);
 2. draws the layer at (`x`, `y`), straight-alpha source-over with rounding (an opaque crop stays
    opaque), clipped to the crop.
 

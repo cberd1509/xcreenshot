@@ -138,6 +138,8 @@ export class Board {
       node.destroy()
       this.nodes.delete(id)
     }
+    // Stacked in model order, so undo and redo restore what was on top.
+    for (const shape of shapes) this.nodes.get(shape.id)!.node.moveToTop()
     const node = selected ? this.nodes.get(selected)?.node : undefined
     this.transformer.nodes(node ? [node] : [])
     this.shapes.batchDraw()

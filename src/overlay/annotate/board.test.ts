@@ -108,6 +108,17 @@ describe('Board', () => {
     expect(layer.draws).toBe(3)
   })
 
+  it('stacks the nodes in model order, so undo restores what was on top', () => {
+    const { board, shapes } = setup()
+    const other: Shape = { ...rect, id: 'r2', x: 120 }
+    board.render([rect, arrow, other], null)
+    // Delete the middle one, then undo: it comes back between the others.
+    board.render([rect, other], null)
+    board.render([rect, arrow, other], null)
+    expect(shapes().map((n) => n.className)).toEqual(['Rect', 'Arrow', 'Rect'])
+    expect(shapes()[2].attrs.x).toBe(120)
+  })
+
   it('leaves a node alone when its shape did not change', () => {
     const { board, shapes } = setup()
     board.render([rect], null)
@@ -208,7 +219,9 @@ describe('exportShapes', () => {
     expect(out.layer).toMatchObject({ x: 12, y: 32, width: 76, height: 96 })
     expect(out.blurs).toEqual([{ x: 2, y: 4, width: 6, height: 8 }])
     expect(context.getImageData).toHaveBeenCalledWith(0, 0, 76, 96)
-    expect(out.layer?.rgba).toEqual(new Uint8ClampedArray([7, 7, 7, 255]))
+    // One RGBA pixel per px of the box, as Rust requires.
+    expect(out.layer?.rgba).toHaveLength(76 * 96 * 4)
+    expect(out.layer?.rgba.slice(-4)).toEqual(new Uint8ClampedArray([7, 7, 7, 255]))
     const stage = stages.at(-1)!
     const layer = stage.children[0]
     expect(layer.children.map((n) => n.className)).toEqual(['Rect'])

@@ -47,7 +47,8 @@
   let Toolbar = $state<typeof ToolbarComponent | null>(null)
   let toolbar = $state<ReturnType<typeof ToolbarComponent>>()
   let board = $state.raw<Board | null>(null)
-  let loading = false
+  /** Konva was asked for during this selection; a failed load waits for the next one. */
+  let tried = false
   /** Konva could not load: the tools show as unavailable until a later selection retries. */
   let failed = $state(false)
   let history = $state.raw<History>(empty)
@@ -80,10 +81,15 @@
     return () => board?.destroy()
   })
 
-  // The stage is built on the first selection. A failed load retries on the next change.
+  // The stage is built on the first selection. A failed load is tried again once per new
+  // selection, never in a loop.
   $effect(() => {
-    if (!selection || board || loading) return
-    loading = true
+    if (!selection) {
+      tried = false
+      return
+    }
+    if (board || tried) return
+    tried = true
     untrack(loadToolbar)
     loadKonva()
       .then((K) => {
@@ -97,7 +103,6 @@
         failed = true
         console.error('could not load the annotation layer', e)
       })
-      .finally(() => (loading = false))
   })
 
   $effect(() => board?.place(selection, display))

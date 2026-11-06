@@ -242,20 +242,26 @@ fn rescue<R: Runtime>(app: &AppHandle<R>, session: u64) {
 
 /// Closes the overlay only if `session` is still the current one.
 pub fn close_session<R: Runtime>(app: &AppHandle<R>, session: u64) {
-    let current = phase(app).session();
-    if current == Some(session) {
-        close(app);
-    }
+    close_if(app, |phase| phase.session() == Some(session));
 }
 
 /// Hides every overlay, frees the frames, releases Esc and allows the next capture. Does
 /// nothing while the Save dialog is open: the save ends the session itself, so a save is never
 /// lost to a close. Main thread only. Safe to call twice.
 pub fn close<R: Runtime>(app: &AppHandle<R>) {
+    close_if(app, |_| true);
+}
+
+/// [`close`], only if `ok` holds for the phase. Checked and closed under one lock, so nothing
+/// can start in between (a save, say).
+pub fn close_if<R: Runtime>(app: &AppHandle<R>, ok: impl FnOnce(&Phase) -> bool) {
     {
         let mut phase = phase(app);
         if phase.saving() {
             log::info!("not closing the overlay while the Save dialog is open");
+            return;
+        }
+        if !ok(&phase) {
             return;
         }
         *phase = Phase::Idle;

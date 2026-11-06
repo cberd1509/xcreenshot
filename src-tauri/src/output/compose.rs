@@ -87,8 +87,11 @@ fn over(src: [u8; 4], dst: [u8; 4]) -> [u8; 4] {
     out
 }
 
-/// Replaces `rect` with blocks of their average color. Blocks are at least [`BLOCK`] px and
-/// grow with the rect, so even a large blur leaves no detail.
+/// Replaces `rect` with flat blocks. Blocks are at least [`BLOCK`] px (a smaller rect is one
+/// block) and grow with the rect, so even a large blur leaves no detail. A remainder narrower
+/// than a block joins the block before it. Each block's color is its average, nudged until it
+/// matches none of the pixels it covers, so every pixel under a blur changes, even in a flat
+/// area or a 1 px block.
 pub fn pixelate(image: &mut RgbaImage, rect: PixelRect) {
     let (w, h) = image.dimensions();
     let Some(r) = clamp_rect(rect, w, h) else {
@@ -96,31 +99,46 @@ pub fn pixelate(image: &mut RgbaImage, rect: PixelRect) {
     };
     let block = BLOCK.max(r.width.min(r.height) / 8) as usize;
     let stride = w as usize * 4;
-    let (x0, x1) = (r.x as usize, (r.x + r.width) as usize);
-    let (y0, y1) = (r.y as usize, (r.y + r.height) as usize);
     let pixels: &mut [u8] = image;
-    for by in (y0..y1).step_by(block) {
-        let ey = (by + block).min(y1);
-        for bx in (x0..x1).step_by(block) {
-            let ex = (bx + block).min(x1);
+    for (by, ey) in spans(r.y as usize, r.height as usize, block) {
+        for (bx, ex) in spans(r.x as usize, r.width as usize, block) {
             let row = |y: usize| y * stride + bx * 4..y * stride + ex * 4;
+            let covered = || (by..ey).flat_map(|y| pixels[row(y)].as_chunks::<4>().0.iter());
             let mut sum = [0u64; 4];
-            for y in by..ey {
-                for px in pixels[row(y)].as_chunks::<4>().0 {
-                    for (s, &c) in sum.iter_mut().zip(px) {
-                        *s += u64::from(c);
-                    }
+            for px in covered() {
+                for (s, &c) in sum.iter_mut().zip(px) {
+                    *s += u64::from(c);
                 }
             }
             let n = ((ex - bx) * (ey - by)) as u64;
-            let avg = sum.map(|s| ((s + n / 2) / n) as u8);
+            let mut fill = sum.map(|s| ((s + n / 2) / n) as u8);
+            // A block has fewer pixels than there are colors, so this ends.
+            while covered().any(|px| *px == fill) {
+                fill[2] = fill[2].wrapping_add(1);
+                if fill[2] == 0 {
+                    fill[1] = fill[1].wrapping_add(1);
+                    if fill[1] == 0 {
+                        fill[0] = fill[0].wrapping_add(1);
+                    }
+                }
+            }
             for y in by..ey {
                 for px in pixels[row(y)].as_chunks_mut::<4>().0 {
-                    *px = avg;
+                    *px = fill;
                 }
             }
         }
     }
+}
+
+/// `len` px from `start` cut into `block`-sized spans, the last one taking any remainder: at
+/// least one span, each at least `block` long unless `len` itself is shorter.
+fn spans(start: usize, len: usize, block: usize) -> impl Iterator<Item = (usize, usize)> {
+    let n = (len / block).max(1);
+    (0..n).map(move |i| {
+        let end = if i + 1 == n { len } else { (i + 1) * block };
+        (start + i * block, start + end)
+    })
 }
 
 #[cfg(test)]
@@ -214,8 +232,67 @@ mod tests {
                 assert_eq!(image.get_pixel(x, y), block);
             }
         }
-        // The block is the average of what it covered.
-        assert_eq!(block.0, [16, 16, 9, 255]);
+        // The block is the average of what it covered, (16, 16, 9), nudged off pixel (16, 16).
+        assert_eq!(block.0, [16, 16, 10, 255]);
+    }
+
+    /// Asserts every pixel inside `rect` (clipped to the image) changed, and none outside.
+    fn assert_destroyed(original: &RgbaImage, rect: PixelRect) {
+        let mut image = original.clone();
+        pixelate(&mut image, rect);
+        let (w, h) = image.dimensions();
+        let r = clamp_rect(rect, w, h).unwrap();
+        for (x, y, p) in image.enumerate_pixels() {
+            let inside = (r.x..r.x + r.width).contains(&x) && (r.y..r.y + r.height).contains(&y);
+            let same = p == original.get_pixel(x, y);
+            assert_eq!(same, !inside, "({x}, {y}) in {rect:?}");
+        }
+    }
+
+    #[test]
+    fn pixelate_changes_every_pixel_under_awkward_sizes() {
+        let image = gradient(80, 80);
+        // Remainders of 1 px, a lone pixel, a rect smaller than a block, and odd sizes.
+        for rect in [
+            px(3, 5, 17, 33),
+            px(10, 10, 1, 1),
+            px(0, 0, 33, 1),
+            px(7, 9, 5, 3),
+            px(1, 1, 49, 65),
+        ] {
+            assert_destroyed(&image, rect);
+        }
+    }
+
+    #[test]
+    fn pixelate_changes_every_pixel_at_the_crop_edge() {
+        let image = gradient(40, 30);
+        for rect in [
+            px(23, 13, 17, 17),
+            px(39, 29, 1, 1),
+            px(0, 0, 40, 30),
+            px(30, 20, 99, 99),
+        ] {
+            assert_destroyed(&image, rect);
+        }
+    }
+
+    #[test]
+    fn pixelate_changes_every_pixel_of_a_flat_area() {
+        let flat = RgbaImage::from_pixel(50, 50, Rgba([200, 200, 200, 255]));
+        for rect in [px(0, 0, 50, 50), px(5, 5, 17, 33), px(49, 49, 1, 1)] {
+            assert_destroyed(&flat, rect);
+        }
+        // Even when nudging has to carry over into green.
+        let blue = RgbaImage::from_pixel(4, 4, Rgba([0, 0, 255, 255]));
+        assert_destroyed(&blue, px(0, 0, 4, 4));
+    }
+
+    #[test]
+    fn spans_merge_a_short_remainder() {
+        assert_eq!(spans(0, 33, 16).collect::<Vec<_>>(), [(0, 16), (16, 33)]);
+        assert_eq!(spans(5, 1, 16).collect::<Vec<_>>(), [(5, 6)]);
+        assert_eq!(spans(0, 32, 16).collect::<Vec<_>>(), [(0, 16), (16, 32)]);
     }
 
     #[test]

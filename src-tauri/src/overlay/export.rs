@@ -15,8 +15,8 @@
 //! without a way out. The OS side is behind [`Clipboard`] and [`Saver`], faked in tests.
 
 use super::display_id;
-use super::window::{Overlay, close, close_session, hide, on_main, phase, reshow, sync_escape};
-use crate::capture::{self, CaptureError, PixelRect};
+use super::window::{Overlay, close, close_if, hide, on_main, phase, reshow, sync_escape};
+use crate::capture::{self, CaptureError, PixelRect, clamp_rect};
 use crate::output::compose::{self, Layer, Marks};
 use crate::output::{self, Clipboard, Target};
 use crate::prefs::{self, Prefs};
@@ -33,6 +33,9 @@ use tauri::{AppHandle, Manager, Runtime, State, WebviewWindow};
 
 /// The request header describing a copy or save. Must match `OUTPUT_HEADER` on the page.
 pub const HEADER: &str = "x-xcreenshot-output";
+
+/// Most blur rects one request may have. More is a broken or hostile page.
+pub const MAX_BLURS: usize = 256;
 
 /// The JSON in [`HEADER`]. `layer` is where the body's pixels go, relative to `rect`; it is
 /// there only when the body has them.
@@ -69,6 +72,19 @@ pub(crate) fn parse<'a>(
         .get(HEADER)
         .ok_or_else(|| invalid(format!("missing {HEADER}")))?;
     let head: Head = serde_json::from_slice(header.as_bytes()).map_err(invalid)?;
+    if head.blurs.len() > MAX_BLURS {
+        return Err(invalid(format!(
+            "{} blurs, at most {MAX_BLURS}",
+            head.blurs.len()
+        )));
+    }
+    // Each blur clipped to the selection; one outside it is dropped.
+    let (w, h) = (head.rect.width, head.rect.height);
+    let blurs = head
+        .blurs
+        .into_iter()
+        .filter_map(|b| clamp_rect(b, w, h))
+        .collect();
     let bytes: &[u8] = match body {
         InvokeBody::Raw(bytes) => bytes,
         // An empty body may arrive as JSON.
@@ -95,10 +111,7 @@ pub(crate) fn parse<'a>(
     Ok(Output {
         session: head.session,
         rect: head.rect,
-        marks: Marks {
-            layer,
-            blurs: head.blurs,
-        },
+        marks: Marks { layer, blurs },
     })
 }
 
@@ -123,7 +136,7 @@ async fn copy_with<R: Runtime>(
 ) -> Result<(), CaptureError> {
     let started = Instant::now();
     let session = out.session;
-    let Some((_, frame)) = selected_frame(window, state, session) else {
+    let Some((_, frame, saves)) = selected_frame(window, state, session) else {
         return Ok(());
     };
     // Cropped and annotated here: the annotations are read in place from the request.
@@ -138,23 +151,24 @@ async fn copy_with<R: Runtime>(
     let (width, height) = copied.inspect_err(|e| log::warn!("copy failed: {e}"))?;
     let ms = started.elapsed().as_secs_f64() * 1000.0;
     log::info!("copied {width}x{height} px in {ms:.0} ms");
-    on_main(window.app_handle(), move |app| close_session(app, session));
+    // Only if nothing happened meanwhile: a save started (even cancelled) keeps the overlay.
+    on_main(window.app_handle(), move |app| {
+        close_if(app, |phase| phase.copy_may_close(session, saves));
+    });
     Ok(())
 }
 
-/// The calling window's display and its original frame, or `None` if the session or window is
-/// not an open overlay, or the Save dialog is open.
+/// The calling window's display, its original frame and the session's save count, or `None`
+/// if the session or window is not an open overlay, or the Save dialog is open.
 fn selected_frame<R: Runtime>(
     window: &WebviewWindow<R>,
     state: &Overlay,
     session: u64,
-) -> Option<(u32, Arc<RgbaImage>)> {
+) -> Option<(u32, Arc<RgbaImage>, u32)> {
     let display = display_id(window.label())?;
     let mut phase = state.phase();
-    if phase.saving() {
-        return None;
-    }
-    Some((display, phase.image(session, display)?))
+    let saves = phase.saves(session)?;
+    Some((display, phase.image(session, display)?, saves))
 }
 
 /// The selection cropped from the frame, with its annotations on it.
@@ -191,7 +205,7 @@ async fn save_with<R: Runtime>(
     default_dir: Option<PathBuf>,
 ) -> Result<(), CaptureError> {
     let session = out.session;
-    let Some((display, frame)) = selected_frame(window, state, session) else {
+    let Some((display, frame, _)) = selected_frame(window, state, session) else {
         return Ok(());
     };
     // Checked before anything hides, so an empty selection just stays.
@@ -356,7 +370,7 @@ mod tests {
         Handle, app, app_with_escape, app_with_escape_by, esc_held, is_idle, is_open, open, press,
         shown, wait_until, window,
     };
-    use super::super::window::{overlay_escape, overlay_painted};
+    use super::super::window::{close_session, overlay_escape, overlay_painted};
     use super::*;
     use crate::output::tests::assert_clean_png;
     use chrono::NaiveDate;
@@ -455,6 +469,25 @@ mod tests {
         let (c, _) = clipboard(true);
         let r = copy(h, session, px(0, 0, 2, 2), c);
         assert_eq!(r, Err(CaptureError::Clipboard("busy".into())));
+        assert!(is_open(h, session));
+    }
+
+    #[test]
+    fn a_copy_does_not_close_after_a_save_began_meanwhile() {
+        let app = app();
+        let h = app.handle();
+        let session = shown(h, &[1]);
+        // While the clipboard works, another display opens the Save dialog and cancels it.
+        let handle = h.clone();
+        let clipboard: Clipboard = Box::new(move |_: &RgbaImage| {
+            let mut p = phase(&handle);
+            assert!(p.begin_save(session));
+            assert!(p.end_save(session).is_some());
+            Ok(())
+        });
+        assert_eq!(copy(h, session, px(0, 0, 2, 2), clipboard), Ok(()));
+        // The overlay stays: the user moved on from that copy.
+        std::thread::sleep(std::time::Duration::from_millis(50));
         assert!(is_open(h, session));
     }
 
@@ -930,5 +963,21 @@ mod tests {
         );
         let e = parse(&body, &short).unwrap_err();
         assert!(e.to_string().contains("3 bytes for a 2x2 layer"), "{e}");
+    }
+
+    #[test]
+    fn caps_the_blurs_and_clips_them_to_the_selection() {
+        let blur = r#"{"x":0,"y":0,"width":1,"height":1}"#;
+        let many = vec![blur; MAX_BLURS + 1].join(",");
+        let json = format!(
+            r#"{{"session":1,"rect":{{"x":0,"y":0,"width":9,"height":9}},"blurs":[{many}]}}"#
+        );
+        let body = InvokeBody::Raw(vec![]);
+        let e = parse(&body, &headers(&json)).unwrap_err();
+        assert!(e.to_string().contains("at most 256"), "{e}");
+        let h = headers(
+            r#"{"session":1,"rect":{"x":0,"y":0,"width":9,"height":9},"blurs":[{"x":5,"y":5,"width":99,"height":99},{"x":50,"y":0,"width":4,"height":4}]}"#,
+        );
+        assert_eq!(parse(&body, &h).unwrap().marks.blurs, [px(5, 5, 4, 4)]);
     }
 }

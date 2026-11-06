@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import userEvent from '@testing-library/user-event'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { stages, type FakeNode } from '../../test/konva'
 import type { Rect } from '../geometry'
 import { fakeContext } from '../../test/canvas'
@@ -17,6 +17,11 @@ vi.mock('./board', async (original) => {
     loadKonva: () => (konva.failures-- > 0 ? Promise.reject(new Error('offline')) : m.loadKonva()),
   }
 })
+
+// The lazy chunks compile on first import, which is slow on CI; do it once up front.
+beforeAll(async () => {
+  await Promise.all([import('./Toolbar.svelte'), import('konva')])
+}, 30_000)
 
 const display = { width: 1000, height: 700 }
 const scale = { x: 2, y: 2 }
@@ -388,16 +393,26 @@ describe('Annotator', () => {
     expect(option).toHaveBeenCalledWith('magnifier', true)
   })
 
-  it('shows the tools as unavailable when Konva cannot load, and retries later', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {})
-    konva.failures = 1
+  it('shows the tools as unavailable when Konva cannot load, and retries on a new selection', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    konva.failures = Infinity
     const view = render(Annotator, { props: props({ selection: sel }) })
     await toolbar()
     await waitFor(() => expect(screen.getByLabelText('Rectangle')).toBeDisabled())
     const api = view.component as unknown as Api
     expect(api.key(press('r'))).toBe(false)
-    // The next selection change tries again.
+    expect(error).toHaveBeenCalledTimes(1)
+    // Moving the selection does not try again, nor does waiting.
     await view.rerender(props({ selection: { ...sel, x: 110 } }))
+    await new Promise((r) => setTimeout(r, 50))
+    expect(error).toHaveBeenCalledTimes(1)
+    // A new selection tries once more.
+    await view.rerender(props({ selection: null }))
+    await view.rerender(props({ selection: sel }))
+    await waitFor(() => expect(error).toHaveBeenCalledTimes(2))
+    konva.failures = 0
+    await view.rerender(props({ selection: null }))
+    await view.rerender(props({ selection: sel }))
     await waitFor(() => expect(stages).toHaveLength(1))
     await waitFor(() => expect(screen.getByLabelText('Rectangle')).toBeEnabled())
   })

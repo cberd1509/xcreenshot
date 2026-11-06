@@ -45,7 +45,11 @@
 
   /** Broadcast to every overlay page, so only one display has a selection. */
   const SELECTED = 'overlay:selected'
-  type Selected = { label: string; active: boolean }
+  /**
+   * `stamp` orders the events (ms since the epoch, the same clock on every display), so a late
+   * one never undoes a newer selection; `session` keeps one capture's events out of the next.
+   */
+  type Selected = { label: string; active: boolean; session: number; stamp: number }
 
   type Drag =
     | { kind: 'draw'; start: Point }
@@ -84,6 +88,17 @@
   let notice = $state<string | null>(null)
   let noticeTimer: ReturnType<typeof setTimeout> | undefined
   let annotator = $state<ReturnType<typeof Annotator>>()
+  /** The newest selection event seen, its `stamp`. */
+  let seen = 0
+
+  /**
+   * Whether annotations show in the selection. Only then does a press outside it keep them
+   * rather than start a new selection, so hidden ones never strand the user.
+   */
+  function annotationsShown() {
+    const painted = annotator?.painted()
+    return !!(painted && selection && intersect(painted, selection))
+  }
 
   const physical = $derived(selection && toPhysical(selection, scale, frame))
   const cursor = $derived(
@@ -115,6 +130,7 @@
     // Session ids only grow: an older (or the same) session never redraws.
     if (info.session <= current) return
     current = info.session
+    seen = 0
     const drawing = generation
     escapeShortcut = info.escapeShortcut
     reset()
@@ -154,7 +170,9 @@
     const rect = next && !isEmpty(toPhysical(next, scale, frame)) ? next : null
     const active = rect !== null
     if (active !== (selection !== null)) {
-      void emit(SELECTED, { label: view.label, active } satisfies Selected)
+      seen = Math.max(Date.now(), seen + 1)
+      const event: Selected = { label: view.label, active, session: current, stamp: seen }
+      void emit(SELECTED, event)
     }
     selection = rect
   }
@@ -240,7 +258,7 @@
       drag = { kind: 'resize', start, origin: selection, handle: handle as Handle, keep }
     } else if (selection && contains(selection, start)) {
       drag = { kind: 'move', start, origin: selection }
-    } else if (annotator?.annotated()) {
+    } else if (annotationsShown()) {
       // A new selection would drop the annotations: ignore the press instead.
       return
     } else {
@@ -309,6 +327,9 @@
       view.listen('overlay:closed', free),
       // A selection started on another display clears this one's, annotations included.
       listen<Selected>(SELECTED, ({ payload }) => {
+        // Only the newest event of this capture counts.
+        if (payload.session !== current || payload.stamp <= seen) return
+        seen = payload.stamp
         if (payload.label !== view.label && payload.active) reset()
       }),
     ])

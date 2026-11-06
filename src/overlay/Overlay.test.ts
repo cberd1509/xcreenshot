@@ -39,7 +39,8 @@ let ready: Info | null
 let frame: (args: { session: number }) => unknown
 let finished: (cmd: string) => unknown
 let context: ReturnType<typeof fakeContext>
-let selected: { label: string; active: boolean }[]
+type Selected = { label: string; active: boolean; session: number; stamp: number }
+let selected: Selected[]
 
 const rgba = (width: number, height: number) => new Uint8Array(width * height * 4).fill(7).buffer
 const called = (cmd: string) => calls.filter((c) => c.cmd === cmd)
@@ -65,6 +66,16 @@ const info: Info = {
   escapeShortcut: true,
 }
 /** Esc from Rust, forwarded to this page. */
+/** Another display's selection event, newer than any so far unless `stamp` says otherwise. */
+let later = 0
+const other = (active: boolean, extra: { session?: number; stamp?: number } = {}) =>
+  emit('overlay:selected', {
+    label: 'overlay-2',
+    active,
+    session: 9,
+    stamp: Date.now() + 1000 + ++later,
+    ...extra,
+  })
 const esc = (token = 1) => emit('overlay:escape', { session: 9, token })
 const answers = () => called('overlay_escaped').map((c) => c.args)
 /** The selection `drag({ x: 10, y: 10 }, { x: 110, y: 60 })` makes, in pixels. */
@@ -142,9 +153,7 @@ describe('Overlay', () => {
       return inner(cmd, body, options)
     }
     context = fakeContext()
-    await listen<{ label: string; active: boolean }>('overlay:selected', (e) =>
-      selected.push(e.payload),
-    )
+    await listen<Selected>('overlay:selected', (e) => selected.push(e.payload))
   })
 
   afterEach(async () => {
@@ -290,7 +299,9 @@ describe('Overlay', () => {
       drag({ x: 110, y: 70 }, { x: 10, y: 20 })
       expect(rect()).toEqual([10, 20, 100, 50])
       expect(screen.getByTestId('size-badge')).toHaveTextContent('200 × 100')
-      expect(selected).toEqual([{ label: 'overlay-1', active: true }])
+      expect(selected).toEqual([
+        { label: 'overlay-1', active: true, session: 9, stamp: expect.any(Number) },
+      ])
     })
 
     it('focuses its window on press, so keys reach it', async () => {
@@ -421,7 +432,7 @@ describe('Overlay', () => {
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       await esc(1)
       await waitFor(() => expect(selection()).toBeNull())
-      expect(selected.at(-1)).toEqual({ label: 'overlay-1', active: false })
+      expect(selected.at(-1)).toMatchObject({ label: 'overlay-1', active: false })
       await esc(2)
       await waitFor(() => expect(answers()).toHaveLength(2))
       expect(answers()).toEqual([
@@ -461,14 +472,31 @@ describe('Overlay', () => {
       await shown()
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       // Another display losing a selection changes nothing here.
-      await emit('overlay:selected', { label: 'overlay-2', active: false })
+      await other(false)
       await tick()
       expect(selection()).not.toBeNull()
-      await emit('overlay:selected', { label: 'overlay-2', active: true })
+      await other(true)
       await waitFor(() => expect(selection()).toBeNull())
       // Display 2 has the selection: this page has nothing to undo and says so.
       await esc()
       await waitFor(() => expect(answers()).toEqual([{ session: 9, token: 1, handled: false }]))
+    })
+
+    it('ignores a late event from another display, or one from another capture', async () => {
+      await shown()
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      const mine = selected.at(-1)!.stamp
+      await other(true, { stamp: mine - 1 })
+      await other(true, { session: 8 })
+      await tick()
+      expect(selection()).not.toBeNull()
+      // Once a newer one came, an older one still changes nothing.
+      await other(true, { stamp: mine + 5 })
+      await waitFor(() => expect(selection()).toBeNull())
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      await other(true, { stamp: mine + 2 })
+      await tick()
+      expect(selection()).not.toBeNull()
     })
 
     it('copies the pixel rect on Enter and Ctrl+C', async () => {
@@ -687,6 +715,19 @@ describe('Overlay', () => {
       expect(shapes()).toHaveLength(1)
     })
 
+    it('starts a new selection from outside once the annotations are out of it', async () => {
+      await annotated()
+      // Put the tool away, then move the selection off the rect.
+      await esc(1)
+      await waitFor(() =>
+        expect(screen.getByLabelText('Rectangle')).toHaveAttribute('data-state', 'off'),
+      )
+      drag({ x: 100, y: 55 }, { x: 400, y: 355 }, selection()!)
+      expect(rect()).toEqual([310, 310, 100, 50])
+      drag({ x: 600, y: 600 }, { x: 620, y: 630 })
+      expect(rect()).toEqual([600, 600, 20, 30])
+    })
+
     it('keeps a resize from cutting through the annotations', async () => {
       await annotated()
       // The rect paints from (16, 16) to (64, 54): the right edge stops there.
@@ -750,10 +791,10 @@ describe('Overlay', () => {
 
     it('drops them for a new selection on another display', async () => {
       await annotated()
-      await emit('overlay:selected', { label: 'overlay-2', active: false })
+      await other(false)
       await tick()
       expect(shapes()).toHaveLength(1)
-      await emit('overlay:selected', { label: 'overlay-2', active: true })
+      await other(true)
       await waitFor(() => expect(shapes()).toHaveLength(0))
     })
 
@@ -777,6 +818,7 @@ describe('Overlay', () => {
         blurs: [],
       })
       expect(body).toBeInstanceOf(Uint8Array)
+      expect((body as Uint8Array).length).toBe(96 * 76 * 4)
     })
 
     it('copies and saves from the toolbar', async () => {
