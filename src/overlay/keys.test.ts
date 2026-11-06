@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { shortcut } from './keys'
+import { control, keyLabels, shortcut, typing } from './keys'
 
 const platform = vi.hoisted(() => ({ mac: true }))
 vi.mock('$lib/settings.svelte', () => ({
@@ -33,5 +33,34 @@ describe('shortcut', () => {
     platform.mac = true
     expect(shortcut(key('я', { metaKey: true, code: 'KeyZ' }), 'z')).toBe(true)
     expect(shortcut(key('я', { metaKey: true, code: 'KeyX' }), 'z')).toBe(false)
+  })
+})
+
+describe('keyLabels', () => {
+  it('writes ⌘ and ⇧ on macOS, Ctrl+ and Shift+ elsewhere', () => {
+    expect(keyLabels(true)).toEqual({ mod: '⌘', shift: '⇧' })
+    expect(keyLabels(false)).toEqual({ mod: 'Ctrl+', shift: 'Shift+' })
+    platform.mac = true
+    expect(keyLabels().mod).toBe('⌘')
+  })
+})
+
+/** The element `html` makes. */
+function el(html: string) {
+  const box = document.createElement('div')
+  box.innerHTML = html
+  return box.firstElementChild!
+}
+
+describe('typing and control', () => {
+  it('tells fields from controls', () => {
+    expect(typing(el('<input>'))).toBe(true)
+    expect(typing(el('<textarea></textarea>'))).toBe(true)
+    expect(typing(el('<button></button>'))).toBe(false)
+    expect(typing(null)).toBe(false)
+    expect(control(el('<button></button>'))).toBe(true)
+    expect(control(el('<div role="menuitemcheckbox"></div>'))).toBe(true)
+    expect(control(el('<div></div>'))).toBe(false)
+    expect(control(null)).toBe(false)
   })
 })

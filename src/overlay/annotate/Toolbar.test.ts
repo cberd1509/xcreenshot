@@ -19,6 +19,7 @@ function setup(props: Props = {}) {
   const actions: ToolbarActions = {
     copy: vi.fn<() => void>(),
     save: vi.fn<() => void>(),
+    cancel: vi.fn<() => void>(),
     option: vi.fn<ToolbarActions['option']>(),
   }
   const handlers = {
@@ -30,6 +31,8 @@ function setup(props: Props = {}) {
   let style: Style = DEFAULT_STYLE
   const view = render(Toolbar, {
     props: {
+      selection: { x: 100, y: 100, width: 400, height: 300 },
+      display: { width: 1000, height: 700 },
       tool: null,
       get style() {
         return style
@@ -50,6 +53,8 @@ function setup(props: Props = {}) {
   return { view, actions, handlers, style: () => style, user: userEvent.setup() }
 }
 
+/** Where a bar is, by name. */
+const barStyle = (name: string) => screen.getByRole('toolbar', { name }).parentElement!.style
 const button = (name: string) => screen.getByRole('button', { name })
 /** A tool, color or size: one choice of a toggle group. */
 const choice = (name: string) => screen.getByLabelText(name)
@@ -66,12 +71,13 @@ function mousedown(target: Element) {
 }
 
 describe('Toolbar', () => {
-  it('shows the tools in order', () => {
+  it('shows the tools in order, Select first', () => {
     setup()
     const names = [...screen.getByLabelText('Tools').children].map((b) =>
       b.getAttribute('aria-label'),
     )
     expect(names).toEqual([
+      'Select',
       'Pen',
       'Line',
       'Arrow',
@@ -79,8 +85,28 @@ describe('Toolbar', () => {
       'Ellipse',
       'Highlighter',
       'Text',
-      'Blur to hide info',
+      'Blur',
     ])
+  })
+
+  it('shows Select on without a drawing tool, and picks it to drop the tool', async () => {
+    const { handlers, user, view } = setup()
+    expect(choice('Select')).toHaveAttribute('data-state', 'on')
+    await view.rerender({ tool: 'pen' })
+    expect(choice('Select')).toHaveAttribute('data-state', 'off')
+    await user.click(choice('Select'))
+    expect(handlers.ontool).toHaveBeenLastCalledWith(null)
+    // Pressing Select again keeps it.
+    await view.rerender({ tool: null })
+    await user.click(choice('Select'))
+    expect(handlers.ontool).toHaveBeenLastCalledWith(null)
+  })
+
+  it('puts the rail right of the selection and the action bar below it', () => {
+    setup()
+    // jsdom lays nothing out, so the bars have no size.
+    expect(barStyle('Annotation tools')).toMatchObject({ left: '512px', top: '100px' })
+    expect(barStyle('Capture actions')).toMatchObject({ left: '500px', top: '412px' })
   })
 
   it('enables the tools that draw and shows the current one on', () => {
@@ -89,7 +115,7 @@ describe('Toolbar', () => {
     expect(choice('Arrow')).toHaveAttribute('data-state', 'off')
     expect(choice('Arrow')).toBeEnabled()
     expect(choice('Pen')).toBeEnabled()
-    expect(choice('Blur to hide info')).toBeEnabled()
+    expect(choice('Blur')).toBeEnabled()
     expect(choice('Text')).toBeEnabled()
   })
 
@@ -97,6 +123,7 @@ describe('Toolbar', () => {
     setup({ drawable: false })
     expect(choice('Rectangle')).toBeDisabled()
     expect(choice('Arrow')).toBeDisabled()
+    expect(choice('Select')).toBeEnabled()
   })
 
   it('picks a tool, and drops it when pressed again', async () => {
@@ -108,10 +135,33 @@ describe('Toolbar', () => {
     expect(handlers.ontool).toHaveBeenLastCalledWith(null)
   })
 
-  it('shows the shortcut in the tooltip', async () => {
+  it('shows each tool and its key in the tooltip', async () => {
     const { user } = setup()
-    await user.hover(choice('Rectangle'))
-    expect(await tooltip('Rectangle')).toHaveTextContent('R')
+    /** The key in the tooltip of the tool `name`, shown as `label`. */
+    const key = async (name: string, label: string) => {
+      await user.hover(choice(name))
+      const shown = (await tooltip(label)).querySelector('kbd')?.textContent
+      await user.unhover(choice(name))
+      return shown
+    }
+    expect(await key('Select', 'Select and move')).toBe('V')
+    expect(await key('Rectangle', 'Rectangle')).toBe('R')
+    expect(await key('Ellipse', 'Ellipse')).toBe('O')
+    expect(await key('Blur', 'Blur to hide info')).toBe('B')
+  })
+
+  it('shows the keys of the other buttons in their tooltips', async () => {
+    const { user } = setup({ canUndo: true })
+    await user.hover(button('Undo'))
+    expect((await tooltip('Undo')).querySelector('kbd')).toHaveTextContent('⌘Z')
+    await user.hover(button('Redo'))
+    expect((await tooltip('Redo')).querySelector('kbd')).toHaveTextContent('⇧⌘Z')
+    await user.hover(button('Save'))
+    expect((await tooltip('Save')).querySelector('kbd')).toHaveTextContent('⌘S')
+    await user.hover(button('Cancel'))
+    expect((await tooltip('Cancel')).querySelector('kbd')).toHaveTextContent('Esc')
+    await user.hover(button('Clear all'))
+    expect((await tooltip('Clear all')).querySelector('kbd')).toBeNull()
   })
 
   it('uses Ctrl in shortcuts off the Mac', async () => {
@@ -133,32 +183,72 @@ describe('Toolbar', () => {
   it('picks a color and a size, and keeps one of each', async () => {
     const { style, user } = setup()
     await user.click(button('Color and size'))
-    await user.click(await screen.findByLabelText(`Color ${COLORS[4]}`))
-    expect(style().color).toBe(COLORS[4])
+    const swatches = [...(await screen.findByLabelText('Color')).children]
+    expect(swatches.map((s) => s.getAttribute('aria-label'))).toEqual(COLORS.map((c) => c.name))
+    await user.click(choice('Blue'))
+    expect(style().color).toBe('#3B82F6')
     await user.click(choice('Thick'))
-    expect(style()).toEqual({ color: COLORS[4], size: 8 })
+    expect(style()).toEqual({ color: '#3B82F6', size: 8 })
     // Pressing the current one again does not leave none.
     await user.click(choice('Thick'))
-    await user.click(choice(`Color ${COLORS[4]}`))
-    expect(style()).toEqual({ color: COLORS[4], size: 8 })
+    await user.click(choice('Blue'))
+    expect(style()).toEqual({ color: '#3B82F6', size: 8 })
     expect(screen.getByTestId('current-color').style.background).not.toBe('')
   })
 
-  it('picks a custom color', async () => {
+  it('picks a color by hex, as #RGB or #RRGGBB', async () => {
     const { style, user } = setup()
     await user.click(button('Color and size'))
-    const custom = await screen.findByLabelText<HTMLInputElement>('Custom color')
-    await fireEvent.change(custom, { target: { value: '120' } })
+    const hex = await screen.findByLabelText<HTMLInputElement>('Hex')
+    expect(hex.value).toBe(DEFAULT_STYLE.color)
+    // Typing changes nothing until Enter, so a color is one change.
+    await user.clear(hex)
+    await user.type(hex, '#0f0')
+    expect(hex.value).toBe('#0f0')
+    expect(style()).toEqual(DEFAULT_STYLE)
+    await user.keyboard('{Enter}')
     expect(style()).toEqual({ ...DEFAULT_STYLE, color: '#00FF00' })
+    expect(hex.value).toBe('#00FF00')
+    // Something that is not a color is dropped.
+    await user.clear(hex)
+    await user.type(hex, '#0f08{Enter}')
+    expect(style().color).toBe('#00FF00')
+    expect(hex.value).toBe('#00FF00')
+    // Leaving the field takes the color too.
+    await user.clear(hex)
+    await user.type(hex, '123456')
+    await user.tab()
+    expect(style().color).toBe('#123456')
   })
 
-  it('copies and saves; Share waits for #19', async () => {
+  it('drops a hex color still being typed when a swatch is picked', async () => {
+    const { style, user } = setup()
+    await user.click(button('Color and size'))
+    const hex = await screen.findByLabelText<HTMLInputElement>('Hex')
+    await user.clear(hex)
+    await user.type(hex, '123456')
+    await fireEvent.click(choice('Blue'))
+    expect(hex.value).toBe('#3B82F6')
+    hex.blur()
+    expect(style().color).toBe('#3B82F6')
+  })
+
+  it('copies, saves and cancels; Share is coming', async () => {
     const { actions, user } = setup()
     await user.click(button('Copy'))
     await user.click(button('Save'))
+    await user.click(button('Cancel'))
     expect(actions.copy).toHaveBeenCalledOnce()
     expect(actions.save).toHaveBeenCalledOnce()
-    expect(button('Share')).toBeDisabled()
+    expect(actions.cancel).toHaveBeenCalledOnce()
+    expect(button('Share')).toHaveAttribute('aria-disabled', 'true')
+    await user.hover(button('Share'))
+    expect(await tooltip('Coming soon')).toBeInTheDocument()
+  })
+
+  it('shows the platform key on Copy', async () => {
+    setup({ mac: false })
+    expect(button('Copy')).toHaveTextContent('Ctrl+C')
   })
 
   it('toggles options from the menu', async () => {
@@ -222,12 +312,12 @@ describe('Toolbar', () => {
     expect(mousedown(button('Undo'))).toBe(true)
     field.focus()
     await user.click(button('Color and size'))
-    const swatch = await screen.findByLabelText(`Color ${COLORS[4]}`)
+    const swatch = await screen.findByLabelText('Blue')
     expect(field).toHaveFocus()
     expect(mousedown(swatch)).toBe(true)
     const bar = view.component as unknown as { closeMenus: () => boolean }
     bar.closeMenus()
-    await waitFor(() => expect(screen.queryByLabelText(`Color ${COLORS[4]}`)).toBeNull())
+    await waitFor(() => expect(screen.queryByLabelText('Blue')).toBeNull())
     expect(field).toHaveFocus()
     // The ⋯ menu too.
     await user.click(button('More'))

@@ -87,6 +87,11 @@ const ctrl = (key: string) => `{Control>}${key}{/Control}`
 const overlay = () => screen.getByTestId('overlay')
 const selection = () => screen.queryByTestId('selection')
 const rect = () => box(selection()!)
+const field = (name: 'Width' | 'Height') => screen.getByLabelText<HTMLInputElement>(name)
+/** The size badge's fields, as shown. */
+const size = () => [field('Width').value, field('Height').value].join(' × ')
+const handle = (h: string) => selection()!.querySelector(`[data-handle="${h}"]`)!
+const hint = () => [...screen.getByTestId('hint').children].map((c) => c.textContent)
 const point = ({ x, y }: At) => ({ clientX: x, clientY: y, button: 0, pointerId: 1 })
 
 function drag(from: At, to: At, target: Element = overlay()) {
@@ -316,7 +321,7 @@ describe('Overlay', () => {
       expect(selection()).toBeNull()
       drag({ x: 110, y: 70 }, { x: 10, y: 20 })
       expect(rect()).toEqual([10, 20, 100, 50])
-      expect(screen.getByTestId('size-badge')).toHaveTextContent('200 × 100')
+      expect(size()).toBe('200 × 100')
       expect(selected).toEqual([
         { label: 'overlay-1', active: true, session: 9, stamp: expect.any(Number) },
       ])
@@ -361,7 +366,6 @@ describe('Overlay', () => {
     it('resizes with the handles', async () => {
       await shown()
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
-      const handle = (h: string) => selection()!.querySelector(`[data-handle="${h}"]`)!
       drag({ x: 110, y: 60 }, { x: 130, y: 90 }, handle('se'))
       expect(rect()).toEqual([10, 10, 120, 80])
       drag({ x: 10, y: 10 }, { x: 0, y: 0 }, handle('nw'))
@@ -384,7 +388,6 @@ describe('Overlay', () => {
       drag({ x: 600, y: 400 }, { x: -2000, y: -2000 }, selection()!)
       expect(rect()).toEqual([0, 0, 500, 350])
       // Resizing too.
-      const handle = (h: string) => selection()!.querySelector(`[data-handle="${h}"]`)!
       drag({ x: 500, y: 350 }, { x: 5000, y: 5000 }, handle('se'))
       expect(rect()).toEqual([0, 0, 1000, 700])
     })
@@ -423,8 +426,7 @@ describe('Overlay', () => {
     it('uses the drag cursor everywhere while dragging', async () => {
       await shown()
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
-      const handle = selection()!.querySelector('[data-handle="n"]')!
-      fireEvent.pointerDown(handle, point({ x: 60, y: 10 }))
+      fireEvent.pointerDown(handle('n'), point({ x: 60, y: 10 }))
       expect(overlay().style.cursor).toBe('ns-resize')
       fireEvent.pointerCancel(overlay())
       expect(overlay().style.cursor).toBe('')
@@ -479,9 +481,11 @@ describe('Overlay', () => {
     it('Esc cancels a size edit before the selection', async () => {
       await shown()
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
-      await userEvent.click(screen.getByRole('button', { name: /200 × 100/ }))
+      await userEvent.click(field('Width'))
+      await userEvent.keyboard('5')
       await esc()
-      await waitFor(() => expect(screen.queryByLabelText('Width')).toBeNull())
+      await waitFor(() => expect(field('Width')).not.toHaveFocus())
+      expect(size()).toBe('200 × 100')
       expect(selection()).not.toBeNull()
       expect(answers()).toEqual([{ session: 9, token: 1, handled: true }])
     })
@@ -530,7 +534,7 @@ describe('Overlay', () => {
       it('opens with the region selected, as after a drag', async () => {
         await restored()
         expect(rect()).toEqual([10, 10, 100, 50])
-        expect(screen.getByTestId('size-badge')).toHaveTextContent('200 × 100')
+        expect(size()).toBe('200 × 100')
         expect(selected).toEqual([
           { label: 'overlay-1', active: true, session: 9, stamp: expect.any(Number) },
         ])
@@ -700,13 +704,13 @@ describe('Overlay', () => {
     it('sets an exact size from the badge', async () => {
       await shown()
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
-      await userEvent.click(screen.getByRole('button', { name: /200 × 100/ }))
-      const width = screen.getByLabelText('Width')
-      await userEvent.clear(width)
+      await userEvent.clear(field('Width'))
       // Typing does not nudge, copy or save the selection.
-      await userEvent.type(width, '300{ArrowLeft}{Enter}')
+      await userEvent.type(field('Width'), '300{ArrowLeft}{Enter}')
       expect(rect()).toEqual([10, 10, 150, 50])
-      await userEvent.click(screen.getByRole('button', { name: /300 × 100/ }))
+      expect(field('Width')).not.toHaveFocus()
+      expect(size()).toBe('300 × 100')
+      await userEvent.click(field('Height'))
       await userEvent.keyboard('{Control>}c{/Control}{Control>}s{/Control}{Escape}')
       expect(calls.filter((c) => c.cmd === 'overlay_copy' || c.cmd === 'overlay_save')).toEqual([])
       // Clicks on the badge do not start a new selection.
@@ -717,8 +721,7 @@ describe('Overlay', () => {
     it('Enter on the lock toggle stays in the badge', async () => {
       await shown()
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
-      await userEvent.click(screen.getByRole('button', { name: /200 × 100/ }))
-      screen.getByRole('button', { name: 'Lock ratio' }).focus()
+      screen.getByRole('button', { name: 'Lock aspect ratio' }).focus()
       await userEvent.keyboard('{Enter}')
       expect(called('overlay_copy')).toHaveLength(0)
     })
@@ -747,6 +750,119 @@ describe('Overlay', () => {
       // Not while moving.
       fireEvent.pointerDown(selection()!, point({ x: 15, y: 15 }))
       expect(screen.queryByTestId('magnifier')).toBeNull()
+    })
+
+    it('shows the loupe and guides at the pointer before a selection', async () => {
+      context = fakeContext([255, 128, 0, 255])
+      await shown({ magnifier: true })
+      // Not until the pointer is known.
+      expect(screen.queryByTestId('magnifier')).toBeNull()
+      expect(screen.queryAllByTestId('guide')).toHaveLength(0)
+      fireEvent.pointerMove(overlay(), point({ x: 20, y: 30 }))
+      expect(screen.getByTestId('magnifier')).toHaveTextContent('40, 60 · #FF8000')
+      const [down, across] = screen.getAllByTestId('guide')
+      expect(down.style.transform).toBe('translateX(20px)')
+      expect(across.style.transform).toBe('translateY(30px)')
+      // Neither once there is a selection.
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      expect(screen.queryByTestId('magnifier')).toBeNull()
+      expect(screen.queryAllByTestId('guide')).toHaveLength(0)
+    })
+
+    it('shows the keys for each state at the bottom', async () => {
+      await shown()
+      expect(hint()).toEqual(['Drag select area', 'Esc cancel'])
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      expect(hint()).toEqual(['Enter copy', 'Ctrl+S save', 'Space move', 'Esc clear'])
+      // Typing a size: Enter applies it and Esc cancels the edit.
+      await userEvent.click(field('Width'))
+      expect(hint()).toEqual(['Enter apply', 'Ctrl+S save', 'Space move', 'Esc cancel'])
+    })
+
+    it('shows that Esc closes a remembered region', async () => {
+      frame = () => rgba(info.width, info.height)
+      await mount()
+      await emit('overlay:show', { ...info, region: { x: 10, y: 10, width: 100, height: 50 } })
+      await waitFor(() => expect(hint()).toContain('Esc cancel'))
+    })
+
+    it('shows ⌘ in the keys on macOS', async () => {
+      platform.mac = true
+      await shown()
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      expect(hint()).toContain('⌘S save')
+    })
+
+    it('moves a new selection while Space is held', async () => {
+      await shown()
+      fireEvent.pointerDown(overlay(), point({ x: 10, y: 10 }))
+      fireEvent.pointerMove(overlay(), point({ x: 60, y: 40 }))
+      expect(rect()).toEqual([10, 10, 50, 30])
+      await fireEvent.keyDown(window, { key: ' ' })
+      fireEvent.pointerMove(overlay(), point({ x: 80, y: 50 }))
+      expect(rect()).toEqual([30, 20, 50, 30])
+      await fireEvent.keyUp(window, { key: ' ' })
+      // Let go, the drag sizes the moved selection again.
+      fireEvent.pointerMove(overlay(), point({ x: 90, y: 70 }))
+      expect(rect()).toEqual([30, 20, 60, 50])
+      fireEvent.pointerUp(overlay(), point({ x: 90, y: 70 }))
+    })
+
+    it('moves the press point when Space comes before the first move', async () => {
+      await shown()
+      fireEvent.pointerDown(overlay(), point({ x: 10, y: 10 }))
+      await fireEvent.keyDown(window, { key: ' ' })
+      fireEvent.pointerMove(overlay(), point({ x: 50, y: 50 }))
+      expect(selection()).toBeNull()
+      await fireEvent.keyUp(window, { key: ' ' })
+      fireEvent.pointerMove(overlay(), point({ x: 80, y: 70 }))
+      expect(rect()).toEqual([50, 50, 30, 20])
+      fireEvent.pointerUp(overlay(), point({ x: 80, y: 70 }))
+    })
+
+    it('moves a selection being resized while Space is held, until the drag ends', async () => {
+      await shown()
+      drag({ x: 10, y: 10 }, { x: 60, y: 40 })
+      fireEvent.pointerDown(handle('se'), point({ x: 60, y: 40 }))
+      fireEvent.pointerMove(overlay(), point({ x: 70, y: 50 }))
+      expect(rect()).toEqual([10, 10, 60, 40])
+      await fireEvent.keyDown(window, { key: ' ' })
+      fireEvent.pointerMove(overlay(), point({ x: 80, y: 55 }))
+      expect(rect()).toEqual([20, 15, 60, 40])
+      fireEvent.pointerUp(overlay(), point({ x: 80, y: 55 }))
+      // Moved into an edge, it stops there whole.
+      fireEvent.pointerDown(handle('se'), point({ x: 80, y: 55 }))
+      await fireEvent.keyDown(window, { key: ' ' })
+      fireEvent.pointerMove(overlay(), point({ x: -500, y: 55 }))
+      expect(rect()).toEqual([0, 15, 60, 40])
+      await fireEvent.keyUp(window, { key: ' ' })
+      fireEvent.pointerMove(overlay(), point({ x: -490, y: 65 }))
+      expect(rect()).toEqual([0, 15, 70, 50])
+      fireEvent.pointerUp(overlay(), point({ x: -490, y: 65 }))
+      // Space without a drag does nothing; a new drag draws as usual.
+      await fireEvent.keyDown(window, { key: ' ' })
+      drag({ x: 200, y: 200 }, { x: 250, y: 230 })
+      expect(rect()).toEqual([200, 200, 50, 30])
+    })
+
+    it('keeps the aspect ratio with the lock, for handles and typed sizes', async () => {
+      await shown()
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      const lock = screen.getByRole('button', { name: 'Lock aspect ratio' })
+      await userEvent.click(lock)
+      expect(lock).toHaveAttribute('aria-pressed', 'true')
+      // The lock takes no focus, so keys still reach the overlay.
+      expect(lock).not.toHaveFocus()
+      drag({ x: 110, y: 60 }, { x: 160, y: 60 }, handle('se'))
+      expect(rect()).toEqual([10, 10, 150, 75])
+      await userEvent.clear(field('Height'))
+      await userEvent.type(field('Height'), '50')
+      expect(size()).toBe('100 × 50')
+      await userEvent.keyboard('{Enter}')
+      expect(rect()).toEqual([10, 10, 50, 25])
+      await userEvent.click(lock)
+      drag({ x: 60, y: 35 }, { x: 80, y: 35 }, handle('se'))
+      expect(rect()).toEqual([10, 10, 70, 25])
     })
 
     it('follows the magnifier setting by default (off)', async () => {
@@ -821,10 +937,10 @@ describe('Overlay', () => {
 
     it('undoes one thing per Esc: size edit, then annotations, then the selection', async () => {
       await annotated()
-      await userEvent.click(screen.getByTitle('Set size'))
+      await userEvent.click(field('Width'))
       // The size edit goes first, then the tool, then the selection with its annotations.
       await esc(1)
-      await waitFor(() => expect(screen.queryByLabelText('Width')).toBeNull())
+      await waitFor(() => expect(field('Width')).not.toHaveFocus())
       expect(screen.getByLabelText('Rectangle')).toHaveAttribute('data-state', 'on')
       await esc(2)
       await esc(3)
@@ -857,12 +973,12 @@ describe('Overlay', () => {
       await userEvent.keyboard('t')
       fireEvent.pointerDown(layer(), point({ x: 70, y: 30 }))
       fireEvent.pointerUp(layer(), point({ x: 70, y: 30 }))
-      const field = await screen.findByRole('textbox', { name: 'Text' })
-      await waitFor(() => expect(field).toHaveFocus())
+      const text = await screen.findByRole('textbox', { name: 'Text' })
+      await waitFor(() => expect(text).toHaveFocus())
       // Letters, arrows, Enter and Ctrl+C or Ctrl+S type or move the caret: no tool, nudge, copy
       // or save.
       await userEvent.keyboard('ra{ArrowLeft}{Enter}{Control>}cs{/Control}')
-      expect(field).toHaveValue('r\na')
+      expect(text).toHaveValue('r\na')
       expect(rect()).toEqual([10, 10, 100, 50])
       expect(calls.filter((c) => c.cmd === 'overlay_copy' || c.cmd === 'overlay_save')).toEqual([])
       expect(screen.getByLabelText('Text', { selector: 'button' })).toHaveAttribute(
@@ -941,6 +1057,64 @@ describe('Overlay', () => {
       })
       expect(body).toBeInstanceOf(Uint8Array)
       expect((body as Uint8Array).length).toBe(96 * 76 * 4)
+    })
+
+    it('shows what Enter and Esc do with annotations', async () => {
+      await annotated()
+      expect(hint()).toEqual(['Enter copy', 'Ctrl+S save', 'Space move', 'Esc drop tool'])
+      await colors()
+      expect(hint()).toEqual(['Ctrl+S save', 'Space move', 'Esc close menu'])
+    })
+
+    it('presses a focused button with Enter, not copy', async () => {
+      await annotated()
+      const save = await screen.findByRole('button', { name: 'Save' })
+      save.focus()
+      await userEvent.keyboard('{Enter}')
+      await waitFor(() => expect(called('overlay_save')).toHaveLength(1))
+      expect(called('overlay_copy')).toHaveLength(0)
+    })
+
+    it('moves the selection with Select, a drag off the shapes going to the overlay', async () => {
+      await annotated()
+      await userEvent.keyboard('v')
+      await waitFor(() =>
+        expect(screen.getByLabelText('Select')).toHaveAttribute('data-state', 'on'),
+      )
+      drag({ x: 80, y: 40 }, { x: 90, y: 45 }, layer())
+      expect(rect()).toEqual([20, 15, 100, 50])
+      expect(shapes()).toHaveLength(1)
+    })
+
+    it('lets a resize moved off the annotations with Space shrink freely', async () => {
+      await annotated()
+      fireEvent.pointerDown(handle('se'), point({ x: 110, y: 60 }))
+      await fireEvent.keyDown(window, { key: ' ' })
+      fireEvent.pointerMove(overlay(), point({ x: 310, y: 60 }))
+      expect(rect()).toEqual([210, 10, 100, 50])
+      await fireEvent.keyUp(window, { key: ' ' })
+      fireEvent.pointerMove(overlay(), point({ x: 220, y: 60 }))
+      expect(rect()).toEqual([210, 10, 10, 50])
+      fireEvent.pointerUp(overlay(), point({ x: 220, y: 60 }))
+    })
+
+    it('keeps the locked ratio when the annotations hold a resize back', async () => {
+      await annotated()
+      await userEvent.click(screen.getByRole('button', { name: 'Lock aspect ratio' }))
+      drag({ x: 110, y: 30 }, { x: 10, y: 30 }, handle('e'))
+      const [x, y, width, height] = rect()
+      expect(width / height).toBeCloseTo(2)
+      // It still holds the rect, painted from (16, 16) to (64, 54).
+      expect(x).toBeLessThanOrEqual(16)
+      expect(y).toBeLessThanOrEqual(16)
+      expect(x + width).toBeGreaterThanOrEqual(64)
+      expect(y + height).toBeGreaterThanOrEqual(54)
+    })
+
+    it('closes the overlay with Cancel', async () => {
+      await annotated()
+      await userEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
+      expect(called('close_overlay')).toEqual([{ cmd: 'close_overlay', args: { session: 9 } }])
     })
 
     it('copies and saves from the toolbar', async () => {

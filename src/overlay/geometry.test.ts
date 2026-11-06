@@ -13,6 +13,8 @@ import {
   move,
   nudge,
   resize,
+  resizeLocked,
+  growToRatio,
   resizeTo,
   span,
   toPhysical,
@@ -205,13 +207,59 @@ describe('hex', () => {
   })
 })
 
+describe('growToRatio', () => {
+  it('grows the short side around the middle to the ratio', () => {
+    expect(growToRatio(rect(20, 20, 20, 20), 2, display)).toEqual(rect(10, 20, 40, 20))
+    expect(growToRatio(rect(20, 20, 40, 10), 2, display)).toEqual(rect(20, 15, 40, 20))
+  })
+
+  it('keeps it on the display', () => {
+    expect(growToRatio(rect(0, 0, 20, 20), 2, display)).toEqual(rect(0, 0, 40, 20))
+  })
+
+  it('leaves it as it is without a ratio', () => {
+    expect(growToRatio(rect(1, 2, 3, 4), 0, display)).toEqual(rect(1, 2, 3, 4))
+  })
+})
+
+describe('resizeLocked', () => {
+  // 2:1.
+  const r = rect(10, 10, 20, 10)
+
+  it('follows the side a corner drag grew more', () => {
+    expect(resizeLocked(r, 'se', 10, 0, display)).toEqual(rect(10, 10, 30, 15))
+    expect(resizeLocked(r, 'se', 0, 10, display)).toEqual(rect(10, 10, 40, 20))
+    expect(resizeLocked(r, 'nw', -10, 0, display)).toEqual(rect(0, 5, 30, 15))
+  })
+
+  it('grows the other side around its middle for an edge handle', () => {
+    expect(resizeLocked(r, 'e', 10, 0, display)).toEqual(rect(10, 7.5, 30, 15))
+    expect(resizeLocked(r, 's', 0, 10, display)).toEqual(rect(0, 10, 40, 20))
+    expect(resizeLocked(r, 'n', 0, -10, display)).toEqual(rect(0, 0, 40, 20))
+    expect(resizeLocked(r, 'w', -10, 0, display)).toEqual(rect(0, 7.5, 30, 15))
+  })
+
+  it('scales down as a whole to stay on the display', () => {
+    expect(resizeLocked(r, 'se', 500, 0, display)).toEqual(rect(10, 10, 90, 45))
+  })
+
+  it('flips past the opposite edge, keeping the ratio', () => {
+    expect(resizeLocked(r, 'e', -40, 0, display)).toEqual(rect(0, 12.5, 10, 5))
+    expect(resizeLocked(r, 'sw', 30, -30, display)).toEqual(rect(30, 0, 20, 10))
+  })
+
+  it('resizes freely without a ratio to keep', () => {
+    expect(resizeLocked(rect(10, 10, 20, 0), 'se', 5, 5, display)).toEqual(rect(10, 10, 25, 5))
+  })
+})
+
 describe('placement', () => {
   const size = { width: 40, height: 10 }
 
   it('puts the badge above, then below, then inside', () => {
-    expect(badgePosition(rect(10, 30, 20, 20), size, display)).toEqual({ x: 10, y: 14 })
-    expect(badgePosition(rect(10, 5, 20, 20), size, display)).toEqual({ x: 10, y: 31 })
-    expect(badgePosition(rect(10, 0, 20, 80), size, display)).toEqual({ x: 10, y: 6 })
+    expect(badgePosition(rect(10, 30, 20, 20), size, display)).toEqual({ x: 10, y: 12 })
+    expect(badgePosition(rect(10, 5, 20, 20), size, display)).toEqual({ x: 10, y: 33 })
+    expect(badgePosition(rect(10, 0, 20, 80), size, display)).toEqual({ x: 10, y: 8 })
   })
 
   it('keeps the badge on the display', () => {

@@ -41,7 +41,7 @@ describe('text', () => {
   })
 
   it('picks black or white text by WCAG contrast ratio, for every palette color', () => {
-    for (const color of COLORS) {
+    for (const { color } of COLORS) {
       const l = luminance(color)
       const black = ratio(l, 0)
       const white = ratio(l, 1)
@@ -50,14 +50,15 @@ describe('text', () => {
       expect(picked).toBe(black >= white ? '#000000' : '#FFFFFF')
       expect(Math.max(black, white)).toBeGreaterThanOrEqual(3)
     }
-    expect(COLORS.map(ink)).toEqual([
+    expect(COLORS.map(({ color }) => ink(color))).toEqual([
       '#000000', // red
       '#000000', // orange
       '#000000', // yellow
-      '#000000', // green: black reads far better than white (9.2 against 2.3)
+      '#000000', // green: black reads far better than white
       '#000000', // blue
-      '#FFFFFF', // black
+      '#000000', // purple
       '#000000', // white
+      '#FFFFFF', // black
     ])
   })
 

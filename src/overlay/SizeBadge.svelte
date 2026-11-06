@@ -1,92 +1,133 @@
 <script lang="ts">
-  import LockIcon from '@lucide/svelte/icons/lock'
-  import { tick } from 'svelte'
-  import { Input } from '$lib/components/ui/input'
-  import { Toggle } from '$lib/components/ui/toggle'
+  import LockIcon from '@lucide/svelte/icons/link-2'
   import { lockedSize, type Size } from './geometry'
 
   /**
-   * The selection size in physical px. Click to type an exact size. `editing` is bindable so
-   * Esc can cancel the edit.
+   * The selection size in physical px, as two fields: type an exact size and press Enter.
+   * `editing` is bindable so Esc can cancel the edit; `lock` keeps the aspect ratio, here and
+   * when the selection is resized.
    */
   let {
     size,
     onresize,
     editing = $bindable(false),
+    lock = $bindable(false),
   }: {
     size: Size
     onresize: (size: Size, keepRatio: boolean) => void
     editing?: boolean
+    lock?: boolean
   } = $props()
 
-  let width = $state(0)
-  let height = $state(0)
-  let lock = $state(false)
+  let width = $state<number | null>(0)
+  let height = $state<number | null>(0)
   let ratio = 1
   let form = $state<HTMLFormElement>()
 
-  async function edit() {
+  // The fields show the selection's size, except while they are being typed in.
+  $effect.pre(() => {
+    if (editing) return
     width = size.width
     height = size.height
+  })
+
+  // An edit cancelled from outside (Esc) leaves the fields.
+  $effect(() => {
+    const active = document.activeElement
+    if (!editing && active instanceof HTMLElement && form?.contains(active)) active.blur()
+  })
+
+  function onfocusin(e: FocusEvent) {
+    if (editing || !(e.target instanceof HTMLInputElement)) return
     ratio = size.width / size.height
     editing = true
-    await tick()
-    const input = form?.querySelector('input')
-    input?.focus()
-    input?.select()
   }
 
   function typed(side: keyof Size) {
-    if (!lock) return
     const value = side === 'width' ? width : height
-    if (!(value >= 1)) return
+    if (!lock || !(value !== null && value >= 1)) return
     ;({ width, height } = lockedSize(side, value, ratio))
   }
 
   function apply(e: SubmitEvent) {
     e.preventDefault()
+    const next = { width: width ?? 0, height: height ?? 0 }
     editing = false
-    if (width >= 1 && height >= 1) onresize({ width, height }, lock)
+    if (next.width >= 1 && next.height >= 1) onresize(next, lock)
   }
 
   // Leaving the form without Enter cancels the edit.
   function onfocusout(e: FocusEvent) {
     if (!form?.contains(e.relatedTarget as Node | null)) editing = false
   }
+
+  function toggle() {
+    lock = !lock
+    ratio = size.width / size.height
+  }
+
+  const FIELD =
+    'h-[26px] w-[52px] rounded-[5px] border border-zinc-700 bg-zinc-950 px-1.5 text-xs text-zinc-50 outline-none focus:border-(--selection)'
 </script>
 
-<div
-  class="rounded-md bg-popover/90 text-xs text-popover-foreground tabular-nums shadow-md"
+<form
+  bind:this={form}
+  class="flex h-[34px] items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900 p-[3px] font-mono text-xs text-zinc-400 tabular-nums"
+  role="group"
+  aria-label="Selection size"
   data-testid="size-badge"
   data-size-badge
+  onsubmit={apply}
+  {onfocusin}
+  {onfocusout}
 >
-  {#if editing}
-    <form bind:this={form} class="flex items-center gap-1 p-1" onsubmit={apply} {onfocusout}>
-      <Input
-        type="number"
-        min="1"
-        aria-label="Width"
-        class="h-7 w-20 text-xs"
-        bind:value={width}
-        oninput={() => typed('width')}
-      />
-      <span aria-hidden="true">×</span>
-      <Input
-        type="number"
-        min="1"
-        aria-label="Height"
-        class="h-7 w-20 text-xs"
-        bind:value={height}
-        oninput={() => typed('height')}
-      />
-      <Toggle size="sm" aria-label="Lock ratio" bind:pressed={lock}>
-        <LockIcon />
-      </Toggle>
-      <button type="submit" hidden aria-hidden="true"></button>
-    </form>
-  {:else}
-    <button type="button" class="cursor-text px-2 py-1" onclick={edit} title="Set size">
-      {size.width} × {size.height}
-    </button>
-  {/if}
-</div>
+  <label for="size-width" class="pl-1.5">W</label>
+  <input
+    id="size-width"
+    class={FIELD}
+    type="number"
+    min="1"
+    inputmode="numeric"
+    aria-label="Width"
+    bind:value={width}
+    oninput={() => typed('width')}
+  />
+  <button
+    type="button"
+    class="flex size-[26px] items-center justify-center rounded-[5px] hover:bg-zinc-800 {lock
+      ? 'text-zinc-50'
+      : 'text-zinc-500'}"
+    aria-label="Lock aspect ratio"
+    aria-pressed={lock}
+    title="Lock aspect ratio"
+    onclick={toggle}
+    onmousedown={(e) => e.preventDefault()}
+  >
+    <LockIcon class="size-3.5" />
+  </button>
+  <label for="size-height">H</label>
+  <input
+    id="size-height"
+    class={FIELD}
+    type="number"
+    min="1"
+    inputmode="numeric"
+    aria-label="Height"
+    bind:value={height}
+    oninput={() => typed('height')}
+  />
+  <span class="pr-1.5">px</span>
+  <button type="submit" hidden aria-hidden="true"></button>
+</form>
+
+<style>
+  /* Plain fields, as designed: no spin buttons. */
+  input {
+    appearance: textfield;
+  }
+  input::-webkit-inner-spin-button,
+  input::-webkit-outer-spin-button {
+    appearance: none;
+    margin: 0;
+  }
+</style>

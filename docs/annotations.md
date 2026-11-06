@@ -10,11 +10,15 @@ logic.
 | `history.ts`       | Undo and redo as snapshots of the shape list (last 200)             |
 | `memory.ts`        | The last tool, color and size, in localStorage                      |
 | `blocks.ts`        | The blur preview's blocks, as Rust paints them                      |
-| `placement.ts`     | Where the toolbar goes                                              |
+| `placement.ts`     | Where the tool rail and the action bar go                           |
 | `board.ts`         | The Konva stage, and `exportShapes`                                 |
 | `Annotator.svelte` | Pointer input, history, the toolbar, and the API the overlay calls |
-| `Toolbar.svelte`   | The toolbar (presentational, loaded on demand)                      |
-| `TextOptions.svelte` | The text tool's size and background, in the toolbar               |
+| `Toolbar.svelte`   | The toolbar: rail and action bar, placed (loaded on demand)         |
+| `Rail.svelte`      | The vertical tool rail: Select, the tools, color, undo, redo, clear |
+| `ColorMenu.svelte` | The color popover: swatches, a hex field and the stroke size        |
+| `ActionBar.svelte` | More (options), Share, Save, Copy and Cancel                        |
+| `Tip.svelte`       | A tooltip with the label and its key                                |
+| `TextOptions.svelte` | The text tool's size and background, in the rail                  |
 | `TextEditor.svelte`  | The textarea that edits a text in place                           |
 
 ## Shape model
@@ -54,8 +58,8 @@ exported. A shape dragged out of the selection is pulled back until 8 px of it s
   pixelates the frame before it draws them. There can be at most 256 (Rust's `MAX_BLURS`): the
   tool says so and adds no more, and `blurRects` never sends more.
 
-The color popover has preset colors, a hue slider for a custom color (in the page: the system
-color panel would open under the overlay) and three sizes. With a shape selected, a new color
+The color popover has eight preset colors, a hex field for any other (`#RGB` or `#RRGGBB`; in
+the page, as the system color panel would open under the overlay) and three sizes. With a shape selected, a new color
 or size restyles it as one undo step (text takes only the color; a blur has neither); the tool
 takes it too. The last tool (Text included), color and size are kept in localStorage
 (`memory.ts`), each on its own, so a window that changes one never overwrites another window's

@@ -110,6 +110,74 @@ export function resize(r: Rect, handle: Handle, dx: number, dy: number, bounds: 
   return fromPoints({ x: left, y: top }, { x: right, y: bottom }, bounds)
 }
 
+/** -1 for a negative size, else 1 (also for none). */
+const sign = (v: number | null) => (v !== null && v < 0 ? -1 : 1)
+
+/**
+ * `r` grown around its middle to the aspect ratio `ratio` (width / height), the smallest rect
+ * of that ratio holding it, then kept on the display.
+ */
+export function growToRatio(r: Rect, ratio: number, bounds: Size): Rect {
+  if (!(Number.isFinite(ratio) && ratio > 0)) return r
+  const width = Math.max(r.width, r.height * ratio)
+  const height = width / ratio
+  const grown = { x: r.x - (width - r.width) / 2, y: r.y - (height - r.height) / 2, width, height }
+  return move(grown, 0, 0, bounds)
+}
+
+/** Where a handle drags one axis from: its low edge, its high edge, or (edge handles) both. */
+type Anchor = 'low' | 'high' | 'middle'
+
+/**
+ * `resize`, keeping the aspect ratio `r` had. A corner follows whichever side the drag grew
+ * more; an edge handle sets one side and grows the other evenly around its middle. A size that
+ * does not fit the display is scaled down as a whole, so the ratio holds.
+ */
+export function resizeLocked(r: Rect, handle: Handle, dx: number, dy: number, bounds: Size): Rect {
+  const ratio = r.width / r.height
+  if (!(Number.isFinite(ratio) && ratio > 0)) return resize(r, handle, dx, dy, bounds)
+  // Signed: a drag past the opposite edge flips the rect, as `resize` does.
+  const dragW = handle.includes('w') ? r.width - dx : handle.includes('e') ? r.width + dx : null
+  const dragH = handle.includes('n') ? r.height - dy : handle.includes('s') ? r.height + dy : null
+  let width: number
+  let height: number
+  if (dragW !== null && (dragH === null || Math.abs(dragW) / ratio >= Math.abs(dragH))) {
+    width = dragW
+    height = (sign(dragH) * Math.abs(dragW)) / ratio
+  } else {
+    height = dragH!
+    width = sign(dragW) * Math.abs(height) * ratio
+  }
+  const ax: Anchor = handle.includes('e') ? 'low' : handle.includes('w') ? 'high' : 'middle'
+  const ay: Anchor = handle.includes('s') ? 'low' : handle.includes('n') ? 'high' : 'middle'
+  const x = axis(ax, r.x, r.width, width, bounds.width)
+  const y = axis(ay, r.y, r.height, height, bounds.height)
+  const k = Math.min(1, x.room, y.room)
+  const [left, right] = x.edges(k)
+  const [top, bottom] = y.edges(k)
+  return span({ x: left, y: top }, { x: right, y: bottom })
+}
+
+/**
+ * One axis of `resizeLocked`: how much of `size` fits (as a fraction, at most 1 matters) and
+ * its low and high edges at a fraction `k` of it.
+ */
+function axis(anchor: Anchor, start: number, length: number, size: number, max: number) {
+  const from = anchor === 'low' ? start : anchor === 'high' ? start + length : start + length / 2
+  // A low anchor grows up the axis, a high one down it; a negative size flips that.
+  const up = anchor === 'low' ? size >= 0 : size < 0
+  const free = anchor === 'middle' ? 2 * Math.min(from, max - from) : up ? max - from : from
+  const abs = Math.abs(size)
+  return {
+    room: abs > 0 ? Math.max(0, free) / abs : 1,
+    edges: (k: number): [number, number] => {
+      const d = abs * k
+      if (anchor === 'middle') return [from - d / 2, from + d / 2]
+      return up ? [from, from + d] : [from - d, from]
+    },
+  }
+}
+
 /**
  * Physical pixel rect, rounding each edge to the nearest pixel and clamping to the frame.
  * Same rule as `to_pixels` in Rust, so the badge shows exactly what gets cropped.
@@ -168,7 +236,7 @@ export function hex(rgba: ArrayLike<number>): string {
 }
 
 /** Where to put a box of `size` above `r` (or below if there is no room, else inside). */
-export function badgePosition(r: Rect, size: Size, bounds: Size, gap = 6): Point {
+export function badgePosition(r: Rect, size: Size, bounds: Size, gap = 8): Point {
   const x = clamp(r.x, 0, Math.max(0, bounds.width - size.width))
   if (r.y - gap - size.height >= 0) return { x, y: r.y - gap - size.height }
   const below = r.y + r.height + gap

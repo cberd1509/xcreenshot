@@ -12,13 +12,15 @@ describe('Magnifier', () => {
     const context = fakeContext([255, 128, 0, 255])
     const source = document.createElement('canvas')
     render(Magnifier, { props: { source, frame, at: { x: 0, y: 0 } } })
-    expect(screen.getByTestId('magnifier')).toHaveTextContent('0, 0')
-    expect(screen.getByTestId('magnifier')).toHaveTextContent('#FF8000')
+    expect(screen.getByTestId('magnifier')).toHaveTextContent('0, 0 · #FF8000')
     expect(context.imageSmoothingEnabled).toBe(false)
-    // An 11 x 11 px area centred on the cursor, 11x bigger.
-    expect(context.drawImage).toHaveBeenCalledWith(source, -5, -5, 11, 11, 0, 0, 121, 121)
+    // An 11 x 11 px area centred on the cursor, 12x bigger, its middle pixel in the middle.
+    expect(context.drawImage).toHaveBeenCalledWith(source, -5, -5, 11, 11, -6, -6, 132, 132)
     // The color is the middle of the zoomed middle pixel.
     expect(context.getImageData).toHaveBeenCalledWith(60, 60, 1, 1)
+    // A grid between the pixels: 10 lines each way, after the background.
+    expect(context.fillRect).toHaveBeenCalledTimes(21)
+    expect(context.fillRect).toHaveBeenCalledWith(5, 0, 1, 120)
   })
 
   it('redraws only when the pixel changes', async () => {

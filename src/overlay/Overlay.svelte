@@ -15,6 +15,8 @@
     move,
     nudge,
     resize,
+    resizeLocked,
+    growToRatio,
     resizeTo,
     toPhysical,
     union,
@@ -25,7 +27,8 @@
   } from './geometry'
   import Annotator from './annotate/Annotator.svelte'
   import { outputRequest } from './annotate/output'
-  import { shortcut } from './keys'
+  import { control, keyLabels, shortcut, typing } from './keys'
+  import { TOAST } from './panel'
   import Magnifier from './Magnifier.svelte'
   import Selection from './Selection.svelte'
   import SizeBadge from './SizeBadge.svelte'
@@ -54,10 +57,14 @@
   type Selected = { label: string; active: boolean; session: number; stamp: number }
 
   type Drag =
-    | { kind: 'draw'; start: Point }
-    | { kind: 'move'; start: Point; origin: Rect }
-    /** `keep`: annotations the resize may not cut, so none ends up outside the selection. */
-    | { kind: 'resize'; start: Point; origin: Rect; handle: Handle; keep: Rect | null }
+    /** `paused`: Space was pressed before anything was drawn; the start follows the pointer. */
+    | { kind: 'draw'; start: Point; paused?: boolean }
+    /** `resume`: the draw or resize Space paused to move the selection, taken up on release. */
+    | { kind: 'move'; start: Point; origin: Rect; resume?: Resumable }
+    | Resize
+  /** `keep`: annotations the resize may not cut, so none ends up outside the selection. */
+  type Resize = { kind: 'resize'; start: Point; origin: Rect; handle: Handle; keep: Rect | null }
+  type Resumable = { kind: 'draw' } | Resize
 
   /** Show the pixel loupe while dragging. Defaults to the magnifier setting. */
   let { magnifier }: { magnifier?: boolean } = $props()
@@ -78,10 +85,14 @@
 
   /** The selection in logical px, relative to this display. */
   let selection = $state<Rect | null>(null)
-  let drag = $state<Drag | null>(null)
+  let drag = $state.raw<Drag | null>(null)
   let escapeShortcut = true
   let editing = $state(false)
-  let pointer = $state<Point>({ x: 0, y: 0 })
+  let pointer = $state.raw<Point>({ x: 0, y: 0 })
+  /** The pointer moved over this capture, so `pointer` is where it is. */
+  let tracked = $state(false)
+  /** The size badge's aspect lock: it holds for typed sizes and handle drags. */
+  let lock = $state(false)
   let badge = $state<Size>({ width: 0, height: 0 })
   let loupe = $state<Size>({ width: 0, height: 0 })
   /** A copy or save is running: keys wait for it. */
@@ -93,7 +104,7 @@
   /** The newest selection event seen, its `stamp`. */
   let seen = 0
   /** The selection is the remembered region, untouched: Esc closes rather than clears it. */
-  let restored = false
+  let restored = $state(false)
 
   /**
    * Whether annotations show in the selection. Only then does a press outside it keep them
@@ -116,13 +127,41 @@
   const idle = $derived(frame.width === 0)
   // A captured drag can go past this display; the loupe hides until the pointer is back.
   const onDisplay = $derived(
-    pointer.x >= 0 && pointer.y >= 0 && pointer.x < display.width && pointer.y < display.height,
+    tracked &&
+      pointer.x >= 0 &&
+      pointer.y >= 0 &&
+      pointer.x < display.width &&
+      pointer.y < display.height,
   )
+  // Before a selection, and while drawing or resizing one: never while moving it.
+  const loupeShown = $derived(
+    loupeOn && onDisplay && (drag ? drag.kind !== 'move' : !selection) && !idle,
+  )
+  /** The keys the hint at the bottom shows, and what each does now. */
+  const hints = $derived.by(() => {
+    if (!selection)
+      return [
+        ['Drag', 'select area'],
+        ['Esc', 'cancel'],
+      ]
+    const now = annotator?.keys() ?? { enter: null, esc: null }
+    // As Esc goes (see `undoOne`): the size edit, then the annotations, then the selection.
+    const esc = editing ? 'cancel' : (now.esc ?? (restored ? 'cancel' : 'clear'))
+    const enter = editing ? 'apply' : now.enter === null ? 'copy' : now.enter
+    const typingText = annotator?.typingText()
+    return [
+      ...(enter ? [['Enter', enter]] : []),
+      ...(typingText ? [] : [[`${keyLabels().mod}S`, 'save']]),
+      ['Space', 'move'],
+      ['Esc', esc],
+    ]
+  })
 
   function reset() {
     restored = false
     selection = null
     drag = null
+    tracked = false
     editing = false
     annotator?.reset(true)
   }
@@ -270,9 +309,13 @@
     pointer = start
     const handle = (e.target as Element).closest<HTMLElement>('[data-handle]')?.dataset.handle
     if (selection && handle) {
-      const painted = annotator?.painted()
-      const keep = painted ? intersect(painted, selection) : null
-      drag = { kind: 'resize', start, origin: selection, handle: handle as Handle, keep }
+      drag = {
+        kind: 'resize',
+        start,
+        origin: selection,
+        handle: handle as Handle,
+        keep: kept(selection),
+      }
     } else if (selection && contains(selection, start)) {
       drag = { kind: 'move', start, origin: selection }
     } else if (annotationsShown()) {
@@ -288,20 +331,64 @@
     ;(e.currentTarget as Element).setPointerCapture?.(e.pointerId)
   }
 
+  /** The annotations shown in `r`, which a resize of it may not cut. */
+  function kept(r: Rect): Rect | null {
+    const painted = annotator?.painted()
+    return painted ? intersect(painted, r) : null
+  }
+
   function onpointermove(e: PointerEvent) {
     pointer = at(e)
+    tracked = true
     if (!drag) return
+    if (drag.kind === 'draw' && drag.paused) {
+      drag = { ...drag, start: pointer }
+      return
+    }
     const dx = pointer.x - drag.start.x
     const dy = pointer.y - drag.start.y
     if (drag.kind === 'move') return select(move(drag.origin, dx, dy, display))
     if (drag.kind === 'draw') return select(fromPoints(drag.start, pointer, display))
-    const rect = resize(drag.origin, drag.handle, dx, dy, display)
-    // It cannot shrink past the annotations shown in it.
-    select(drag.keep ? union(rect, drag.keep) : rect)
+    const rect = (lock ? resizeLocked : resize)(drag.origin, drag.handle, dx, dy, display)
+    if (!drag.keep) return select(rect)
+    // It cannot shrink past the annotations shown in it; locked, it grows to keep its ratio.
+    const holding = union(rect, drag.keep)
+    select(lock ? growToRatio(holding, drag.origin.width / drag.origin.height, display) : holding)
   }
 
   function onpointerup() {
     drag = null
+  }
+
+  /** Space held during a draw or resize: the selection moves, as a move drag, until let go. */
+  function pause(d: Drag) {
+    if (d.kind === 'move') return
+    // Nothing drawn yet: the press point moves instead.
+    if (!selection) {
+      if (d.kind === 'draw') drag = { ...d, paused: true }
+      return
+    }
+    const resume: Resumable = d.kind === 'draw' ? { kind: 'draw' } : d
+    drag = { kind: 'move', start: pointer, origin: selection, resume }
+  }
+
+  /** Space let go: the draw or resize goes on from the moved selection. */
+  function onkeyup(e: KeyboardEvent) {
+    if (e.key !== ' ') return
+    if (drag?.kind === 'draw' && drag.paused) {
+      drag = { kind: 'draw', start: drag.start }
+      return
+    }
+    if (drag?.kind !== 'move' || !drag.resume || !selection) return
+    const r = selection
+    if (drag.resume.kind === 'resize') {
+      drag = { ...drag.resume, start: pointer, origin: r, keep: kept(r) }
+      return
+    }
+    // A draw starts again from the corner across from the pointer.
+    const x = pointer.x >= r.x + r.width / 2 ? r.x : r.x + r.width
+    const y = pointer.y >= r.y + r.height / 2 ? r.y : r.y + r.height
+    drag = { kind: 'draw', start: { x, y } }
   }
 
   function onkeydown(e: KeyboardEvent) {
@@ -311,8 +398,17 @@
       if (!escapeShortcut) void invoke('overlay_escape')
       return
     }
-    // Typing in the size badge: Enter applies the size there.
-    if (e.target instanceof Element && e.target.closest('[data-size-badge]')) return
+    // Space during a drag moves the selection being drawn or resized.
+    if (e.key === ' ' && drag) {
+      e.preventDefault()
+      pause(drag)
+      return
+    }
+    // Keys typed in a field (the size badge, the hex color) are its own: Enter applies there.
+    if (typing(e.target) || (e.target instanceof Element && e.target.closest('[data-size-badge]')))
+      return
+    // Enter and Space on a focused control (Save, a tool, a menu item) press that control only.
+    if ((e.key === 'Enter' || e.key === ' ') && control(e.target)) return
     // Copy and Save always work, closing an open toolbar menu first, unless text is being
     // typed: then they are the text box's.
     const output = shortcut(e, 'c') ? 'overlay_copy' : shortcut(e, 's') ? 'overlay_save' : null
@@ -364,7 +460,7 @@
   })
 </script>
 
-<svelte:window {onkeydown} />
+<svelte:window {onkeydown} {onkeyup} />
 
 <div
   class="root"
@@ -390,6 +486,7 @@
     actions={{
       copy: () => physical && void finish('overlay_copy', physical),
       save: () => physical && void finish('overlay_save', physical),
+      cancel: () => close(current),
       option: setCaptureOption,
     }}
   />
@@ -405,12 +502,20 @@
       onpointerdown={(e) => e.stopPropagation()}
       role="presentation"
     >
-      <SizeBadge size={physical} {onresize} bind:editing />
+      <SizeBadge size={physical} {onresize} bind:editing bind:lock />
     </div>
   {:else}
     <div class="dim"></div>
+    {#if onDisplay}
+      <div class="guide down" style:transform="translateX({pointer.x}px)" data-testid="guide"></div>
+      <div
+        class="guide across"
+        style:transform="translateY({pointer.y}px)"
+        data-testid="guide"
+      ></div>
+    {/if}
   {/if}
-  {#if loupeOn && drag && drag.kind !== 'move' && onDisplay}
+  {#if loupeShown}
     {@const p = loupePosition(pointer, loupe, display)}
     <div
       class="floating"
@@ -423,11 +528,13 @@
     </div>
   {/if}
   {#if notice}
-    <div
-      class="pointer-events-none fixed bottom-8 left-1/2 -translate-x-1/2 rounded-md bg-popover/90 px-3 py-2 text-sm text-popover-foreground shadow-md"
-      role="alert"
-    >
-      {notice}
+    <div class={TOAST} role="alert">{notice}</div>
+  {/if}
+  {#if !idle}
+    <div class="hint" data-testid="hint">
+      {#each hints as [key, action] (key)}
+        <span><b>{key}</b> {action}</span>
+      {/each}
     </div>
   {/if}
 </div>
@@ -459,9 +566,59 @@
     cursor: inherit !important;
   }
 
+  /* The selection color, for the outline, its handles and focused fields. */
+  :global(:root) {
+    --selection: #3b82f6;
+  }
+
+  /* Before a selection, the whole frame is dimmed. */
   .dim {
-    background: rgb(0 0 0 / 0.35);
+    background: rgb(9 9 11 / 0.45);
     pointer-events: none;
+  }
+
+  /* Full-width and full-height lines through the pointer. */
+  .guide {
+    position: fixed;
+    pointer-events: none;
+    background: rgb(255 255 255 / 0.35);
+  }
+
+  .down {
+    top: 0;
+    left: 0;
+    width: 1px;
+    height: 100%;
+  }
+
+  .across {
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 1px;
+  }
+
+  /* The keys for the current state, at the bottom. */
+  .hint {
+    position: fixed;
+    left: 50%;
+    transform: translateX(-50%);
+    pointer-events: none;
+    font-size: 12px;
+    white-space: nowrap;
+    bottom: 28px;
+    display: flex;
+    gap: 16px;
+    padding: 8px 14px;
+    border-radius: 999px;
+    background: rgb(24 24 27 / 0.92);
+    border: 1px solid #27272a;
+    color: #a1a1aa;
+  }
+
+  .hint b {
+    color: #e4e4e7;
+    font-weight: 600;
   }
 
   .floating {

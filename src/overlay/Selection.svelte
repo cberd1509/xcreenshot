@@ -34,19 +34,22 @@
   .selection {
     position: fixed;
     pointer-events: none;
-    outline: 1px solid white;
+    /* Inside the edge, as designed. */
+    outline: 1px solid var(--selection);
+    outline-offset: -1px;
     /* Dims everything outside; the frame inside stays at full brightness. */
-    box-shadow: 0 0 0 100vmax rgb(0 0 0 / 0.35);
+    box-shadow: 0 0 0 100vmax rgb(9 9 11 / 0.55);
   }
 
   .handle {
     position: absolute;
     pointer-events: auto;
+    box-sizing: border-box;
     width: 8px;
     height: 8px;
     margin: -4px;
     background: white;
-    border: 1px solid rgb(0 0 0 / 0.5);
+    border: 1.5px solid var(--selection);
     border-radius: 2px;
   }
 </style>

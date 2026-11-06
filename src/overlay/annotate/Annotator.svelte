@@ -1,15 +1,16 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte'
   import { contains, nudge, type Point, type Rect, type Scale, type Size } from '../geometry'
-  import { shortcut } from '../keys'
+  import { shortcut, typing } from '../keys'
+  import { TOAST } from '../panel'
   import { Board, exportShapes, loadKonva, type AnnotationExport } from './board'
   import { commit, empty, redo, replace, undo, without, type History, type Shapes } from './history'
-  import { toolbarPosition } from './placement'
   import { recall, remember } from './memory'
   import {
     FREEHAND,
     MAX_BLURS,
     READY,
+    SELECT_KEY,
     bounds,
     constrain,
     draw,
@@ -37,9 +38,10 @@
   import type { Option, ToolbarActions } from './Toolbar.svelte'
 
   /**
-   * Annotations on the selection, and the toolbar next to it. Konva and the toolbar load when
-   * the page is idle; the stage is built on the first selection. The overlay owns the keyboard
-   * and calls `key` and `escape`; it calls `reset` when the annotations should go.
+   * Annotations on the selection, with the tool rail and action bar (the toolbar) next to it.
+   * Konva and the toolbar load when the page is idle; the stage is built on the first selection.
+   * The overlay owns the keyboard and calls `key` and `escape`; it calls `reset` when the
+   * annotations should go.
    */
   let {
     selection,
@@ -60,7 +62,13 @@
   } = $props()
 
   const noop = () => {}
-  const actions: ToolbarActions = $derived({ copy: noop, save: noop, option: noop, ...given })
+  const actions: ToolbarActions = $derived({
+    copy: noop,
+    save: noop,
+    cancel: noop,
+    option: noop,
+    ...given,
+  })
 
   let container: HTMLDivElement = $state()!
   let Toolbar = $state<typeof ToolbarComponent | null>(null)
@@ -90,7 +98,6 @@
   type Stroke = { tool: Tool; start: Point; pointer: Point; end: Point; path: Freehand }
   let stroke: Stroke | null = null
   let ids = 0
-  let bar = $state<Size>({ width: 0, height: 0 })
   let cursor = $state('')
   let textOptions = $state<TextOptions>(DEFAULT_TEXT)
 
@@ -202,6 +209,12 @@
     restore()
     cancel()
     if (frame) board?.newFrame()
+  }
+
+  /** Picks a tool (`null`: Select), committing any text being typed. */
+  function pick(next: Tool | null) {
+    finish()
+    tool = next
   }
 
   /** Opens the editor for a new text with its caret at `p`. */
@@ -418,9 +431,6 @@
     board?.preview(drawn(stroke, 'draft'))
   }
 
-  const typing = (t: EventTarget | null) =>
-    t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))
-
   /** Handles an annotation key. Returns whether it did, so the overlay skips it. */
   export function key(e: KeyboardEvent): boolean {
     // While text is edited, every key is the textarea's: no shortcuts, copy or nudges.
@@ -452,6 +462,11 @@
       set(replace(history.present, next))
       return true
     }
+    if (e.key.toUpperCase() === SELECT_KEY) {
+      e.preventDefault()
+      pick(null)
+      return true
+    }
     const next = toolForKey(e.key)
     if (!next || !READY.has(next) || failed) return false
     e.preventDefault()
@@ -476,6 +491,25 @@
   }
 
   /**
+   * What Enter and Esc do now, for the key hint; `null` leaves them to the overlay. Enter is
+   * `false` when it does nothing here (a menu or the text box has it).
+   */
+  export function keys(): { enter: string | false | null; esc: string | null } {
+    const menu = menuOpen()
+    const enter = editing || menu ? false : selectedText ? 'edit' : null
+    const esc = menu
+      ? 'close menu'
+      : editing
+        ? 'finish text'
+        : selected
+          ? 'deselect'
+          : tool && selection
+            ? 'drop tool'
+            : null
+    return { enter, esc }
+  }
+
+  /**
    * The annotations alone at native size, for Rust to composite. `crop` is the physical rect
    * being captured; `ratio` is physical px per logical px on each axis. See
    * docs/annotations.md.
@@ -484,8 +518,6 @@
     finish()
     return exportShapes(history.present, crop, ratio)
   }
-
-  const toolbarAt = $derived(selection && toolbarPosition(selection, bar, display))
 </script>
 
 <svelte:window onkeydown={onshift} onkeyup={onshift} />
@@ -506,10 +538,7 @@
 ></div>
 
 {#if hint}
-  <div
-    class="pointer-events-none fixed bottom-8 left-1/2 z-1 -translate-x-1/2 rounded-md bg-popover/90 px-3 py-2 text-sm text-popover-foreground shadow-md"
-    role="status"
-  >
+  <div class={TOAST} role="status">
     {hint}
   </div>
 {/if}
@@ -526,41 +555,30 @@
   />
 {/if}
 
-{#if Toolbar && toolbarAt}
-  <div
-    class="toolbar"
-    style:left="{toolbarAt.x}px"
-    style:top="{toolbarAt.y}px"
-    bind:offsetWidth={bar.width}
-    bind:offsetHeight={bar.height}
-    onpointerdown={(e) => e.stopPropagation()}
-    role="presentation"
-  >
-    <Toolbar
-      bind:this={toolbar}
-      {tool}
-      ontool={(t) => {
-        finish()
-        tool = t
-      }}
-      bind:style={() => shownStyle, setStyle}
-      text={shownText}
-      ontext={setText}
-      keepFocus={editing !== null}
-      drawable={!failed}
-      canUndo={history.past.length > 0 || editing !== null}
-      canRedo={history.future.length > 0 && !editing}
-      canClear={history.present.length > 0}
-      onundo={() => (editing ? (editing = null) : move(undo(history)))}
-      onredo={() => move(redo(history))}
-      onclear={() => {
-        finish()
-        set([])
-      }}
-      {options}
-      {actions}
-    />
-  </div>
+{#if Toolbar && selection}
+  <Toolbar
+    bind:this={toolbar}
+    {selection}
+    {display}
+    {tool}
+    ontool={pick}
+    bind:style={() => shownStyle, setStyle}
+    text={shownText}
+    ontext={setText}
+    keepFocus={editing !== null}
+    drawable={!failed}
+    canUndo={history.past.length > 0 || editing !== null}
+    canRedo={history.future.length > 0 && !editing}
+    canClear={history.present.length > 0}
+    onundo={() => (editing ? (editing = null) : move(undo(history)))}
+    onredo={() => move(redo(history))}
+    onclear={() => {
+      finish()
+      set([])
+    }}
+    {options}
+    {actions}
+  />
 {/if}
 
 <style>
@@ -569,12 +587,5 @@
     position: fixed;
     left: 0;
     top: 0;
-  }
-
-  /* Above the selection outline and the size badge. */
-  .toolbar {
-    position: fixed;
-    z-index: 1;
-    cursor: default;
   }
 </style>
