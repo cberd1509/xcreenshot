@@ -418,6 +418,7 @@ describe('Annotator', () => {
     first.api.key(press('o'))
     await user.click(screen.getByRole('button', { name: 'Color and size' }))
     await user.click(await screen.findByLabelText('Thick'))
+    await user.click(screen.getByLabelText('Blue'))
     first.api.reset()
     await waitFor(() =>
       expect(screen.getByLabelText('Ellipse')).toHaveAttribute('data-state', 'off'),
@@ -432,7 +433,12 @@ describe('Annotator', () => {
     second.api.key(press('o'))
     await drag(150, 150, 250, 200)
     expect(nodes()[0]).toMatchObject({ className: 'Ellipse' })
-    expect(nodes()[0].attrs).toMatchObject({ strokeWidth: 8, radiusX: 50, radiusY: 25 })
+    expect(nodes()[0].attrs).toMatchObject({
+      stroke: '#3B82F6',
+      strokeWidth: 8,
+      radiusX: 50,
+      radiusY: 25,
+    })
   })
 
   it('takes up the color and size another overlay window remembered', async () => {

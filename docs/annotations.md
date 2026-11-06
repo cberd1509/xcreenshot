@@ -8,7 +8,7 @@ logic.
 | `shapes.ts`        | Shape model, tools and their shortcuts, drawing and transform math  |
 | `text.ts`          | Text sizes, font, padding and colors                                |
 | `history.ts`       | Undo and redo as snapshots of the shape list (last 200)             |
-| `memory.ts`        | The last tool, color and size, in localStorage                      |
+| `memory.ts`        | The last color and size, in localStorage                            |
 | `blocks.ts`        | The blur preview's blocks, as Rust paints them                      |
 | `placement.ts`     | Where the tool rail and the action bar go                           |
 | `board.ts`         | The Konva stage, and `exportShapes`                                 |
@@ -61,10 +61,10 @@ exported. A shape dragged out of the selection is pulled back until 8 px of it s
 The color popover has eight preset colors, a hex field for any other (`#RGB` or `#RRGGBB`; in
 the page, as the system color panel would open under the overlay) and three sizes. With a shape selected, a new color
 or size restyles it as one undo step (text takes only the color; a blur has neither); the tool
-takes it too. The last tool (Text included), color and size are kept in localStorage
-(`memory.ts`), each on its own, so a window that changes one never overwrites another window's
-newer choice of the others. They come back on the next capture, and are overlay state, not
-settings.
+takes it too. The last color and size are kept in localStorage (`memory.ts`), each on its own,
+so a window that changes one never overwrites another window's newer choice of the other. They
+come back on the next capture, and are overlay state, not settings. The tool is not kept: every
+capture starts in Select, so a capture opened by mistake closes with one Esc.
 
 Only the top layer redraws while drawing, and a pen stroke only when it gains a point. Drawing
 a 5000-point stroke smooths it in about 3 ms in all (smoothing it whole on every point took
@@ -91,8 +91,8 @@ dismisses it like a click outside:
   keys on the selected shape, and the tool letters. It returns whether it handled the key.
 - Esc undoes one thing per press: the size edit, then `escape()` (the shape being drawn, an open
   menu, the text being edited, the selected shape, the tool), then the selection, then the
-  overlay closes. The tool counts only while there is a selection: each capture starts with the
-  last tool, and Esc with no selection closes the overlay.
+  overlay closes. The tool counts only while there is a selection, and each capture starts in
+  Select, so Esc with no selection closes the overlay.
 
 While there are annotations (`annotated()`), a press outside the selection is ignored rather than
 starting a new selection, and a resize cannot shrink the selection past what the shapes paint
