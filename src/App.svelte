@@ -3,8 +3,8 @@
   import { Separator } from '$lib/components/ui/separator'
   import { Switch } from '$lib/components/ui/switch'
   import SettingRow from '$lib/components/SettingRow.svelte'
-  import ShortcutKbd from '$lib/components/ShortcutKbd.svelte'
-  import { settings, type ToggleKey } from '$lib/settings.svelte'
+  import ShortcutRecorder from '$lib/components/ShortcutRecorder.svelte'
+  import { setSetting, settings, type ToggleKey } from '$lib/settings.svelte'
 
   type Section = {
     id: string
@@ -44,6 +44,24 @@
     },
   ]
 
+  /** Why the last switch change failed, shown under that switch. */
+  let failed = $state<{ key: ToggleKey; message: string }>()
+
+  /** Switches being saved; each is disabled until its save answers, so a double click can't
+   * send on and then off. */
+  let saving = $state<Partial<Record<ToggleKey, boolean>>>({})
+
+  /** Switches show the saved value, so one that couldn't be saved flips back. */
+  function toggle(key: ToggleKey, on: boolean) {
+    failed = undefined
+    saving[key] = true
+    setSetting(key, on)
+      .catch((e: unknown) => {
+        failed = { key, message: typeof e === 'string' ? e : "Couldn't save the settings." }
+      })
+      .finally(() => (saving[key] = false))
+  }
+
   let active = $state('shortcuts')
   const version = getVersion().catch(() => '')
 </script>
@@ -75,15 +93,25 @@
       <section id={s.id} class="flex flex-col gap-3.5">
         <h2 class="text-sm font-semibold">{s.label}</h2>
         {#if s.id === 'shortcuts'}
-          <!-- Display only; recording a new shortcut comes in #21. -->
           <SettingRow title="Take a screenshot" description="Works from any app.">
-            <ShortcutKbd accelerator={settings.shortcut} />
+            <ShortcutRecorder
+              accelerator={settings.shortcut}
+              onchange={(a) => setSetting('shortcut', a)}
+              onreset={() => setSetting('shortcut', null)}
+            />
           </SettingRow>
         {/if}
         {#each s.toggles as t (t.key)}
           <SettingRow title={t.title} description={t.description} for={t.key}>
-            <Switch id={t.key} bind:checked={settings[t.key]} />
+            <Switch
+              id={t.key}
+              disabled={saving[t.key]}
+              bind:checked={() => settings[t.key], (on) => toggle(t.key, on)}
+            />
           </SettingRow>
+          {#if failed?.key === t.key}
+            <p role="alert" class="text-[13px] text-destructive">{failed.message}</p>
+          {/if}
         {/each}
       </section>
     {/each}

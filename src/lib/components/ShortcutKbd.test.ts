@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/svelte'
 import { describe, expect, it } from 'vitest'
-import { shortcutKeys } from '$lib/settings.svelte'
+import { shortcutKeys } from '$lib/keys'
 import ShortcutKbd from './ShortcutKbd.svelte'
 
 describe('ShortcutKbd', () => {

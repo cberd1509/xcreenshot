@@ -3,8 +3,10 @@
 //! [`Prefs`] is a typed struct with defaults, stored as one value under one key of a
 //! `tauri-plugin-store` store. A missing or invalid field falls back to its default on its own,
 //! and a file that is not valid JSON is moved aside, so prefs never get stuck. Rust is the only
-//! reader and writer: the pages get no store permission.
+//! reader and writer: the pages get no store permission; they read and change settings through
+//! `settings`. A file from before a field existed loads with that field's default.
 
+use crate::shortcut;
 use chrono::NaiveDateTime;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -12,7 +14,8 @@ use serde_json::{Map, Value};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_store::{Store, StoreExt};
 
@@ -25,35 +28,77 @@ pub struct Prefs {
     /// The folder of the last screenshot saved; the Save dialog opens there.
     #[serde(default, deserialize_with = "lenient")]
     pub last_save_dir: Option<String>,
-    /// Automatic update checks. On by default.
+    /// The capture shortcut, an accelerator like `Control+Shift+Super+S`.
+    #[serde(default = "default_shortcut", deserialize_with = "lenient_shortcut")]
+    pub shortcut: String,
+    /// Start the selection from the last region.
+    #[serde(default = "on", deserialize_with = "lenient_on")]
+    pub remember_region: bool,
+    #[serde(default, deserialize_with = "lenient")]
+    pub magnifier: bool,
+    #[serde(default = "on", deserialize_with = "lenient_on")]
+    pub open_at_login: bool,
+    /// Automatic update checks. On by default; the updater reads it before each check.
     #[serde(default = "on", deserialize_with = "lenient_on")]
     pub check_for_updates: bool,
+    /// The app has added its login item before. If it is gone after that, the user removed it
+    /// in the system settings (see `login`).
+    #[serde(default, deserialize_with = "lenient")]
+    pub login_item_added: bool,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
         Self {
             last_save_dir: None,
+            shortcut: default_shortcut(),
+            remember_region: on(),
+            magnifier: false,
+            open_at_login: on(),
             check_for_updates: on(),
+            login_item_added: false,
         }
     }
+}
+
+fn default_shortcut() -> String {
+    shortcut::DEFAULT.to_owned()
 }
 
 fn on() -> bool {
     true
 }
 
-/// A switch that is on unless it is stored as `false`.
-fn lenient_on<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
-    Ok(lenient::<D, Option<bool>>(d)?.unwrap_or_else(on))
-}
-
 /// A field that does not parse keeps its default instead of failing the whole struct.
 fn lenient<'de, D: Deserializer<'de>, T: DeserializeOwned + Default>(d: D) -> Result<T, D::Error> {
+    lenient_or(d, T::default)
+}
+
+/// A switch that is on unless it is stored as `false` (missing, null or invalid is on).
+fn lenient_on<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    lenient_or(d, on)
+}
+
+/// A stored shortcut that is no longer valid falls back to the default too.
+fn lenient_shortcut<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let s: String = lenient_or(d, default_shortcut)?;
+    Ok(match shortcut::validate(&s) {
+        Ok(()) => s,
+        Err(e) => {
+            log::warn!("ignoring the stored shortcut {s:?}: {e}");
+            default_shortcut()
+        }
+    })
+}
+
+fn lenient_or<'de, D: Deserializer<'de>, T: DeserializeOwned>(
+    d: D,
+    default: impl FnOnce() -> T,
+) -> Result<T, D::Error> {
     let value = Value::deserialize(d)?;
     Ok(serde_json::from_value(value).unwrap_or_else(|e| {
         log::warn!("ignoring an invalid preference: {e}");
-        T::default()
+        default()
     }))
 }
 
@@ -70,11 +115,21 @@ impl Prefs {
             .unwrap_or_default()
     }
 
-    /// Stores the prefs and writes them to disk.
+    /// Stores the prefs and writes them to disk. If writing fails, the store keeps the previous
+    /// prefs, so memory never differs from the file.
     pub fn save<R: Runtime>(&self, store: &Store<R>) -> Result<(), String> {
         let value = serde_json::to_value(self).map_err(|e| e.to_string())?;
+        let previous = store.get(KEY);
         store.set(KEY, value);
-        store.save().map_err(|e| e.to_string())
+        store.save().map_err(|e| {
+            match previous {
+                Some(previous) => store.set(KEY, previous),
+                None => {
+                    store.delete(KEY);
+                }
+            }
+            e.to_string()
+        })
     }
 
     /// The last save folder as a path.
@@ -97,14 +152,90 @@ impl Prefs {
     }
 }
 
+pub const NOT_SAVED: &str = "Couldn't save the settings.";
+
+/// One change at a time: each loads, changes and saves the whole [`Prefs`].
+static CHANGING: Mutex<()> = Mutex::new(());
+
+/// Where the prefs are kept: the store, or a fake in tests.
+pub trait Storage {
+    fn load(&self) -> Prefs;
+    fn save(&self, prefs: &Prefs) -> Result<(), String>;
+}
+
+impl<R: Runtime> Storage for Store<R> {
+    fn load(&self) -> Prefs {
+        Prefs::load(self)
+    }
+
+    fn save(&self, prefs: &Prefs) -> Result<(), String> {
+        prefs.save(self)
+    }
+}
+
+/// The saved prefs, or the defaults if the store can't be opened. Waits for a change being
+/// saved, so the file is never read half-written.
+pub fn load<R: Runtime>(app: &AppHandle<R>) -> Prefs {
+    let _changing = CHANGING.lock().unwrap_or_else(PoisonError::into_inner);
+    open(app)
+        .map(|store| Prefs::load(&store))
+        .unwrap_or_default()
+}
+
+/// Runs `f` with the store, one change at a time.
+pub fn with_store<R: Runtime, T>(
+    app: &AppHandle<R>,
+    f: impl FnOnce(&Store<R>) -> Result<T, &'static str>,
+) -> Result<T, &'static str> {
+    let _changing = CHANGING.lock().unwrap_or_else(PoisonError::into_inner);
+    let store = open(app).ok_or(NOT_SAVED)?;
+    f(&store)
+}
+
+/// Loads the prefs, changes them with `change` and saves them, one change at a time. Nothing is
+/// saved if `change` fails. Returns the saved prefs.
+pub fn update<R: Runtime>(
+    app: &AppHandle<R>,
+    change: impl FnOnce(&mut Prefs) -> Result<(), &'static str>,
+) -> Result<Prefs, &'static str> {
+    with_store(app, |store| modify(store, change))
+}
+
+/// Loads, changes and saves the prefs in `storage`.
+pub fn modify(
+    storage: &impl Storage,
+    change: impl FnOnce(&mut Prefs) -> Result<(), &'static str>,
+) -> Result<Prefs, &'static str> {
+    let mut prefs = storage.load();
+    change(&mut prefs)?;
+    storage.save(&prefs).map_err(|e| {
+        log::error!("could not save prefs: {e}");
+        NOT_SAVED
+    })?;
+    Ok(prefs)
+}
+
+/// Whether the file was checked this run (see [`check`]); after that the open store is reused.
+static CHECKED: AtomicBool = AtomicBool::new(false);
+
 /// The app's prefs store. `None` (logged) if it cannot be opened; callers use the defaults.
+/// The file is checked for corruption only the first time it opens.
 pub fn open<R: Runtime>(app: &AppHandle<R>) -> Option<Arc<Store<R>>> {
     let dir = app
         .path()
         .app_data_dir()
         .inspect_err(|e| log::error!("no app data folder for {FILE}: {e}"))
         .ok()?;
-    open_at(app, &dir.join(FILE), chrono::Local::now().naive_local())
+    let path = dir.join(FILE);
+    if CHECKED.load(Ordering::Acquire) {
+        return app
+            .store(&path)
+            .inspect_err(|e| log::error!("could not open {}: {e}", path.display()))
+            .ok();
+    }
+    let store = open_at(app, &path, chrono::Local::now().naive_local())?;
+    CHECKED.store(true, Ordering::Release);
+    Some(store)
 }
 
 /// Opens the store at `path`, first moving a corrupt file aside (see [`set_aside`]).
@@ -179,7 +310,7 @@ fn aside_name(path: &Path, now: NaiveDateTime, exists: impl Fn(&Path) -> bool) -
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use chrono::NaiveDate;
     use serde_json::json;
@@ -222,10 +353,8 @@ mod tests {
         prefs.save(&*s).unwrap();
         let written: Value =
             serde_json::from_slice(&fs::read(dir.path().join(FILE)).unwrap()).unwrap();
-        assert_eq!(
-            written,
-            json!({ "prefs": { "lastSaveDir": "/saved", "checkForUpdates": true } })
-        );
+        assert_eq!(written["prefs"]["lastSaveDir"], json!("/saved"));
+        assert_eq!(written["prefs"]["checkForUpdates"], json!(true));
         assert_eq!(
             Prefs::load(&*s).last_save_dir(),
             Some(PathBuf::from("/saved"))
@@ -242,6 +371,9 @@ mod tests {
             json!({ "lastSaveDir": ["/a"] }),
             json!({ "checkForUpdates": "no" }),
             json!({ "checkForUpdates": null }),
+            json!({ "shortcut": 1, "rememberRegion": "yes", "magnifier": null }),
+            json!({ "shortcut": "Control+Nope", "openAtLogin": 0, "checkForUpdates": [] }),
+            json!({ "shortcut": "S", "loginItemAdded": "no" }),
             json!({}),
             json!({ "unknown": true }),
             json!("not an object"),
@@ -259,6 +391,49 @@ mod tests {
         assert!(!off.check_for_updates);
     }
 
+    #[test]
+    fn defaults_for_each_setting() {
+        let p = Prefs::default();
+        assert_eq!(p.shortcut, shortcut::DEFAULT);
+        assert!(p.remember_region && !p.magnifier && p.open_at_login && p.check_for_updates);
+        assert!(!p.login_item_added);
+    }
+
+    #[test]
+    fn a_file_from_before_the_settings_loads_with_their_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join(FILE),
+            br#"{"prefs":{"lastSaveDir":"/old"}}"#,
+        )
+        .unwrap();
+        let app = app();
+        let loaded = Prefs::load(&*store(&app, dir.path()));
+        let expected = Prefs {
+            last_save_dir: Some("/old".into()),
+            ..Prefs::default()
+        };
+        assert_eq!(loaded, expected);
+    }
+
+    #[test]
+    fn stored_settings_load_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app();
+        let s = store(&app, dir.path());
+        let prefs = Prefs {
+            last_save_dir: None,
+            shortcut: "Alt+Shift+F5".into(),
+            remember_region: false,
+            magnifier: true,
+            open_at_login: false,
+            check_for_updates: false,
+            login_item_added: true,
+        };
+        prefs.save(&*s).unwrap();
+        assert_eq!(Prefs::load(&*s), prefs);
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_folder_that_is_not_utf8_is_not_remembered() {
@@ -267,6 +442,79 @@ mod tests {
         let odd = Path::new(std::ffi::OsStr::from_bytes(b"/tmp/\xff"));
         assert!(!prefs.set_last_save_dir(odd));
         assert_eq!(prefs, Prefs::default());
+    }
+
+    #[test]
+    fn a_failed_write_keeps_the_previous_prefs_in_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("sub");
+        fs::create_dir(&folder).unwrap();
+        let app = app();
+        let s = store(&app, &folder);
+        let old = Prefs {
+            magnifier: true,
+            ..Prefs::default()
+        };
+        old.save(&*s).unwrap();
+        // A file where the folder was: writing fails.
+        fs::remove_dir_all(&folder).unwrap();
+        fs::write(&folder, b"").unwrap();
+        assert!(Prefs::default().save(&*s).is_err());
+        assert_eq!(Prefs::load(&*s), old);
+
+        // Nothing saved before: the key is gone again.
+        let other = tempfile::tempdir().unwrap();
+        let fresh_folder = other.path().join("sub");
+        fs::create_dir(&fresh_folder).unwrap();
+        let fresh = store(&app, &fresh_folder);
+        fs::remove_dir_all(&fresh_folder).unwrap();
+        fs::write(&fresh_folder, b"").unwrap();
+        assert!(old.save(&*fresh).is_err());
+        assert!(fresh.get(KEY).is_none());
+    }
+
+    /// Prefs in memory whose saves can be made to fail.
+    pub struct FakeStorage {
+        pub prefs: std::cell::RefCell<Prefs>,
+        pub fail: bool,
+    }
+
+    impl Storage for FakeStorage {
+        fn load(&self) -> Prefs {
+            self.prefs.borrow().clone()
+        }
+
+        fn save(&self, prefs: &Prefs) -> Result<(), String> {
+            if self.fail {
+                return Err("disk full".into());
+            }
+            *self.prefs.borrow_mut() = prefs.clone();
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn modify_saves_only_a_successful_change() {
+        let mut storage = FakeStorage {
+            prefs: Default::default(),
+            fail: false,
+        };
+        let saved = modify(&storage, |p| {
+            p.magnifier = true;
+            Ok(())
+        })
+        .unwrap();
+        assert!(saved.magnifier && storage.load().magnifier);
+        assert_eq!(modify(&storage, |_| Err("no")), Err("no"));
+        storage.fail = true;
+        assert_eq!(
+            modify(&storage, |p| {
+                p.magnifier = false;
+                Ok(())
+            }),
+            Err(NOT_SAVED)
+        );
+        assert!(storage.load().magnifier);
     }
 
     #[test]

@@ -1,11 +1,16 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Settings window: core defaults only",
+  "description": "Settings window: core defaults (including event listen), read and change settings, pause the capture shortcut while recording",
   "windows": [
     "settings"
   ],
   "permissions": [
-    "core:default"
+    "core:default",
+    "allow-get-prefs",
+    "allow-set-pref",
+    "allow-set-capture-option",
+    "allow-pause-capture-shortcut",
+    "allow-resume-capture-shortcut"
   ]
 }

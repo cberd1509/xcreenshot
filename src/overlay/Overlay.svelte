@@ -3,7 +3,7 @@
   import { emit, listen } from '@tauri-apps/api/event'
   import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
   import { onMount } from 'svelte'
-  import { setSetting, settings } from '$lib/settings.svelte'
+  import { setCaptureOption, settings } from '$lib/settings.svelte'
   import {
     CURSORS,
     badgePosition,
@@ -366,7 +366,7 @@
     actions={{
       copy: () => physical && void finish('overlay_copy', physical),
       save: () => physical && void finish('overlay_save', physical),
-      option: setSetting,
+      option: setCaptureOption,
     }}
   />
   {#if physical}

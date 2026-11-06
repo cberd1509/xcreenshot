@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Kbd, KbdGroup } from '$lib/components/ui/kbd'
-  import { shortcutKeys } from '$lib/settings.svelte'
+  import { shortcutKeys } from '$lib/keys'
 
   let { accelerator }: { accelerator: string } = $props()
 </script>

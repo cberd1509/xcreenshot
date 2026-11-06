@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte'
 import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { shortcutKeys } from '$lib/settings.svelte'
+import { shortcutKeys } from '$lib/keys'
 import { tick } from '../test/tick'
 import Permission from './Permission.svelte'
 
@@ -9,7 +9,7 @@ const SHORTCUT = 'Control+Shift+Super+S'
 
 let calls: string[]
 let granted: boolean
-let shortcut: string | null
+let registered: boolean
 let failing: Set<string>
 
 const count = (cmd: string) => calls.filter((c) => c === cmd).length
@@ -29,14 +29,14 @@ describe('Permission', () => {
     vi.useFakeTimers()
     calls = []
     granted = false
-    shortcut = SHORTCUT
+    registered = true
     failing = new Set()
     mockWindows('permission')
     mockIPC((cmd) => {
       calls.push(cmd)
       if (failing.has(cmd)) throw new Error('nope')
       if (cmd === 'permission_granted') return granted
-      if (cmd === 'capture_shortcut') return shortcut
+      if (cmd === 'capture_shortcut') return { accelerator: SHORTCUT, registered }
     })
   })
 
@@ -84,10 +84,13 @@ describe('Permission', () => {
   })
 
   it('says another app has the shortcut when it is not registered', async () => {
-    shortcut = null
+    registered = false
     granted = true
     await mount()
     expect(screen.getByText(/Another app is using/)).toBeInTheDocument()
+    for (const key of shortcutKeys(SHORTCUT)) {
+      expect(screen.getByText(key)).toBeInTheDocument()
+    }
     expect(screen.getByText(/Close it and restart xcreenshot/)).toBeInTheDocument()
     expect(screen.queryByText(/Screenshots look empty/)).toBeNull()
     await fireEvent.click(button('Restart xcreenshot'))
@@ -213,11 +216,12 @@ describe('Permission', () => {
     )
   })
 
-  it('treats a failed shortcut lookup as no shortcut', async () => {
+  it('leaves the shortcut out when it cannot be read', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     failing = new Set(['capture_shortcut'])
     granted = true
     await mount()
-    expect(screen.getByText(/Another app is using/)).toBeInTheDocument()
+    expect(done()).toBeInTheDocument()
+    expect(screen.queryByText(/Another app is using|to take a screenshot/)).toBeNull()
   })
 })

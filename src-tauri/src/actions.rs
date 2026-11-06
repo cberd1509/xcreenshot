@@ -57,9 +57,42 @@ impl Action {
     }
 }
 
+/// What the menu bar shows that can change: the capture shortcut and a pending update.
+type Shown = (String, Option<String>);
+
+/// Remembers what the menu bar shows, so it is rebuilt only when that changes.
+#[derive(Default)]
+pub struct MenuShows(std::sync::Mutex<Option<Shown>>);
+
+impl MenuShows {
+    /// Records `capture` and `update`; returns whether they differ from what is shown.
+    pub fn changed(&self, capture: &str, update: Option<&str>) -> bool {
+        let next = Some((capture.to_owned(), update.map(str::to_owned)));
+        let mut shown = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *shown == next {
+            return false;
+        }
+        *shown = next;
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_menu_changes_only_with_the_shortcut_or_update() {
+        let shows = MenuShows::default();
+        assert!(shows.changed("Alt+S", None));
+        assert!(!shows.changed("Alt+S", None));
+        assert!(shows.changed("Alt+D", None));
+        assert!(shows.changed("Alt+D", Some("1.2.0")));
+        assert!(!shows.changed("Alt+D", Some("1.2.0")));
+    }
 
     #[test]
     fn ids_round_trip() {

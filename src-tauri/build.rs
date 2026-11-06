@@ -13,6 +13,11 @@ fn main() {
         "open_permission_settings",
         "restart_app",
         "capture_shortcut",
+        "get_prefs",
+        "set_pref",
+        "set_capture_option",
+        "pause_capture_shortcut",
+        "resume_capture_shortcut",
     ];
     let mut attributes = tauri_build::Attributes::new()
         .app_manifest(tauri_build::AppManifest::new().commands(commands));
