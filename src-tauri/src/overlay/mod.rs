@@ -15,7 +15,7 @@ pub(crate) mod window;
 
 pub use window::{Overlay, global_escape, prewarm, start_capture};
 
-use crate::capture::{Display, DisplayFrame, PixelRect};
+use crate::capture::{Density, Display, DisplayFrame, PixelRect};
 use crate::region::{self, LogicalRect, Monitor, Region};
 use image::RgbaImage;
 use std::sync::Arc;
@@ -312,10 +312,13 @@ impl Phase {
         })
     }
 
-    /// A display's original frame, to crop outside the lock.
-    pub fn image(&mut self, session: u64, display: u32) -> Option<Arc<RgbaImage>> {
-        self.slot(session, display)
-            .map(|slot| Arc::clone(&slot.image))
+    /// A display's original frame, to crop outside the lock, and its pixel density.
+    pub fn image(&mut self, session: u64, display: u32) -> Option<(Arc<RgbaImage>, Density)> {
+        self.slot(session, display).map(|slot| {
+            let i = slot.info;
+            let density = Density::of((i.width, i.height), (i.logical_width, i.logical_height));
+            (Arc::clone(&slot.image), density)
+        })
     }
 
     /// Esc was pressed. Returns the session if Esc goes to its pages (one may have a size edit
@@ -701,7 +704,13 @@ pub(crate) mod tests {
         assert_eq!(p.frame_for_page(7, 9), None, "unknown display");
         assert_eq!(Phase::Idle.frame_for_page(7, 1), None);
         // The original is shared, not moved.
-        assert!(Arc::ptr_eq(&image, &p.image(7, 1).unwrap()));
+        let (kept, density) = p.image(7, 1).unwrap();
+        assert!(Arc::ptr_eq(&image, &kept));
+        assert_eq!(
+            density,
+            Density { x: 2.0, y: 2.0 },
+            "pixels over logical size"
+        );
         assert_eq!(p.image(7, 9), None);
         assert_eq!(p.image(6, 1), None);
     }

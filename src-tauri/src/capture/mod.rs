@@ -8,8 +8,7 @@ mod geometry;
 
 pub use geometry::{Bounds, PixelRect, Rect, clamp_rect, crop, crop_pixels};
 
-use image::codecs::png::{CompressionType, FilterType, PngEncoder};
-use image::{ExtendedColorType, ImageEncoder, RgbaImage};
+use image::RgbaImage;
 use std::fmt;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
@@ -227,19 +226,64 @@ fn keep_captured(
     Ok(frames)
 }
 
+/// Image pixels per logical unit (a point on macOS, a DIP on Windows), per axis: 2 on Retina.
+/// Written into every PNG, so other apps show it at the size it had on screen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Density {
+    pub x: f64,
+    pub y: f64,
+}
+
+impl Density {
+    pub const ONE: Self = Self { x: 1.0, y: 1.0 };
+
+    /// A frame's `pixels` over its `logical` size, per axis. An axis with no logical size
+    /// counts as 1×.
+    pub fn of(pixels: (u32, u32), logical: (u32, u32)) -> Self {
+        let axis = |px: u32, logical: u32| {
+            if logical == 0 {
+                1.0
+            } else {
+                f64::from(px) / f64::from(logical)
+            }
+        };
+        Self {
+            x: axis(pixels.0, logical.0),
+            y: axis(pixels.1, logical.1),
+        }
+    }
+
+    /// The PNG `pHYs` value per axis: 72 DPI times the scale, in pixels per metre. 2835 at 1×,
+    /// 5669 (144 DPI) at 2×.
+    pub fn pixels_per_metre(self) -> (u32, u32) {
+        // `as` saturates, and turns NaN into 0 rather than failing.
+        let ppm = |scale: f64| (72.0 * scale / 0.0254).round() as u32;
+        (ppm(self.x), ppm(self.y))
+    }
+}
+
 /// Encodes the crop as PNG for copy and save. `Fast` compression: on a full Retina display it
 /// is several times faster than any level that is smaller, and those save only a few percent
-/// (see `docs/spikes/capture.md`). The PNG holds only the pixels: no text or EXIF chunks.
-pub fn encode_png(image: &RgbaImage) -> Result<Vec<u8>, CaptureError> {
+/// (see `docs/spikes/capture.md`). The PNG holds the pixels and their `density` (`pHYs`) and
+/// nothing else: no text or EXIF chunks.
+pub fn encode_png(image: &RgbaImage, density: Density) -> Result<Vec<u8>, CaptureError> {
+    let encode = |e: png::EncodingError| CaptureError::Encode(e.to_string());
     let mut out = Vec::new();
-    PngEncoder::new_with_quality(&mut out, CompressionType::Fast, FilterType::Adaptive)
-        .write_image(
-            image.as_raw(),
-            image.width(),
-            image.height(),
-            ExtendedColorType::Rgba8,
-        )
-        .map_err(|e| CaptureError::Encode(e.to_string()))?;
+    let mut encoder = png::Encoder::new(&mut out, image.width(), image.height());
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    // The filter after the compression, which sets one of its own.
+    encoder.set_compression(png::Compression::Fast);
+    encoder.set_filter(png::Filter::Adaptive);
+    let (xppu, yppu) = density.pixels_per_metre();
+    encoder.set_pixel_dims(Some(png::PixelDimensions {
+        xppu,
+        yppu,
+        unit: png::Unit::Meter,
+    }));
+    let mut writer = encoder.write_header().map_err(encode)?;
+    writer.write_image_data(image.as_raw()).map_err(encode)?;
+    writer.finish().map_err(encode)?;
     Ok(out)
 }
 
@@ -531,11 +575,53 @@ mod tests {
     #[test]
     fn png_round_trips() {
         let img = RgbaImage::from_fn(20, 10, |x, y| image::Rgba([x as u8, y as u8, 7, 255]));
-        let png = encode_png(&img).unwrap();
+        let png = encode_png(&img, Density { x: 2.0, y: 2.0 }).unwrap();
         assert_eq!(image::load_from_memory(&png).unwrap().to_rgba8(), img);
         // The encoder rejects zero-sized images.
-        let r = encode_png(&RgbaImage::new(0, 0));
+        let r = encode_png(&RgbaImage::new(0, 0), Density::ONE);
         assert!(matches!(r, Err(CaptureError::Encode(_))));
+    }
+
+    /// The `pHYs` value a decoder reads back.
+    fn phys(png: &[u8]) -> (u32, u32, png::Unit) {
+        let reader = png::Decoder::new(std::io::Cursor::new(png))
+            .read_info()
+            .unwrap();
+        let d = reader.info().pixel_dims.expect("a pHYs chunk");
+        (d.xppu, d.yppu, d.unit)
+    }
+
+    #[test]
+    fn density_is_72_dpi_times_the_scale() {
+        let ppm = |x, y| Density { x, y }.pixels_per_metre();
+        assert_eq!(ppm(1.0, 1.0), (2835, 2835), "72 DPI");
+        assert_eq!(ppm(2.0, 2.0), (5669, 5669), "144 DPI");
+        assert_eq!(ppm(1.5, 1.5), (4252, 4252), "108 DPI");
+        assert_eq!(ppm(2.0, 1.0), (5669, 2835), "per axis");
+        assert_eq!(ppm(f64::NAN, f64::INFINITY), (0, u32::MAX), "never panics");
+    }
+
+    #[test]
+    fn density_is_pixels_over_logical_size() {
+        let d = |x, y| Density { x, y };
+        assert_eq!(Density::of((3456, 2234), (1728, 1117)), d(2.0, 2.0));
+        assert_eq!(Density::of((2880, 1620), (1920, 1080)), d(1.5, 1.5));
+        assert_eq!(Density::of((200, 100), (100, 100)), d(2.0, 1.0));
+        assert_eq!(
+            Density::of((200, 100), (0, 50)),
+            d(1.0, 2.0),
+            "no logical size"
+        );
+    }
+
+    #[test]
+    fn pngs_carry_the_density() {
+        let img = RgbaImage::new(4, 3);
+        let at = |x, y| phys(&encode_png(&img, Density { x, y }).unwrap());
+        assert_eq!(at(1.0, 1.0), (2835, 2835, png::Unit::Meter));
+        assert_eq!(at(2.0, 2.0), (5669, 5669, png::Unit::Meter));
+        assert_eq!(at(1.5, 1.5), (4252, 4252, png::Unit::Meter));
+        assert_eq!(at(1.25, 2.0), (3543, 5669, png::Unit::Meter));
     }
 
     #[test]

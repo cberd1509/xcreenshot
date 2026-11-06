@@ -19,7 +19,7 @@
 
 use super::display_id;
 use super::window::{Overlay, close, close_if, hide, on_main, phase, reshow, sync_escape};
-use crate::capture::{self, CaptureError, PixelRect, clamp_rect};
+use crate::capture::{self, CaptureError, Density, PixelRect, clamp_rect};
 use crate::output::compose::{self, Layer, Marks};
 use crate::output::{self, Clipboard, Target};
 use crate::prefs;
@@ -157,6 +157,7 @@ async fn copy_with<R: Runtime>(
     let session = out.session;
     let Some(Selected {
         frame,
+        density,
         saves,
         region,
         ..
@@ -168,7 +169,7 @@ async fn copy_with<R: Runtime>(
     let image = annotated(&frame, out)?;
     drop(frame);
     let copied = spawn_blocking(move || {
-        clipboard(&image)?;
+        clipboard(&image, density)?;
         Ok(image.dimensions())
     })
     .await
@@ -192,6 +193,8 @@ struct Selected {
     display: u32,
     /// Its original frame.
     frame: Arc<RgbaImage>,
+    /// The frame's pixel density, for the PNG.
+    density: Density,
     /// The session's save count.
     saves: u32,
     /// The selection to remember, unless a display was not captured.
@@ -208,10 +211,13 @@ fn selected_frame<R: Runtime>(
     let session = out.session;
     let display = display_id(window.label())?;
     let mut phase = state.phase();
+    let saves = phase.saves(session)?;
+    let (frame, density) = phase.image(session, display)?;
     Some(Selected {
         display,
-        saves: phase.saves(session)?,
-        frame: phase.image(session, display)?,
+        saves,
+        frame,
+        density,
         region: phase.region(session, display, out.rect),
     })
 }
@@ -255,6 +261,7 @@ async fn save_with<R: Runtime>(
     let Some(Selected {
         display,
         frame,
+        density,
         region,
         ..
     }) = selected_frame(window, state, out)
@@ -299,7 +306,7 @@ async fn save_with<R: Runtime>(
     // Always written once a path is picked: the crop is already taken. The windows are hidden
     // meanwhile, so writing before closing costs nothing visible, and a failure can bring the
     // overlay back to say so.
-    let written = spawn_blocking(move || write(&image, &path, &*saver))
+    let written = spawn_blocking(move || write(&image, density, &path, &*saver))
         .await
         .unwrap_or_else(|e| Err(CaptureError::Write(e.to_string())));
     let failed = written.is_err();
@@ -348,8 +355,13 @@ fn choose(
 }
 
 /// Encodes and writes the PNG, then remembers its folder.
-fn write(image: &RgbaImage, path: &Path, saver: &impl Saver) -> Result<(), CaptureError> {
-    let png = capture::encode_png(image)?;
+fn write(
+    image: &RgbaImage,
+    density: Density,
+    path: &Path,
+    saver: &impl Saver,
+) -> Result<(), CaptureError> {
+    let png = capture::encode_png(image, density)?;
     output::write_file(path, &png)
         .map_err(|e| CaptureError::Write(format!("{}: {e}", path.display())))?;
     log::info!("saved {}", path.display());
@@ -441,14 +453,18 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    /// A clipboard that records what it got, or fails.
+    /// The test frames have twice as many pixels as points.
+    const RETINA: Density = Density { x: 2.0, y: 2.0 };
+
+    /// A clipboard that records what it got, or fails. Every image comes at the frame's density.
     fn clipboard(fail: bool) -> (Clipboard, Arc<Mutex<Vec<RgbaImage>>>) {
         let images = Arc::new(Mutex::new(Vec::new()));
         let record = Arc::clone(&images);
-        let clipboard: Clipboard = Box::new(move |image: &RgbaImage| {
+        let clipboard: Clipboard = Box::new(move |image: &RgbaImage, density| {
             if fail {
                 return Err(CaptureError::Clipboard("busy".into()));
             }
+            assert_eq!(density, RETINA);
             record.lock().unwrap().push(image.clone());
             Ok(())
         });
@@ -577,7 +593,7 @@ mod tests {
         let session = shown(h, &[1]);
         // While the clipboard works, another display opens the Save dialog and cancels it.
         let handle = h.clone();
-        let clipboard: Clipboard = Box::new(move |_: &RgbaImage| {
+        let clipboard: Clipboard = Box::new(move |_: &RgbaImage, _| {
             let mut p = phase(&handle);
             assert!(p.begin_save(session));
             assert!(p.end_save(session).is_some());
@@ -739,7 +755,7 @@ mod tests {
             [true],
             "Esc is the dialog's"
         );
-        assert_clean_png(&fs::read(&path).unwrap(), &expected(1, 0, 3, 2));
+        assert_clean_png(&fs::read(&path).unwrap(), &expected(1, 0, 3, 2), RETINA);
         assert_eq!(*saver.remembered.lock().unwrap(), [dir.path().to_owned()]);
         let regions = saver.regions.lock().unwrap();
         assert_eq!(regions.len(), 1, "the region is remembered");
@@ -763,7 +779,7 @@ mod tests {
         };
         let saved = save_out(h, &out, &saver, dir.path());
         assert_eq!(saved, Ok(()));
-        assert_clean_png(&fs::read(&path).unwrap(), &marked());
+        assert_clean_png(&fs::read(&path).unwrap(), &marked(), RETINA);
         wait_until("the overlay to close", || is_idle(h));
     }
 
@@ -810,7 +826,7 @@ mod tests {
             Some(&taken),
         ]));
         save(h, session, px(0, 0, 2, 2), &saver, dir.path()).unwrap();
-        assert_clean_png(&fs::read(&taken).unwrap(), &expected(0, 0, 2, 2));
+        assert_clean_png(&fs::read(&taken).unwrap(), &expected(0, 0, 2, 2), RETINA);
     }
 
     #[test]
