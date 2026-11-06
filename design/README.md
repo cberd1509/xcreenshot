@@ -15,7 +15,8 @@ Don't edit these files by hand. Change the canvas, then sync it: ask Claude to "
 | `Onboarding.dc.html` | First run: Screen Recording permission |
 | `Tray.dc.html` | Menu bar menu |
 | `UpdateReady.dc.html` | Update ready dialog |
-| `ShortcutNotice.dc.html` | Shortcut changed dialog (Windows) |
+| `ShortcutNotice.dc.html` | Shortcut changed dialog (Windows; both reasons) |
+| `Landing.dc.html` | Landing page (GitHub Pages) |
 | `AppIcon.dc.html` | App icon options (D, Aperture, is the one shipped) |
 
 The `.dc.html` files are static mockups with inline styles. They need the canvas runtime to render, so open the canvas to see them; read the files for exact values (sizes, colors, copy).

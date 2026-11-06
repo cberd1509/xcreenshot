@@ -1,77 +1,125 @@
 {
   "v": 3,
-  "createdOnFiles": {
-    "v": 1,
-    "at": "2026-11-06T13:10:00Z"
+  "attachments": {},
+  "boards": {
+    "AppIcon.dc.html": {
+      "h": 960,
+      "title": "App icon options (Lucide glyphs)",
+      "w": 1240,
+      "x": 0,
+      "y": 2300
+    },
+    "Desktop.dc.html": {
+      "h": 900,
+      "title": "Frozen frame (shared mock desktop)",
+      "w": 1440,
+      "x": 3040,
+      "y": 0
+    },
+    "Landing.dc.html": {
+      "expand": "fill",
+      "h": 2600,
+      "title": "Landing page (GitHub Pages)",
+      "w": 1280,
+      "x": 0,
+      "y": 3540
+    },
+    "Main.dc.html": {
+      "h": 900,
+      "title": "Region selected + annotating",
+      "w": 1440,
+      "x": 0,
+      "y": 0
+    },
+    "Onboarding.dc.html": {
+      "h": 640,
+      "title": "First run: Screen Recording permission",
+      "w": 560,
+      "x": 960,
+      "y": 1280
+    },
+    "Settings.dc.html": {
+      "h": 680,
+      "title": "Settings",
+      "w": 880,
+      "x": 0,
+      "y": 1280
+    },
+    "ShortcutNotice.dc.html": {
+      "h": 220,
+      "title": "Shortcut changed (Windows)",
+      "w": 440,
+      "x": 1980,
+      "y": 1560
+    },
+    "Tray.dc.html": {
+      "h": 400,
+      "title": "Menu bar menu",
+      "w": 300,
+      "x": 1600,
+      "y": 1280
+    },
+    "UpdateReady.dc.html": {
+      "h": 200,
+      "title": "Update ready",
+      "w": 440,
+      "x": 1980,
+      "y": 1280
+    },
+    "WindowSelect.dc.html": {
+      "h": 900,
+      "title": "Ready to drag (magnifier enabled, optional)",
+      "w": 1440,
+      "x": 1520,
+      "y": 0
+    }
   },
-  "title": "xcreenshot UI",
+  "createdOnFiles": {
+    "at": "2026-11-06T13:10:00Z",
+    "v": 1
+  },
+  "designSystems": [],
   "launch": {
     "view": "canvas"
   },
-  "pages": [],
-  "boards": {
-    "Main.dc.html": {
+  "noteOrder": [
+    "capture",
+    "app",
+    "icon",
+    "site"
+  ],
+  "notes": {
+    "app": {
+      "kind": "title1",
+      "maxW": 2420,
+      "text": "App chrome",
+      "w": 240,
       "x": 0,
-      "y": 0,
-      "w": 1440,
-      "h": 900,
-      "title": "Region selected + annotating"
+      "y": 1000
     },
-    "WindowSelect.dc.html": {
-      "x": 1520,
-      "y": 0,
-      "w": 1440,
-      "h": 900,
-      "title": "Ready to drag (magnifier enabled, optional)"
-    },
-    "Desktop.dc.html": {
-      "x": 3040,
-      "y": 0,
-      "w": 1440,
-      "h": 900,
-      "title": "Frozen frame (shared mock desktop)"
-    },
-    "Settings.dc.html": {
+    "capture": {
+      "kind": "title1",
+      "maxW": 4480,
+      "text": "Capture overlay",
+      "w": 240,
       "x": 0,
-      "y": 1280,
-      "w": 880,
-      "h": 680,
-      "title": "Settings"
+      "y": -280
     },
-    "Onboarding.dc.html": {
-      "x": 960,
-      "y": 1280,
-      "w": 560,
-      "h": 640,
-      "title": "First run: Screen Recording permission"
-    },
-    "Tray.dc.html": {
-      "x": 1600,
-      "y": 1280,
-      "w": 300,
-      "h": 400,
-      "title": "Menu bar menu"
-    },
-    "AppIcon.dc.html": {
+    "icon": {
+      "kind": "title1",
+      "maxW": 1240,
+      "text": "App icon",
+      "w": 240,
       "x": 0,
-      "y": 2300,
-      "w": 1240,
-      "h": 960,
-      "title": "App icon options (Lucide glyphs)"
+      "y": 2040
     },
-    "UpdateReady.dc.html": {
-      "x": 1980,
-      "y": 1280,
-      "w": 440,
-      "h": 200,
-      "title": "Update ready"
-    },
-    "ShortcutNotice.dc.html": {
-      "x": 1980,
-      "y": 1560,
-      "w": 440,
-      "h": 220,
-      "title": "Shortcut changed (Windows)"
+    "site": {
+      "kind": "title1",
+      "maxW": 1280,
+      "text": "Website",
+      "w": 240,
+      "x": 0,
+      "y": 3280
     }
   },
   "order": [
@@ -83,30 +131,9 @@
     "Tray.dc.html",
     "UpdateReady.dc.html",
     "ShortcutNotice.dc.html",
-    "AppIcon.dc.html"
+    "AppIcon.dc.html",
+    "Landing.dc.html"
   ],
-  "notes": {
-    "capture": {
-      "x": 0,
-      "y": -280,
-      "text": "Capture overlay",
-      "kind": "title1",
-      "maxW": 4480
-    },
-    "app": {
-      "x": 0,
-      "y": 1000,
-      "text": "App chrome",
-      "kind": "title1",
-      "maxW": 2420
-    },
-    "icon": {
-      "x": 0,
-      "y": 2040,
-      "text": "App icon",
-      "kind": "title1",
-      "maxW": 1240
-    }
-  },
-  "designSystems": []
+  "pages": [],
+  "title": "xcreenshot UI"
 }

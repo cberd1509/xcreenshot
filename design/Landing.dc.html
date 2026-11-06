@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Landing page</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#ffffff}
+a{color:inherit}
+.kbd{display:inline-flex;align-items:center;justify-content:center;min-width:26px;height:26px;padding:0 7px;box-sizing:border-box;border-radius:6px;background:#fafafa;border:1px solid #d4d4d8;border-bottom-width:2px;font-family:'JetBrains Mono',ui-monospace,monospace;font-size:13px;font-weight:600;color:#09090b}
+</style>
+</helmet>
+<div style="min-height: 100%; box-sizing: border-box; background: #ffffff; font-family: Inter, system-ui, sans-serif; color: #09090b;">
+
+  <!-- top bar -->
+  
+
+  <!-- hero -->
+  <header style="max-width: 1120px; margin: 0 auto; padding: 20px 24px; box-sizing: border-box; display: flex; align-items: center; gap: 12px;">
+    <svg role="img" aria-label="xcreenshot" width="28" height="28" viewBox="0 0 256 256">
+      <rect x="8" y="8" width="240" height="240" rx="56" fill="#09090b"></rect>
+      <g transform="translate(56 56) scale(6)" fill="none" stroke="#fafafa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2 12a10 10 0 1 0 20 0a10 10 0 1 0-20 0"></path>
+        <path d="m14.31 8 5.74 9.94"></path><path d="M9.69 8h11.48"></path><path d="m7.38 12 5.74-9.94"></path>
+        <path d="M9.69 16 3.95 6.06"></path><path d="M14.31 16H2.83"></path><path d="m16.62 12-5.74 9.94"></path>
+      </g>
+    </svg>
+    <span style="font-size: 15px; font-weight: 800; letter-spacing: -0.01em;">xcreenshot</span>
+    <div style="flex-grow: 1;"></div>
+    <nav style="display: flex; gap: 20px; font-size: 14px; font-weight: 500; color: #09090b;">
+      <a href="#install" style="text-decoration: none;">Install</a>
+      <a href="https://github.com/cberd1509/xcreenshot/releases" style="text-decoration: none;">Releases</a>
+      <a href="https://github.com/cberd1509/xcreenshot" style="text-decoration: none;">GitHub</a>
+    </nav>
+  </header><section style="max-width: 1120px; margin: 0 auto; padding: 56px 24px 0; box-sizing: border-box; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 20px;">
+    <h1 style="margin: 0; max-width: 680px; font-size: 52px; line-height: 1.06; font-weight: 300; letter-spacing: -0.03em;"><span style="font-weight: 800;">A screenshot app</span> that stays out of the way</h1>
+    <p style="margin: 0; max-width: 520px; font-size: 17px; line-height: 27px; color: #52525b;">Press the shortcut, drag a region, mark it up, then copy or save. It lives in your menu bar.</p>
+
+    <sc-if value="{{mac}}" hint-placeholder-val="{{ true }}">
+      <div style="display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 8px;">
+        <a href="#download" style="height: 44px; padding: 0 20px; display: inline-flex; align-items: center; gap: 8px; border-radius: 10px; background: #09090b; color: #ffffff; font-size: 15px; font-weight: 500; text-decoration: none;">
+          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"></path><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><path d="m7 10 5 5 5-5"></path></svg>
+          Download for Mac
+        </a>
+        <a href="https://github.com/cberd1509/xcreenshot" style="height: 44px; padding: 0 18px; display: inline-flex; align-items: center; border-radius: 10px; border: 1px solid #d4d4d8; font-size: 15px; font-weight: 500; text-decoration: none;">View source</a>
+      </div>
+      <div style="font-size: 13px; color: #71717a;">Version 0.3.0 · Apple Silicon and Intel · Free and open source · <a href="#" onClick="{{toggle}}" style="color: #09090b; font-weight: 600;">Not on a Mac?</a></div>
+    </sc-if>
+    <sc-if value="{{other}}" hint-placeholder-val="{{ false }}">
+      <div style="display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 8px;">
+        <a href="https://github.com/cberd1509/xcreenshot/releases" style="height: 44px; padding: 0 20px; display: inline-flex; align-items: center; gap: 8px; border-radius: 10px; background: #09090b; color: #ffffff; font-size: 15px; font-weight: 500; text-decoration: none;">Get notified for Windows</a>
+        <a href="#download" style="height: 44px; padding: 0 18px; display: inline-flex; align-items: center; border-radius: 10px; border: 1px solid #d4d4d8; font-size: 15px; font-weight: 500; text-decoration: none;">Download for Mac</a>
+      </div>
+      <div style="font-size: 13px; color: #71717a;">Mac only for now. The Windows version is in progress. · <a href="#" onClick="{{toggle}}" style="color: #09090b; font-weight: 600;">On a Mac?</a></div>
+    </sc-if>
+
+    <!-- the real overlay design, scaled into a window -->
+    <div style="margin-top: 36px; width: 100%; max-width: 1008px; aspect-ratio: 1440 / 900; position: relative; overflow: hidden; border-radius: 14px; border: 1px solid #e4e4e7; box-shadow: 0 32px 64px -16px rgba(0,0,0,0.16);">
+      <div style="position: absolute; left: 0; top: 0; width: 1440px; height: 900px; transform: scale(0.7); transform-origin: 0 0;">
+        <dc-import name="Main" hint-size="1440px,900px"></dc-import>
+      </div>
+    </div>
+    <div style="font-size: 13px; color: #71717a;">The demo video plays here on the site.</div>
+  </section>
+
+  <!-- how it works -->
+  <section style="max-width: 1120px; margin: 0 auto; padding: 96px 24px 0; box-sizing: border-box;">
+    <h2 style="margin: 0 0 28px; font-size: 13px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #09090b;">How it works</h2>
+    <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; border-top: 1px solid #e4e4e7;">
+      <div style="padding: 24px 24px 0 0; display: flex; flex-direction: column; gap: 12px;">
+        <div style="display: flex; gap: 4px;">
+          <sc-for list="{{shortcut}}" as="k" hint-placeholder-count="4"><span class="kbd">{{k}}</span></sc-for>
+        </div>
+        <div style="font-size: 16px; font-weight: 600;">Press the shortcut</div>
+        <div style="font-size: 14px; line-height: 22px; color: #52525b;">The screen freezes the moment you press it, so menus and hover states stay put.</div>
+      </div>
+      <div style="padding: 24px 24px 0; display: flex; flex-direction: column; gap: 12px; border-left: 1px solid #e4e4e7;">
+        <div style="height: 26px; display: flex; align-items: center; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; font-weight: 700; color: #09090b;">1260 × 1064</div>
+        <div style="font-size: 16px; font-weight: 600;">Drag a region</div>
+        <div style="font-size: 14px; line-height: 22px; color: #52525b;">Add arrows, boxes, text, a highlighter or a blur. Undo with {{undo}}.</div>
+      </div>
+      <div style="padding: 24px 0 0 24px; display: flex; flex-direction: column; gap: 12px; border-left: 1px solid #e4e4e7;">
+        <div style="display: flex; gap: 4px;"><span class="kbd">{{mod}}</span><span class="kbd">C</span><span style="width: 8px;"></span><span class="kbd">{{mod}}</span><span class="kbd">S</span></div>
+        <div style="font-size: 16px; font-weight: 600;">Copy or save</div>
+        <div style="font-size: 14px; line-height: 22px; color: #52525b;">Paste it anywhere at the size you saw it, or save a PNG.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- install -->
+  <section id="install" style="max-width: 1120px; margin: 0 auto; padding: 96px 24px 0; box-sizing: border-box; display: flex; flex-wrap: wrap; gap: 48px;">
+    <div style="flex: 1 1 320px; display: flex; flex-direction: column; gap: 12px;">
+      <h2 style="margin: 0; font-size: 32px; font-weight: 800; letter-spacing: -0.02em;">Install</h2>
+      <p style="margin: 0; font-size: 15px; line-height: 24px; color: #52525b;">Signed and notarized by Apple. It updates itself, and you can turn that off in Settings.</p>
+    </div>
+    <ol style="flex: 999 1 480px; margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0; border-top: 1px solid #e4e4e7;">
+      <li style="padding: 18px 0; display: flex; gap: 16px; border-bottom: 1px solid #e4e4e7; font-size: 15px; line-height: 24px;"><span style="width: 24px; flex-shrink: 0; font-family: 'JetBrains Mono', ui-monospace, monospace; font-weight: 700; color: #09090b;">01</span><span><a href="#download" style="font-weight: 600;">Download the .dmg</a> and open it.</span></li>
+      <li style="padding: 18px 0; display: flex; gap: 16px; border-bottom: 1px solid #e4e4e7; font-size: 15px; line-height: 24px;"><span style="width: 24px; flex-shrink: 0; font-family: 'JetBrains Mono', ui-monospace, monospace; font-weight: 700; color: #09090b;">02</span><span>Drag xcreenshot to Applications, then open it.</span></li>
+      <li style="padding: 18px 0; display: flex; gap: 16px; border-bottom: 1px solid #e4e4e7; font-size: 15px; line-height: 24px;"><span style="width: 24px; flex-shrink: 0; font-family: 'JetBrains Mono', ui-monospace, monospace; font-weight: 700; color: #09090b;">03</span><span>Allow Screen Recording when it asks. That's it: press <span class="kbd" style="height: 22px; font-size: 12px;">⌃⇧⌘S</span></span></li>
+    </ol>
+  </section>
+
+  <!-- settings shot -->
+  <section style="max-width: 1120px; margin: 0 auto; padding: 96px 24px 0; box-sizing: border-box; display: flex; flex-wrap: wrap; gap: 48px; align-items: center;">
+    <div style="flex: 1 1 320px; display: flex; flex-direction: column; gap: 12px;">
+      <h2 style="margin: 0; font-size: 32px; font-weight: 300; letter-spacing: -0.02em;"><span style="font-weight: 800;">Small</span> on purpose</h2>
+      <p style="margin: 0; font-size: 15px; line-height: 24px; color: #52525b;">A handful of settings: your shortcut, whether it remembers the last region, a magnifier for exact pixels, and whether it opens at login.</p>
+    </div>
+    <div style="flex: 999 1 480px; min-width: 0; aspect-ratio: 880 / 680; position: relative; overflow: hidden; border-radius: 12px; border: 1px solid #e4e4e7; box-shadow: 0 24px 48px -16px rgba(0,0,0,0.16);">
+      <div style="position: absolute; left: 0; top: 0; width: 880px; height: 680px; transform: scale(0.68); transform-origin: 0 0;">
+        <dc-import name="Settings" hint-size="880px,680px"></dc-import>
+      </div>
+    </div>
+  </section>
+
+  <!-- footer -->
+  <footer style="max-width: 1120px; margin: 0 auto; padding: 96px 24px 40px; box-sizing: border-box; display: flex; flex-wrap: wrap; gap: 16px; align-items: center; font-size: 13px; color: #71717a;">
+    <span>MIT License</span>
+    <span>·</span>
+    <a href="https://github.com/cberd1509/xcreenshot" style="text-decoration: none;">Source</a>
+    <span>·</span>
+    <a href="https://github.com/cberd1509/xcreenshot/releases" style="text-decoration: none;">Releases</a>
+    <span>·</span>
+    <a href="https://github.com/cberd1509/xcreenshot/issues" style="text-decoration: none;">Report a bug</a>
+    <div style="flex-grow: 1;"></div>
+    <span>Windows version in progress.</span>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"os":{"editor":"enum","options":["mac","windows"],"default":"mac"},"$preview":{"width":1280,"height":2600}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const os = this.state?.os ?? this.props.os ?? 'mac';
+    const mac = os === 'mac';
+    return {
+      toggle: (e) => { e && e.preventDefault && e.preventDefault(); this.setState({ os: mac ? 'windows' : 'mac' }); },
+      mac,
+      other: !mac,
+      shortcut: mac ? ['⌃', '⇧', '⌘', 'S'] : ['Ctrl', 'Shift', 'PrtSc'],
+      mod: mac ? '⌘' : 'Ctrl',
+      undo: mac ? '⌘Z' : 'Ctrl+Z',
+    };
+  }
+}
+</script>
+</body>
+</html>

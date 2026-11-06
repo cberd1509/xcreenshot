@@ -26,7 +26,7 @@ a{color:#2563eb}a:hover{color:#1d4ed8}
     </svg>
     <div style="display: flex; flex-direction: column; gap: 8px;">
       <h1 style="margin: 0; font-size: 15px; font-weight: 600;">Shortcut changed</h1>
-      <p style="margin: 0; font-size: 13px; line-height: 20px; color: #52525b;">PrintScreen opens Snipping Tool, so xcreenshot uses the shortcut below. You can change it in Settings.</p>
+      <p style="margin: 0; font-size: 13px; line-height: 20px; color: #52525b;">{{reason}}</p>
       <div style="display: flex; gap: 4px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px;">
         <span style="padding: 2px 7px; border-radius: 5px; background: #f4f4f5; border: 1px solid #e4e4e7;">Ctrl</span>
         <span style="padding: 2px 7px; border-radius: 5px; background: #f4f4f5; border: 1px solid #e4e4e7;">Shift</span>
@@ -41,9 +41,16 @@ a{color:#2563eb}a:hover{color:#1d4ed8}
   </div>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":440,"height":220}}'>
+<script type="text/x-dc" data-dc-script data-props='{"reason":{"editor":"enum","options":["Snipping Tool","Another app"],"default":"Snipping Tool"},"$preview":{"width":440,"height":220}}'>
 class Component extends DCLogic {
-  renderVals() { return {}; }
+  renderVals() {
+    const snipping = (this.props.reason ?? 'Snipping Tool') === 'Snipping Tool';
+    return {
+      reason: snipping
+        ? 'PrintScreen opens Snipping Tool, so xcreenshot uses the shortcut below. You can change it in Settings.'
+        : 'Another app is using PrintScreen, so xcreenshot uses the shortcut below. You can change it in Settings.',
+    };
+  }
 }
 </script>
 </body>
