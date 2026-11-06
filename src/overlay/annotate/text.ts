@@ -13,6 +13,9 @@ export type TextOptions = { size: TextSize; background: boolean }
 
 export const DEFAULT_TEXT: TextOptions = { size: 'M', background: false }
 
+/** The options as the toolbar shows them: no size for text resized off S, M and L. */
+export type ShownTextOptions = { size: TextSize | null; background: boolean }
+
 /** The system UI font, the same in the editor and on the board. */
 export const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif'
 export const LINE_HEIGHT = 1.25

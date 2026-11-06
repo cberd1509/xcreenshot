@@ -597,7 +597,35 @@ describe('Annotator', () => {
       await waitFor(() => expect(nodes()[0].children[1].attrs.fontSize).toBe(30))
       nodes()[0].fire('dblclick')
       await waitFor(() => expect(editor()!.style.fontSize).toBe('30px'))
-      expect(screen.getByLabelText('Medium text')).toHaveAttribute('data-state', 'on')
+      // No size option matches, and Background keeps the size.
+      expect(screen.getByLabelText('Medium text')).toHaveAttribute('data-state', 'off')
+      await user.click(screen.getByRole('button', { name: 'Background' }))
+      expect(editor()!.style.fontSize).toBe('30px')
+      await user.click(screen.getByLabelText('Small text'))
+      expect(editor()!.style.fontSize).toBe('16px')
+    })
+
+    it('keeps a press on another shape from Konva while text is edited', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      api.key(press('r'))
+      await drag(300, 300, 350, 350)
+      await user.type(await place(api), 'Hi')
+      // Konva listens on its own element in the layer.
+      const content = document.createElement('div')
+      element().append(content)
+      const pressed = vi.fn<(e: Event) => void>()
+      content.addEventListener('pointerdown', pressed)
+      // The press commits the text, and neither Konva nor the overlay sees it.
+      await fireEvent.pointerDown(content, at(310, 310))
+      await waitFor(() => expect(editor()).not.toBeInTheDocument())
+      expect(texts()).toEqual([undefined, 'Hi'])
+      expect(pressed).not.toHaveBeenCalled()
+      expect(passed).not.toHaveBeenCalled()
+      // A right press does nothing.
+      await user.type(await place(api, 200, 200), 'Yo')
+      await fireEvent.pointerDown(element(), { ...at(310, 310), button: 2 })
+      expect(editor()).toBeInTheDocument()
     })
 
     it('commits the text being typed before exporting', async () => {

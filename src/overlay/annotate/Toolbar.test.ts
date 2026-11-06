@@ -2,7 +2,7 @@ import { render, screen, waitFor } from '@testing-library/svelte'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { COLORS, DEFAULT_STYLE, type Style, type Tool } from './shapes'
-import type { TextOptions } from './text'
+import type { ShownTextOptions, TextOptions } from './text'
 import Toolbar, { type ToolbarActions } from './Toolbar.svelte'
 
 type Props = Partial<{
@@ -10,8 +10,8 @@ type Props = Partial<{
   canUndo: boolean
   mac: boolean
   drawable: boolean
-  text: TextOptions | null
-  ontext: (t: TextOptions) => void
+  text: ShownTextOptions | null
+  ontext: (t: Partial<TextOptions>) => void
 }>
 
 function setup(props: Props = {}) {
@@ -175,7 +175,7 @@ describe('Toolbar', () => {
   })
 
   it('shows text options only while asked to, and changes them', async () => {
-    const ontext = vi.fn<(t: TextOptions) => void>()
+    const ontext = vi.fn<(t: Partial<TextOptions>) => void>()
     const { user, view } = setup()
     expect(screen.queryByLabelText('Text size')).not.toBeInTheDocument()
     await view.rerender({ text: { size: 'M', background: false }, ontext })
@@ -184,9 +184,15 @@ describe('Toolbar', () => {
     await user.click(choice('Medium text'))
     expect(ontext).not.toHaveBeenCalled()
     await user.click(choice('Large text'))
-    expect(ontext).toHaveBeenLastCalledWith({ size: 'L', background: false })
+    expect(ontext).toHaveBeenLastCalledWith({ size: 'L' })
     await user.click(button('Background'))
-    expect(ontext).toHaveBeenLastCalledWith({ size: 'M', background: true })
+    expect(ontext).toHaveBeenLastCalledWith({ background: true })
+  })
+
+  it('shows no size for resized text', () => {
+    setup({ text: { size: null, background: false } })
+    expect(choice('Medium text')).toHaveAttribute('data-state', 'off')
+    expect(choice('Large text')).toHaveAttribute('data-state', 'off')
   })
 
   it('keeps focus where it was when a text option is pressed', async () => {

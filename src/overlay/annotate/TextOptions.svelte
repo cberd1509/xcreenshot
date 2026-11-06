@@ -4,14 +4,21 @@
   import { Toggle } from '$lib/components/ui/toggle'
   import * as ToggleGroup from '$lib/components/ui/toggle-group'
   import * as Tooltip from '$lib/components/ui/tooltip'
-  import { TEXT_SIZES, type TextOptions, type TextSize } from './text'
+  import { TEXT_SIZES, type ShownTextOptions, type TextOptions, type TextSize } from './text'
 
   /**
    * The text tool's font size and background, in the toolbar. Its buttons never take focus,
    * so text being typed stays in its editor and follows the change.
    */
-  let { options, onchange }: { options: TextOptions; onchange: (options: TextOptions) => void } =
-    $props()
+  let {
+    options,
+    onchange,
+  }: {
+    /** No size is shown for text resized off S, M and L. */
+    options: ShownTextOptions
+    /** The option that changed. */
+    onchange: (change: Partial<TextOptions>) => void
+  } = $props()
 
   const LABELS: Record<TextSize, string> = { S: 'Small text', M: 'Medium text', L: 'Large text' }
 </script>
@@ -23,8 +30,8 @@
     size="sm"
     spacing={1}
     aria-label="Text size"
-    value={options.size}
-    onValueChange={(size) => size && onchange({ ...options, size: size as TextSize })}
+    value={options.size ?? ''}
+    onValueChange={(size) => size && onchange({ size: size as TextSize })}
   >
     {#each Object.keys(TEXT_SIZES) as size (size)}
       <ToggleGroup.Item value={size} aria-label={LABELS[size as TextSize]}>{size}</ToggleGroup.Item>
@@ -38,7 +45,7 @@
           size="sm"
           aria-label="Background"
           pressed={options.background}
-          onPressedChange={(background) => onchange({ ...options, background })}
+          onPressedChange={(background) => onchange({ background })}
         >
           <BackgroundIcon class="fill-current" />
         </Toggle>

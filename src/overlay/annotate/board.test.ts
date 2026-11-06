@@ -235,10 +235,10 @@ describe('Board', () => {
   it('resizes text from its corners only, keeping its proportions', () => {
     const { board, transformer } = setup()
     board.render([rect, text], 't')
-    expect(transformer.attrs).toMatchObject({ keepRatio: true })
+    expect(transformer.attrs).toMatchObject({ keepRatio: true, shiftBehavior: 'none' })
     expect(transformer.attrs.enabledAnchors).toHaveLength(4)
     board.render([rect, text], 'r')
-    expect(transformer.attrs).toMatchObject({ keepRatio: false })
+    expect(transformer.attrs).toMatchObject({ keepRatio: false, shiftBehavior: 'default' })
     expect(transformer.attrs.enabledAnchors).toHaveLength(8)
   })
 
@@ -257,6 +257,24 @@ describe('Board', () => {
       height: 74,
     })
     expect(node.attrs).toMatchObject({ scaleX: 1, scaleY: 1 })
+  })
+
+  it('keeps the far corner of flipped text in place when measuring it again', () => {
+    const { board, shapes, onchange } = setup()
+    board.render([text], null)
+    const node = shapes()[0]
+    // Flipped through its origin at (160, 150), twice the size.
+    node.setAttrs({ x: 160, y: 150, scaleX: -2, scaleY: -2 })
+    node.fire('transformend')
+    // Measured 64 x 74: the right and bottom edges stay at the origin.
+    expect(onchange).toHaveBeenLastCalledWith({
+      ...text,
+      x: 96,
+      y: 76,
+      width: 64,
+      height: 74,
+      fontSize: 40,
+    })
   })
 
   it('previews text like any shape', () => {

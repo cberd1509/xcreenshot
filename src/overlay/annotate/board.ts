@@ -203,7 +203,12 @@ export class Board {
     const text = entry?.shape.kind === 'text'
     if (text !== this.textHandles) {
       this.textHandles = text
-      this.transformer.setAttrs({ keepRatio: text, enabledAnchors: text ? CORNERS : ANCHORS })
+      this.transformer.setAttrs({
+        keepRatio: text,
+        // Shift would let text stretch; it only scales.
+        shiftBehavior: text ? 'none' : 'default',
+        enabledAnchors: text ? CORNERS : ANCHORS,
+      })
     }
     this.transformer.nodes(entry ? [entry.node] : [])
     this.shapes.batchDraw()
@@ -249,8 +254,12 @@ export class Board {
       scaleY: node.scaleY(),
     })
     // Resized text is measured again at its new font size.
+    // A flipped resize keeps the node's origin, now the box's far corner, in place.
     if (next.kind === 'text' && shape.kind === 'text' && next.fontSize !== shape.fontSize) {
-      next = { ...next, ...this.measure(next.text, next.fontSize) }
+      const m = this.measure(next.text, next.fontSize)
+      const x = node.scaleX() < 0 ? next.x + next.width - m.width : next.x
+      const y = node.scaleY() < 0 ? next.y + next.height - m.height : next.y
+      next = { ...next, x, y, ...m }
     }
     // Back to the model: the change comes back through `render` once it is kept.
     node.setAttrs(attrs(shape))

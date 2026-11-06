@@ -165,12 +165,12 @@
     }
   }
 
-  /** Opens the editor on a text already on the board. Its options become the tool's. */
+  /** Opens the editor on a text already on the board. Its background becomes the tool's. */
   function edit(shape: TextShape) {
     const { id, x, y, text, fontSize, background } = shape
     selected = null
     editing = { id, at: { x, y }, text, fontSize, style: shape.style, existing: true }
-    textOptions = { size: sizeOf(fontSize) ?? textOptions.size, background }
+    textOptions = { ...textOptions, background }
   }
 
   /**
@@ -202,10 +202,17 @@
     set(e.existing ? replace(history.present, kept) : [...history.present, kept])
   }
 
-  /** New text options; the text being edited follows them. */
-  function setText(next: TextOptions) {
-    textOptions = next
-    if (editing) editing.fontSize = TEXT_SIZES[next.size]
+  /** A changed text option; the text being edited follows it. */
+  function setText(change: Partial<TextOptions>) {
+    textOptions = { ...textOptions, ...change }
+    if (editing && change.size) editing.fontSize = TEXT_SIZES[change.size]
+  }
+
+  /** A press while text is edited commits it and does nothing more; Konva never sees it. */
+  function onpointerdowncapture(e: PointerEvent) {
+    if (!editing || e.button !== 0) return
+    e.stopPropagation()
+    finish()
   }
 
   function cancel() {
@@ -217,11 +224,6 @@
 
   function onpointerdown(e: PointerEvent) {
     if (e.button !== 0 || !selection || !board) return
-    // A press anywhere else commits the text being edited, and does nothing more.
-    if (editing) {
-      e.stopPropagation()
-      return finish()
-    }
     // On a shape or its handles: Konva moves or resizes it.
     if (board.hits(at(e))) return e.stopPropagation()
     selected = null
@@ -302,7 +304,8 @@
 
   /**
    * Esc, one step at a time: the text being edited (it is kept), the shape being drawn, an open
-   * menu, the selected shape, then the tool. Returns whether it undid anything; if not, the overlay handles Esc.
+   * menu, the selected shape, then the tool. Returns whether it undid anything; if not, the
+   * overlay handles Esc.
    */
   export function escape(): boolean {
     if (editing) finish()
@@ -335,6 +338,7 @@
   bind:this={container}
   data-testid="annotations"
   role="presentation"
+  {onpointerdowncapture}
   {onpointerdown}
   {onpointermove}
   {onpointerup}
@@ -368,7 +372,9 @@
       {tool}
       ontool={(t) => (tool = t)}
       bind:style
-      text={tool === 'text' || editing ? textOptions : null}
+      text={tool === 'text' || editing
+        ? { ...textOptions, size: editing ? sizeOf(editing.fontSize) : textOptions.size }
+        : null}
       ontext={setText}
       drawable={!failed}
       canUndo={history.past.length > 0}
