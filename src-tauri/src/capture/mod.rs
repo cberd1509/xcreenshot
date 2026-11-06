@@ -179,13 +179,18 @@ pub fn encode_png(image: &RgbaImage) -> Result<Vec<u8>, CaptureError> {
 /// macOS call [`has_permission`] first, since without it the OS may return wallpaper-only
 /// frames that look valid.
 pub fn capture_all() -> Result<Vec<DisplayFrame>, CaptureError> {
+    keep_captured(capture_each(&display_ids()?, capture_display))
+}
+
+/// Ids of the displays [`capture_all`] captures (mirrors excluded). Lists displays only, no
+/// capture and no permission needed.
+pub fn display_ids() -> Result<Vec<u32>, CaptureError> {
     let monitors = xcap::Monitor::all().map_err(backend)?;
-    let ids: Vec<u32> = monitors
+    Ok(monitors
         .iter()
         .filter_map(|m| m.id().ok())
         .filter(|&id| !is_mirror(id))
-        .collect();
-    keep_captured(capture_each(&ids, capture_display))
+        .collect())
 }
 
 /// `xcap` monitors cannot cross threads on Windows, so each thread looks its display up again.

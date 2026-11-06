@@ -5548,6 +5548,8 @@ version = "0.0.0"
 dependencies = [
  "image",
  "log",
+ "objc2",
+ "objc2-app-kit",
  "objc2-core-graphics",
  "serde",
  "serde_json",
