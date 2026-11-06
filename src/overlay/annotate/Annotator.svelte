@@ -8,12 +8,12 @@
   import { recall, remember } from './memory'
   import {
     FREEHAND,
+    MAX_BLURS,
     READY,
     bounds,
     constrain,
     draw,
-    extend,
-    freehand,
+    Freehand,
     keepInside,
     paintedBounds,
     toolForKey,
@@ -72,22 +72,22 @@
   let failed = $state(false)
   let history = $state.raw<History>(empty)
   // The last tool, color and size come back on the next capture.
-  let memory = recall()
-  let tool = $state<Tool | null>(memory.tool)
-  let style = $state(memory.style)
+  const recalled = recall()
+  let tool = $state<Tool | null>(recalled.tool)
+  let style = $state(recalled.style)
 
   /** Takes up the last tool, color and size, as any overlay window saved them. */
   function restore() {
-    memory = recall()
-    tool = memory.tool
-    style = memory.style
+    const r = recall()
+    tool = r.tool
+    style = r.style
   }
   let selected = $state<string | null>(null)
   /**
    * A drag drawing a shape: where it started, where the pointer is, where the shape ends, and
-   * a freehand stroke's points.
+   * a freehand stroke.
    */
-  type Stroke = { tool: Tool; start: Point; pointer: Point; end: Point; path: Point[] }
+  type Stroke = { tool: Tool; start: Point; pointer: Point; end: Point; path: Freehand }
   let stroke: Stroke | null = null
   let ids = 0
   let bar = $state<Size>({ width: 0, height: 0 })
@@ -162,11 +162,12 @@
     board?.render(hidden ? without(history.present, hidden) : history.present, selected),
   )
 
-  $effect(() => {
-    if (tool) memory.tool = tool
-    memory.style = style
-    remember(memory)
-  })
+  // Each is kept only when it changes, so this window never writes back another's newer choice.
+  const lastColor = $derived(style.color)
+  const lastSize = $derived(style.size)
+  $effect(() => void (tool && remember('tool', tool)))
+  $effect(() => remember('color', lastColor))
+  $effect(() => remember('size', lastSize))
 
   /** Moves history, dropping the shape selection if that shape is gone. */
   function move(next: History) {
@@ -298,17 +299,17 @@
   }
 
   /**
-   * A new color or size: the selected shape takes it as one undo step (text only its color);
-   * otherwise the tool does.
+   * A new color or size. The selected shape takes it as one undo step (text only its color),
+   * or the text being typed does; the tool always does too, and remembers it.
    */
   function setStyle(next: Style) {
-    if (styled && !editing) {
+    if (editing) editing.style = next
+    else if (styled) {
       // Only the color shows on text, so a size change leaves no undo step.
       const restyled = styled.kind === 'text' ? { ...styled.style, color: next.color } : next
-      return set(replace(history.present, { ...styled, style: restyled }))
+      set(replace(history.present, { ...styled, style: restyled }))
     }
     style = next
-    if (editing) editing.style = next
   }
 
   /** The press that committed the text being edited: it does nothing more. */
@@ -331,15 +332,15 @@
   function follow(s: Stroke, e: PointerEvent, sel: Rect): boolean {
     s.pointer = at(e)
     const p = constrain(s.tool, s.start, s.pointer, sel, e.shiftKey)
-    if (FREEHAND.has(s.tool)) return extend(s.path, p)
+    if (FREEHAND.has(s.tool)) return s.path.add(p)
     s.end = p
     return true
   }
 
-  /** What the drag draws, or `null`. */
-  function drawn(s: Stroke, id: string) {
+  /** What the drag draws, or `null`. The preview shares a stroke's points. */
+  function drawn(s: Stroke, id: string, preview = false) {
     return FREEHAND.has(s.tool)
-      ? freehand(s.tool, id, s.path, style)
+      ? s.path.shape(s.tool, id, style, preview)
       : draw(s.tool, id, s.start, s.end, style)
   }
 
@@ -356,14 +357,16 @@
     if (!drawing || !contains(selection, at(e))) return
     e.stopPropagation()
     const p = at(e)
-    stroke = { tool: tool!, start: p, pointer: p, end: p, path: [p] }
+    const path = new Freehand()
+    path.add(p)
+    stroke = { tool: tool!, start: p, pointer: p, end: p, path }
     container.setPointerCapture?.(e.pointerId)
   }
 
   function onpointermove(e: PointerEvent) {
     if (!selection) return
     // Only the top layer redraws, and a freehand stroke only once the pointer moved enough.
-    if (stroke && follow(stroke, e, selection)) board?.preview(drawn(stroke, 'draft'))
+    if (stroke && follow(stroke, e, selection)) board?.preview(drawn(stroke, 'draft', true))
     // Over the selection: crosshair to draw, else move it. Elsewhere, the overlay's cursor.
     cursor = !contains(selection, at(e))
       ? ''
@@ -384,7 +387,19 @@
     follow(stroke, e, selection)
     const shape = drawn(stroke, `s${++ids}`)
     cancel()
+    if (shape?.kind === 'blur' && blurs() >= MAX_BLURS) return say(`${MAX_BLURS} blurs at most`)
     if (shape) set([...history.present, shape])
+  }
+
+  const blurs = () => history.present.filter((s) => s.kind === 'blur').length
+
+  /** A short hint, shown for a few seconds. */
+  let hint = $state<string | null>(null)
+  let hintTimer: ReturnType<typeof setTimeout> | undefined
+  function say(message: string) {
+    clearTimeout(hintTimer)
+    hint = message
+    hintTimer = setTimeout(() => (hint = null), 3000)
   }
 
   /** Shift pressed or let go mid-drag: snaps or unsnaps the shape without a pointer move. */
@@ -480,6 +495,15 @@
   {onpointerup}
   onpointercancel={cancel}
 ></div>
+
+{#if hint}
+  <div
+    class="pointer-events-none fixed bottom-8 left-1/2 z-1 -translate-x-1/2 rounded-md bg-popover/90 px-3 py-2 text-sm text-popover-foreground shadow-md"
+    role="status"
+  >
+    {hint}
+  </div>
+{/if}
 
 {#if editing && board}
   <TextEditor

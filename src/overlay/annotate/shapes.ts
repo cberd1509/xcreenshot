@@ -82,6 +82,9 @@ export const isPath = (shape: Shape): shape is PathShape => 'points' in shape
 /** A highlighter is this many times wider than a pen of the same size. */
 export const HIGHLIGHTER_WIDTH = 4
 
+/** Most blurs one image takes: Rust's `MAX_BLURS` in `overlay/export.rs`. */
+export const MAX_BLURS = 256
+
 /** Shapes smaller than this on both axes are a click, not a drag, and are dropped. */
 export const MIN_SIZE = 3
 /** How much of a shape stays inside the selection when it is dragged out. */
@@ -110,14 +113,6 @@ export function draw(tool: Tool, id: string, a: Point, b: Point, style: Style): 
 /** Points closer than this to the last one kept add nothing to a freehand stroke. */
 export const STEP = 2
 
-/** Adds `p` to a freehand stroke, in place, unless it is within `STEP` of the last point. */
-export function extend(points: Point[], p: Point): boolean {
-  const last = points.at(-1)
-  if (last && Math.hypot(p.x - last.x, p.y - last.y) < STEP) return false
-  points.push(p)
-  return true
-}
-
 /**
  * Chaikin corner cutting, keeping both ends. Every new point lies between two old ones, so the
  * stroke never leaves the box of the points it was drawn through.
@@ -138,18 +133,83 @@ export function smooth(points: readonly number[], passes = 2): number[] {
   return p === points ? [...p] : (p as number[])
 }
 
-/** The stroke a freehand tool draws through `points`, or `null` if it is too small. */
-export function freehand(
-  tool: Tool,
-  id: string,
-  points: readonly Point[],
-  style: Style,
-): PenShape | null {
-  if (!FREEHAND.has(tool) || points.length < 2) return null
-  const flat = points.flatMap((p) => [p.x, p.y])
-  const b = pointBounds(flat)
-  if (b.width < MIN_SIZE && b.height < MIN_SIZE) return null
-  return { id, kind: tool as PenShape['kind'], style, points: smooth(flat) }
+/**
+ * One pass of `smooth`, kept up to date as points are added: only the segments a new point
+ * touches are worked out again, so a long stroke costs the same per point as a short one.
+ */
+class Pass {
+  /** The smoothed points, flat. */
+  readonly out: number[] = []
+  /** How many input points `out` was made from. */
+  private n = 0
+
+  /** Brings `out` up to date with `p`, whose points before `from` have not changed. */
+  update(p: readonly number[], from: number) {
+    const n = p.length / 2
+    if (n < 3 || this.n < 3) from = 0
+    this.n = n
+    if (n < 3) {
+      this.out.splice(0, this.out.length, ...p)
+      return
+    }
+    // `out` is the first point, two per segment, then the last point.
+    const start = Math.max(0, from - 1)
+    this.out.length = 2 + 4 * start
+    this.out[0] = p[0]
+    this.out[1] = p[1]
+    for (let i = 2 * start; i + 3 < p.length; i += 2) {
+      const [x0, y0, x1, y1] = [p[i], p[i + 1], p[i + 2], p[i + 3]]
+      this.out.push(0.75 * x0 + 0.25 * x1, 0.75 * y0 + 0.25 * y1)
+      this.out.push(0.25 * x0 + 0.75 * x1, 0.25 * y0 + 0.75 * y1)
+    }
+    this.out.push(p[p.length - 2], p[p.length - 1])
+  }
+}
+
+/**
+ * A freehand stroke being drawn: it keeps a point once the pointer has moved `STEP`, and
+ * smooths as it goes. The points are always `smooth` of the points kept.
+ */
+export class Freehand {
+  private readonly kept: number[] = []
+  private readonly first = new Pass()
+  private readonly second = new Pass()
+  private box = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity }
+
+  /** Adds `p` unless it is within `STEP` of the last point. Returns whether it did. */
+  add(p: Point): boolean {
+    const n = this.kept.length
+    if (n && Math.hypot(p.x - this.kept[n - 2], p.y - this.kept[n - 1]) < STEP) return false
+    this.kept.push(p.x, p.y)
+    const b = this.box
+    this.box = {
+      x0: Math.min(b.x0, p.x),
+      y0: Math.min(b.y0, p.y),
+      x1: Math.max(b.x1, p.x),
+      y1: Math.max(b.y1, p.y),
+    }
+    const before = this.first.out.length / 2
+    this.first.update(this.kept, n / 2)
+    this.second.update(this.first.out, before - 1)
+    return true
+  }
+
+  /** The smoothed points, flat. Live: they change as points are added. */
+  get points(): readonly number[] {
+    return this.second.out
+  }
+
+  /**
+   * The stroke `tool` draws, or `null` if it is too small. With `live`, it shares the points
+   * (for the preview); otherwise it has its own.
+   */
+  shape(tool: Tool, id: string, style: Style, live = false): PenShape | null {
+    const { x0, y0, x1, y1 } = this.box
+    if (!FREEHAND.has(tool) || this.kept.length < 4) return null
+    if (x1 - x0 < MIN_SIZE && y1 - y0 < MIN_SIZE) return null
+    const points = live ? (this.second.out as number[]) : [...this.second.out]
+    return { id, kind: tool as PenShape['kind'], style, points }
+  }
 }
 
 /** Shift snaps lines and arrows to steps of this many degrees. */
@@ -303,7 +363,10 @@ export function blurRects(shapes: readonly Shape[], crop: Rect, scale: Scale): R
     const r = physicalIn(s, crop, scale)
     if (r) out.push(r)
   }
-  return out
+  // Never more than Rust takes. The tool stops at the limit; past it, the last rect covers
+  // all the rest, so nothing is ever left unblurred.
+  if (out.length <= MAX_BLURS) return out
+  return [...out.slice(0, MAX_BLURS - 1), out.slice(MAX_BLURS - 1).reduce(union)]
 }
 
 /** A logical rect in whole physical px relative to the crop, clipped to it, or `null`. */

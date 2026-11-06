@@ -6,7 +6,8 @@ import type { Rect } from '../geometry'
 import { fakeContext } from '../../test/canvas'
 import { isMac } from '$lib/settings.svelte'
 import Annotator from './Annotator.svelte'
-import { remember } from './memory'
+import { recall, remember } from './memory'
+import { MAX_BLURS } from './shapes'
 import { OUTPUT_HEADER, outputRequest } from './output'
 import type * as board from './board'
 
@@ -406,7 +407,9 @@ describe('Annotator', () => {
 
   it('takes up what another overlay window remembered on the next capture', async () => {
     const { api } = await setup()
-    remember({ tool: 'line', style: { color: '#007AFF', size: 2 } })
+    remember('tool', 'line')
+    remember('color', '#007AFF')
+    remember('size', 2)
     api.reset(true)
     await waitFor(() => expect(screen.getByLabelText('Line')).toHaveAttribute('data-state', 'on'))
     await drag(150, 150, 250, 150)
@@ -427,13 +430,14 @@ describe('Annotator', () => {
     await waitFor(() => expect(ellipse.attrs.stroke).toBe('#007AFF'))
     await user.click(screen.getByLabelText('Thick'))
     await waitFor(() => expect(ellipse.attrs.strokeWidth).toBe(8))
-    // The toolbar shows the shape's style, not the tool's.
     expect(screen.getByTestId('current-color').style.background).toBe('rgb(0, 122, 255)')
+    // The tool takes the choice too, and remembers it for the next capture.
     api.escape()
     api.escape()
     await waitFor(() =>
-      expect(screen.getByTestId('current-color').style.background).toBe('rgb(255, 59, 48)'),
+      expect(screen.getByTestId('current-color').style.background).toBe('rgb(0, 122, 255)'),
     )
+    expect(recall().style).toEqual({ color: '#007AFF', size: 8 })
     api.key(press('z', mod))
     await waitFor(() => expect(ellipse.attrs.strokeWidth).toBe(4))
     expect(ellipse.attrs.stroke).toBe('#007AFF')
@@ -451,6 +455,24 @@ describe('Annotator', () => {
     api.key(press('z', mod))
     await waitFor(() => expect(kinds()).toEqual(['Ellipse']))
   })
+
+  it('stops adding blurs at the most Rust takes, and says so', async () => {
+    const { api } = await setup()
+    api.key(press('b'))
+    // One drag after another: each must finish before the next starts.
+    // oxlint-disable-next-line no-await-in-loop
+    for (let i = 0; i < MAX_BLURS; i++) await drag(110 + (i % 50), 110, 120 + (i % 50), 120)
+    expect(kinds()).toHaveLength(MAX_BLURS)
+    expect(screen.queryByRole('status')).toBeNull()
+    await drag(200, 200, 260, 260)
+    expect(kinds()).toHaveLength(MAX_BLURS)
+    expect(screen.getByRole('status')).toHaveTextContent('256 blurs at most')
+    // Other shapes still draw.
+    api.key(press('r'))
+    await drag(200, 200, 260, 260)
+    expect(kinds()).toHaveLength(MAX_BLURS + 1)
+    await waitFor(() => expect(screen.queryByRole('status')).toBeNull(), { timeout: 4000 })
+  }, 20_000)
 
   it('draws a freehand pen stroke through the points it passes', async () => {
     const { api } = await setup()
@@ -973,8 +995,11 @@ describe('Annotator', () => {
       expect(label().fontSize).toBe(36)
       api.key(press('z', mod))
       await waitFor(() => expect(label().fontSize).toBe(24))
-      // The tool's own options did not change.
-      expect(screen.getByTestId('current-color').style.background).toBe('rgb(255, 59, 48)')
+      // The tool took the last color picked, and keeps it after the text is deselected.
+      api.escape()
+      await waitFor(() =>
+        expect(screen.getByTestId('current-color').style.background).toBe('rgb(255, 204, 0)'),
+      )
       // A rect selected: the text options are the tool's again.
       await drag(300, 300, 350, 350)
       nodes()[1].fire('pointerdown')

@@ -113,9 +113,8 @@ describe('attrs for the other tools', () => {
     expect(attrs(hl)).toMatchObject({
       strokeWidth: style.size * HIGHLIGHTER_WIDTH,
       lineCap: 'butt',
-      opacity: expect.any(Number),
+      opacity: 0.4,
     })
-    expect(attrs(hl).opacity).toBeLessThan(1)
   })
 
   it('draws an ellipse in its box, its node at the corner', () => {
@@ -381,6 +380,53 @@ describe('Board', () => {
       const { board, drafts } = placed()
       board.preview(wide)
       expect(blocksOf(drafts()[0])).toHaveLength(12 * 7)
+    })
+
+    /** A frame whose shrunk px (x, y) is (x, 0, 0), so colors tell where they came from. */
+    function gradient() {
+      const context = fakeContext()
+      context.getImageData.mockImplementation((_x, _y, w = 1, h = 1) => {
+        const data = new Uint8ClampedArray(w * h * 4)
+        for (let i = 0; i < w * h; i++) data.set([i % w, 0, 0, 255], i * 4)
+        return { data }
+      })
+      const s = setup(canvas(2000, 1400))
+      s.board.place(sel, display)
+      return s
+    }
+
+    it('averages a blur over an earlier one from its blocks, in model order, as Rust does', () => {
+      const { board, shapes, drafts } = gradient()
+      // One 31 px block over frame px 400 to 431, shrunk px 25 and 26: their average, 26.
+      const first: Shape = { ...blur, id: 'b1', x: 200, y: 200, width: 15.5, height: 8 }
+      const later: Shape = { ...blur, id: 'b2', x: 200, y: 200, width: 8, height: 8 }
+      board.render([first], null)
+      expect(blocksOf(shapes()[0])[0].color).toBe('rgb(26, 0, 0)')
+      board.render([first, later], null)
+      // Over the first, the later one's px 25 is the first's color, not 25.
+      expect(blocksOf(shapes()[1])[0].color).toBe('rgb(26, 0, 0)')
+      // The other way round, the later one is over nothing.
+      board.render([later, first], null)
+      expect(blocksOf(shapes()[0])[0].color).toBe('rgb(25, 0, 0)')
+      // The blur being drawn comes after all of them.
+      board.preview({ ...later, id: 'draft' })
+      expect(blocksOf(drafts()[0])[0].color).toBe('rgb(26, 0, 0)')
+    })
+
+    it('starts blocks where the crop cuts a blur, off any 16 px grid', () => {
+      const { board, shapes } = gradient()
+      // The crop starts at frame px 201; the blur at 180 is cut there.
+      board.place({ ...sel, x: 100.5 }, display)
+      board.render([{ ...wide, x: 90 }], null)
+      expect(blocksOf(shapes()[0])[0]).toMatchObject({ x: 10.5, width: 8 })
+    })
+
+    it('shows grey boxes with no frame, and keeps the blocks when a change is not kept', () => {
+      const { board, shapes } = placed()
+      board.render([wide], null)
+      const node = shapes()[0]
+      node.fire('dragend')
+      expect(blocksOf(node)).toHaveLength(12 * 7)
     })
 
     it('makes the shrunk frame once per frame', () => {

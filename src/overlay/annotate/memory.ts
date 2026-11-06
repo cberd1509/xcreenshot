@@ -1,9 +1,17 @@
 // The last tool, color and size, kept in the overlay's localStorage. Overlay UI state, not a
-// setting: anything missing or unreadable falls back to the defaults.
+// setting: anything missing or unreadable falls back to the defaults. Each is kept on its own,
+// so an overlay window that changes one never overwrites another window's newer choice of the
+// others.
 
 import { DEFAULT_STYLE, READY, SIZES, type Style, type Tool } from './shapes'
 
-export const KEY = 'xcreenshot.annotate'
+export type Remembered = { tool: Tool; color: string; size: number }
+
+export const KEYS: Record<keyof Remembered, string> = {
+  tool: 'xcreenshot.annotate.tool',
+  color: 'xcreenshot.annotate.color',
+  size: 'xcreenshot.annotate.size',
+}
 
 export type Memory = { tool: Tool | null; style: Style }
 
@@ -18,24 +26,26 @@ function storage(): Storage | null {
   }
 }
 
+function read(key: keyof Remembered): string {
+  try {
+    return storage()?.getItem(KEYS[key]) ?? ''
+  } catch {
+    return ''
+  }
+}
+
 /** What `remember` kept, checked; the defaults for anything missing or wrong. */
 export function recall(): Memory {
-  let saved: Partial<{ tool: unknown; color: unknown; size: unknown }> = {}
-  try {
-    saved = JSON.parse(storage()?.getItem(KEY) ?? '{}') ?? {}
-  } catch {
-    // Unreadable: the defaults.
-  }
-  const tool = READY.has(saved.tool as Tool) ? (saved.tool as Tool) : null
-  const color =
-    typeof saved.color === 'string' && HEX.test(saved.color) ? saved.color : DEFAULT_STYLE.color
-  const size = SIZES.includes(saved.size as number) ? (saved.size as number) : DEFAULT_STYLE.size
+  const tool = READY.has(read('tool') as Tool) ? (read('tool') as Tool) : null
+  const color = HEX.test(read('color')) ? read('color') : DEFAULT_STYLE.color
+  const size = SIZES.includes(Number(read('size'))) ? Number(read('size')) : DEFAULT_STYLE.size
   return { tool, style: { color, size } }
 }
 
-export function remember({ tool, style }: Memory) {
+/** Keeps one of the tool, color and size, leaving the others as they were. */
+export function remember<K extends keyof Remembered>(key: K, value: Remembered[K]) {
   try {
-    storage()?.setItem(KEY, JSON.stringify({ tool, ...style }))
+    storage()?.setItem(KEYS[key], String(value))
   } catch {
     // Full or blocked: it is only a convenience.
   }

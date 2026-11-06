@@ -33,9 +33,10 @@ exported. A shape dragged out of the selection is pulled back until 8 px of it s
 
 ## Tools
 
-- **Pen** keeps a point once the pointer has moved 2 px (`extend`), and smooths the stroke with
-  two passes of Chaikin corner cutting (`smooth`). Smoothing never leaves the box of the points,
-  so the painted box stays exact.
+- **Pen** keeps a point once the pointer has moved 2 px, and smooths the stroke with two passes
+  of Chaikin corner cutting (`smooth`). `Freehand` smooths as points come, redoing only the
+  segments a new point touches. Smoothing never leaves the box of the points, so the painted
+  box stays exact.
 - **Highlighter** is a pen 4× as wide, at 40% opacity, with flat ends. It draws the same way on
   screen and in the export (straight-alpha source-over), so text under it stays readable.
 - **Shift** (`constrain`): lines and arrows snap to 15° steps; rects, ellipses and blurs become
@@ -46,17 +47,24 @@ exported. A shape dragged out of the selection is pulled back until 8 px of it s
   of the blur inside the selection (`blocks.ts` mirrors `block_size` and `spans` in
   `output/compose.rs`; their tests pin the same values). Each block is the average color of
   the frame under it, read from a copy shrunk 16× per side (halved step by step, so every
-  pixel counts), made on the first blur after each new frame. The preview is only for the
-  screen: the export is Rust's pixelation (below). Blurs always sit under the other shapes,
-  because Rust pixelates the frame before it draws them.
+  pixel counts), made on the first blur after each new frame. Blurs are worked out in model
+  order over one copy of it, each painting its blocks, so a blur over another averages its
+  blocks as in Rust; the blur being drawn comes last. The preview is only for the screen: the
+  export is Rust's pixelation (below). Blurs always sit under the other shapes, because Rust
+  pixelates the frame before it draws them. There can be at most 256 (Rust's `MAX_BLURS`): the
+  tool says so and adds no more, and `blurRects` never sends more.
 
-The color popover has preset colors, a hue slider for a custom color (in the page: the system color panel would open under the overlay) and three sizes. The
-last tool, color and size are kept in localStorage (`memory.ts`) and come back on the next
-capture (Text included). They are overlay state, not settings. With a shape selected, a new
-color or size restyles it as one undo step (text takes only the color; a blur has neither).
+The color popover has preset colors, a hue slider for a custom color (in the page: the system
+color panel would open under the overlay) and three sizes. With a shape selected, a new color
+or size restyles it as one undo step (text takes only the color; a blur has neither); the tool
+takes it too. The last tool (Text included), color and size are kept in localStorage
+(`memory.ts`), each on its own, so a window that changes one never overwrites another window's
+newer choice of the others. They come back on the next capture, and are overlay state, not
+settings.
 
-Only the top layer redraws while drawing, and a pen stroke only when it gains a point. Building
-a smoothed stroke of 5000 points takes about 0.4 ms.
+Only the top layer redraws while drawing, and a pen stroke only when it gains a point. Drawing
+a 5000-point stroke smooths it in about 3 ms in all (smoothing it whole on every point took
+about 630 ms).
 
 ## Layers and input
 
@@ -76,7 +84,8 @@ the overlay asks the annotator first:
   keys on the selected shape, and the tool letters. It returns whether it handled the key.
 - Esc undoes one thing per press: the size edit, then `escape()` (the shape being drawn, an open
   menu, the text being edited, the selected shape, the tool), then the selection, then the
-  overlay closes.
+  overlay closes. The tool counts only while there is a selection: each capture starts with the
+  last tool, and Esc with no selection closes the overlay.
 
 While there are annotations (`annotated()`), a press outside the selection is ignored rather than
 starting a new selection, and a resize cannot shrink the selection past what the shapes paint

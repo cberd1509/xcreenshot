@@ -189,14 +189,14 @@ const local = (v: number, s: number, at: number, k: number) => (v / s - at) / k
 /** Blurs stack under the other shapes. */
 const layerOf = (s: Shape) => (s.kind === 'blur' ? 0 : 1)
 
+/** Where a node is and how it is scaled. */
+function placement(node: Node): Transform {
+  return { x: node.x(), y: node.y(), scaleX: node.scaleX(), scaleY: node.scaleY() }
+}
+
 /** The shape as its node now shows it, moved or resized. */
 function moved({ node, shape }: { node: Node; shape: Shape }): Shape {
-  return transform(shape, {
-    x: node.x(),
-    y: node.y(),
-    scaleX: node.scaleX(),
-    scaleY: node.scaleY(),
-  })
+  return transform(shape, placement(node))
 }
 
 const CORNERS = ['top-left', 'top-right', 'bottom-left', 'bottom-right']
@@ -237,6 +237,10 @@ export class Board {
    * on first use.
    */
   private pixels: { shrunk: Shrunk; size: Size; scale: Scale } | null = null
+  /** The shrunk frame with every blur painted on it, for the blur being drawn. */
+  private painted: Shrunk | null = null
+  /** The blurs' ids in model order: the order Rust pixelates them in. */
+  private blurs: string[] = []
 
   constructor(
     private readonly K: K,
@@ -268,15 +272,14 @@ export class Board {
     this.shapes.clip(selection)
     // Blur blocks line up with the part of the blur in the selection, as in the export.
     this.selection = selection
-    for (const { node, shape } of this.nodes.values()) {
-      if (shape.kind === 'blur') node.setAttrs(this.attrsFor(shape))
-    }
+    this.paintBlurs()
     this.shapes.batchDraw()
   }
 
   /** The frame changed: blurs drawn from now on preview the new one. */
   newFrame() {
     this.pixels = null
+    this.painted = null
   }
 
   /** The shrunk frame, made on first use; `null` while there is no frame. */
@@ -291,41 +294,51 @@ export class Board {
   }
 
   /**
-   * The blocks Rust will paint for the blur `r` (logical px), in the px of a node placed by
-   * `t`: in whole frame px, clipped to the selection like the export, from its corner.
+   * Shows the blocks Rust will paint for the blur `r` (logical px) on `node`, placed by `t`,
+   * and paints them on `work`, a copy of the shrunk frame: in whole frame px, clipped to the
+   * selection like the export, from the corner of what is left. Without a frame, a grey box.
    */
-  private blocksFor(r: Rect, t: Transform): Block[] {
-    const frame = this.frame()
-    if (!frame || !this.selection) return []
-    const { shrunk, size, scale } = frame
-    const crop = toPhysical(this.selection, scale, size)
-    const p = physicalIn(r, crop, scale)
-    if (!p) return []
-    return blocks({ ...p, x: p.x + crop.x, y: p.y + crop.y }, shrunk).map((b) => ({
-      color: b.color,
-      x: local(b.x, scale.x, t.x, t.scaleX),
-      y: local(b.y, scale.y, t.y, t.scaleY),
-      width: b.width / scale.x / t.scaleX,
-      height: b.height / scale.y / t.scaleY,
-    }))
+  private showBlocks(node: Node, r: Rect, t: Transform, work: Shrunk | null) {
+    const frame = this.pixels
+    const crop = frame && this.selection && toPhysical(this.selection, frame.scale, frame.size)
+    const p = crop && physicalIn(r, crop, frame.scale)
+    const shown = !p || !work ? [] : blocks(p, crop, work)
+    const { x: sx, y: sy } = frame?.scale ?? { x: 1, y: 1 }
+    node.setAttrs({
+      blocks: shown.map((b) => ({
+        color: b.color,
+        x: local(b.x, sx, t.x, t.scaleX),
+        y: local(b.y, sy, t.y, t.scaleY),
+        width: b.width / sx / t.scaleX,
+        height: b.height / sy / t.scaleY,
+      })),
+      // With blocks the fill is clear, but a press on it still hits.
+      fill: shown.length ? 'transparent' : BLUR_FILL,
+    })
   }
 
-  /** Like `attrs`, with a blur's blocks: those of `shape`, drawn by a node placed by `t`. */
-  private attrsFor(shape: Shape, t?: Transform): Konva.ShapeConfig {
-    const a = attrs(shape)
-    if (shape.kind !== 'blur') return a
-    const shown = this.blocksFor(shape, t ?? { x: shape.x, y: shape.y, scaleX: 1, scaleY: 1 })
-    // Without blocks yet, the grey fill shows; with them, the fill is clear but still hit.
-    return { ...a, blocks: shown, fill: shown.length ? 'transparent' : a.fill }
+  /**
+   * Shows every blur's blocks, worked out in model order over one copy of the shrunk frame, as
+   * Rust pixelates them one after another: a blur over another averages its blocks. `moving`
+   * is a blur being dragged or resized, shown where its node is. What the blurs leave is kept
+   * for the blur being drawn, which comes after them.
+   */
+  private paintBlurs(moving?: string) {
+    const blurs = this.blurs.map((id) => this.nodes.get(id)!)
+    const frame = blurs.length ? this.frame() : null
+    const work = frame && { ...frame.shrunk, data: frame.shrunk.data.slice() }
+    for (const entry of blurs) {
+      const here = entry.shape.id === moving
+      const shape = (here ? moved(entry) : entry.shape) as Rect
+      const t = here ? placement(entry.node) : { x: shape.x, y: shape.y, scaleX: 1, scaleY: 1 }
+      this.showBlocks(entry.node, shape, t, work)
+    }
+    this.painted = work
   }
 
   /** Keeps a blur showing the blocks under it while it is dragged or resized. */
   private follow(id: string) {
-    const entry = this.nodes.get(id)
-    if (!entry || entry.shape.kind !== 'blur') return
-    const { node } = entry
-    const t = { x: node.x(), y: node.y(), scaleX: node.scaleX(), scaleY: node.scaleY() }
-    node.setAttrs({ blocks: this.attrsFor(moved(entry), t).blocks })
+    this.paintBlurs(id)
   }
 
   /** Makes the board show `shapes`, with handles on the selected one. */
@@ -339,7 +352,7 @@ export class Board {
         entry.shape = shape
         continue
       }
-      const node = create(this.K, shape, this.attrsFor(shape))
+      const node = create(this.K, shape)
       node.draggable(true)
       // Konva's `on` overloads differ between Shape and Group; Node's are shared.
       const events: Konva.Node = node
@@ -373,6 +386,8 @@ export class Board {
       })
     }
     this.transformer.nodes(entry ? [entry.node] : [])
+    this.blurs = shapes.filter((s) => s.kind === 'blur').map((s) => s.id)
+    this.paintBlurs()
     this.shapes.batchDraw()
     this.top.batchDraw()
   }
@@ -385,17 +400,23 @@ export class Board {
     }
     if (shape && this.draft) this.update(this.draft.node, shape)
     else if (shape) {
-      const node = create(this.K, shape, this.attrsFor(shape))
+      const node = create(this.K, shape)
       node.listening(false)
       this.top.add(node)
       this.draft = { node, kind: shape.kind }
+    }
+    // A new blur comes after the others, over what they leave.
+    if (shape?.kind === 'blur') {
+      const work = this.painted ?? this.frame()?.shrunk
+      const after = work ? { ...work, data: work.data.slice() } : null
+      this.showBlocks(this.draft!.node, shape, { ...shape, scaleX: 1, scaleY: 1 }, after)
     }
     this.top.batchDraw()
   }
 
   /** Sets a node's attributes to match its shape. */
   private update(node: Node, shape: Shape) {
-    node.setAttrs(this.attrsFor(shape))
+    node.setAttrs(attrs(shape))
     if (shape.kind !== 'text') return
     const { box, label } = textAttrs(shape)
     const [background, text] = (node as Konva.Group).getChildren()
@@ -429,7 +450,8 @@ export class Board {
       next = { ...next, x, y, ...m }
     }
     // Back to the model: the change comes back through `render` once it is kept.
-    node.setAttrs(this.attrsFor(shape))
+    node.setAttrs(attrs(shape))
+    this.paintBlurs()
     this.events.onchange(next)
   }
 

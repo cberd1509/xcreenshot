@@ -4,9 +4,9 @@ import {
   HIGHLIGHTER_WIDTH,
   STEP,
   constrain,
-  extend,
   fitTo,
-  freehand,
+  Freehand,
+  MAX_BLURS,
   hueColor,
   pointBounds,
   smooth,
@@ -156,14 +156,30 @@ describe('draw', () => {
   })
 })
 
+/** A stroke through `points`, as drawn. */
+function stroke(points: { x: number; y: number }[]) {
+  const f = new Freehand()
+  for (const p of points) f.add(p)
+  return f
+}
+
 describe('freehand', () => {
   it('keeps a point only once the pointer has moved far enough', () => {
-    const points = pts(10, 10)
-    expect(extend(points, { x: 11, y: 11 })).toBe(false)
-    expect(extend(points, { x: 10, y: 10 + STEP })).toBe(true)
-    expect(points).toEqual(pts(10, 10, 10, 12))
-    const empty: { x: number; y: number }[] = []
-    expect(extend(empty, { x: 1, y: 1 })).toBe(true)
+    const f = new Freehand()
+    expect(f.add({ x: 10, y: 10 })).toBe(true)
+    expect(f.add({ x: 11, y: 11 })).toBe(false)
+    expect(f.add({ x: 10, y: 10 + STEP })).toBe(true)
+    expect(f.points).toEqual([10, 10, 10, 12])
+  })
+
+  it('smooths as it goes, always matching a smoothing of the whole stroke', () => {
+    const f = new Freehand()
+    const kept: number[] = []
+    for (let i = 0; i < 60; i++) {
+      const p = { x: i * 3 + (i % 4) * 5, y: Math.round(Math.sin(i) * 40) }
+      if (f.add(p)) kept.push(p.x, p.y)
+      expect(f.points).toEqual(smooth(kept))
+    }
   })
 
   it('smooths corners and keeps both ends', () => {
@@ -186,18 +202,21 @@ describe('freehand', () => {
     expect(b.y + b.height).toBeLessThanOrEqual(r.y + r.height)
   })
 
-  it('makes a pen or highlighter stroke, smoothed', () => {
-    const p = freehand('pen', 'x', pts(0, 0, 10, 0, 10, 10), style)
+  it('makes a pen or highlighter stroke, smoothed, with its own points or the live ones', () => {
+    const f = stroke(pts(0, 0, 10, 0, 10, 10))
+    const p = f.shape('pen', 'x', style)
     expect(p).toMatchObject({ id: 'x', kind: 'pen', style })
     expect(p?.points).toEqual(smooth([0, 0, 10, 0, 10, 10]))
-    expect(freehand('highlighter', 'x', pts(0, 0, 10, 0), style)?.kind).toBe('highlighter')
+    expect(p?.points).not.toBe(f.points)
+    expect(f.shape('pen', 'x', style, true)?.points).toBe(f.points)
+    expect(stroke(pts(0, 0, 10, 0)).shape('highlighter', 'x', style)?.kind).toBe('highlighter')
   })
 
   it('drops a dot, a single point, and other tools', () => {
-    expect(freehand('pen', 'x', pts(0, 0, 2, 2), style)).toBeNull()
-    expect(freehand('pen', 'x', pts(0, 0), style)).toBeNull()
-    expect(freehand('pen', 'x', [], style)).toBeNull()
-    expect(freehand('rect', 'x', pts(0, 0, 50, 50), style)).toBeNull()
+    expect(stroke(pts(0, 0, 2, 2)).shape('pen', 'x', style)).toBeNull()
+    expect(stroke(pts(0, 0)).shape('pen', 'x', style)).toBeNull()
+    expect(stroke([]).shape('pen', 'x', style)).toBeNull()
+    expect(stroke(pts(0, 0, 50, 50)).shape('rect', 'x', style)).toBeNull()
   })
 })
 
@@ -373,6 +392,16 @@ describe('keepInside', () => {
 describe('blurRects', () => {
   const crop = { x: 0, y: 0, width: 100, height: 100 }
   const one = { x: 1, y: 1 }
+
+  it('never sends Rust more than it takes: the last rect covers the rest', () => {
+    const many = Array.from({ length: MAX_BLURS + 2 }, (_, i) => blur(i % 90, 0, 2, 2 + (i % 5)))
+    const out = blurRects(many, crop, one)
+    expect(out).toHaveLength(MAX_BLURS)
+    expect(out.slice(0, -1)).toEqual(blurRects(many.slice(0, MAX_BLURS - 1), crop, one))
+    // The last three, at x 75, 76 and 77, in one.
+    expect(out.at(-1)).toEqual({ x: 75, y: 0, width: 4, height: 4 })
+    expect(blurRects(many.slice(0, MAX_BLURS), crop, one)).toHaveLength(MAX_BLURS)
+  })
 
   it('uses each axis’s own scale', () => {
     expect(blurRects([blur(10, 10, 10, 10)], crop, { x: 2, y: 1.5 })).toEqual([
