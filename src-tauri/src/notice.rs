@@ -3,15 +3,17 @@
 //! covers the capture overlay: it is hidden while a capture is open and shown again after.
 //!
 //! Rust keeps what each window shows and the answer it waits for. The page asks for its
-//! content ([`notice`]) and sends back the button clicked ([`notice_answer`]).
+//! content ([`notice`]) and sends back the button clicked ([`notice_answer`]). Every question
+//! gets a window of its own, so a closing window never takes a newer question with it.
 
 use crate::print_screen::Reason;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tokio::sync::oneshot;
 
-const PREFIX: &str = "notice-";
+static NEXT: AtomicU64 = AtomicU64::new(1);
 
 /// What a notice window shows. The page has the copy for each.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -28,14 +30,6 @@ pub enum Notice {
 }
 
 impl Notice {
-    /// One window per kind.
-    fn label(&self) -> &'static str {
-        match self {
-            Notice::UpdateReady { .. } => "notice-update",
-            Notice::ShortcutChanged { .. } => "notice-shortcut",
-        }
-    }
-
     /// The card's size on the design board, in logical px.
     fn size(&self) -> (f64, f64) {
         match self {
@@ -49,77 +43,55 @@ impl Notice {
 struct Pending {
     notice: Notice,
     answer: oneshot::Sender<bool>,
+    /// Hidden while a capture is open.
+    hidden: bool,
 }
 
-/// The open notices, by window label, and those hidden for a capture.
+/// The open notices, by window label.
 #[derive(Default)]
-pub struct Notices {
-    open: Mutex<HashMap<&'static str, Pending>>,
-    hidden: Mutex<Vec<String>>,
-}
+pub struct Notices(Mutex<HashMap<String, Pending>>);
 
 impl Notices {
-    /// Records `label` as hidden for a capture, once.
-    fn hid(&self, label: &str) {
-        let mut hidden = lock(&self.hidden);
-        if !hidden.iter().any(|l| l == label) {
-            hidden.push(label.to_owned());
-        }
+    fn lock(&self) -> MutexGuard<'_, HashMap<String, Pending>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
-}
-
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Shows `notice` and resolves to the button clicked: `Some(true)` for the main (right) one,
 /// `Some(false)` for the other, `None` if the window closed another way.
 pub async fn ask<R: Runtime>(app: &AppHandle<R>, notice: Notice) -> Option<bool> {
     let (answer, rx) = oneshot::channel();
-    let label = notice.label();
+    let label = format!("notice-{}", NEXT.fetch_add(1, Ordering::Relaxed));
     let size = notice.size();
-    // Replaces an older one of the same kind: its `ask` resolves to `None`.
-    lock(&app.state::<Notices>().open).insert(label, Pending { notice, answer });
+    let pending = Pending {
+        notice,
+        answer,
+        hidden: false,
+    };
+    app.state::<Notices>().lock().insert(label.clone(), pending);
     let handle = app.clone();
+    let opening = label.clone();
     let shown = app.run_on_main_thread(move || {
-        if let Err(e) = open(&handle, label, size) {
-            log::error!("could not open {label}: {e}");
-            forget(&handle, label);
+        if let Err(e) = open(&handle, &opening, size) {
+            log::error!("could not open {opening}: {e}");
+            forget(&handle, &opening);
         }
     });
     if let Err(e) = shown {
         log::error!("could not open {label}: {e}");
-        forget(app, label);
+        forget(app, &label);
     }
     rx.await.ok()
 }
 
-/// Opens (or brings back) the window; hidden if a capture is open. Main thread only.
+/// Opens the window, hidden if a capture is open. Main thread, like the capture's start and
+/// end, so a capture can't begin in between.
 fn open<R: Runtime>(
     app: &AppHandle<R>,
-    label: &'static str,
-    size: (f64, f64),
+    label: &str,
+    (width, height): (f64, f64),
 ) -> tauri::Result<()> {
     let busy = crate::overlay::is_busy(app);
-    let window = match app.get_webview_window(label) {
-        Some(window) => window,
-        None => build(app, label, size, !busy)?,
-    };
-    if busy {
-        window.hide()?;
-        app.state::<Notices>().hid(label);
-        return Ok(());
-    }
-    window.show()?;
-    window.set_focus()
-}
-
-fn build<R: Runtime>(
-    app: &AppHandle<R>,
-    label: &'static str,
-    (width, height): (f64, f64),
-    visible: bool,
-) -> tauri::Result<WebviewWindow<R>> {
     let url = WebviewUrl::App("notice.html".into());
     let builder = WebviewWindowBuilder::new(app, label, url)
         .title("xcreenshot")
@@ -127,9 +99,12 @@ fn build<R: Runtime>(
         .resizable(false)
         .minimizable(false)
         .maximizable(false)
+        // Above other apps, like the system alert it replaces; still under the overlay, which
+        // hides it anyway.
+        .always_on_top(true)
         .center()
-        .visible(visible)
-        .focused(visible);
+        .visible(!busy)
+        .focused(!busy);
     // The card is the whole window: no title bar, the system's corners, border and shadow.
     #[cfg(target_os = "macos")]
     let builder = builder
@@ -141,48 +116,60 @@ fn build<R: Runtime>(
     #[cfg(all(target_os = "macos", not(test)))]
     macos::hide_buttons(&window);
     let handle = app.clone();
+    let closed = label.to_owned();
     window.on_window_event(move |event| {
         if matches!(event, tauri::WindowEvent::Destroyed) {
-            forget(&handle, label);
+            forget(&handle, &closed);
         }
     });
-    Ok(window)
+    if busy {
+        if let Some(pending) = app.state::<Notices>().lock().get_mut(label) {
+            pending.hidden = true;
+        }
+        return Ok(());
+    }
+    window.set_focus()
 }
 
 /// The window closed: its question is dropped, so `ask` resolves to `None`.
 fn forget<R: Runtime>(app: &AppHandle<R>, label: &str) {
-    let notices = app.state::<Notices>();
-    lock(&notices.open).remove(label);
-    lock(&notices.hidden).retain(|l| l != label);
+    app.state::<Notices>().lock().remove(label);
+}
+
+/// The labels of the notices that are (`hidden`) or aren't hidden for a capture, marking them
+/// the other way.
+fn flip<R: Runtime>(app: &AppHandle<R>, hidden: bool) -> Vec<String> {
+    let Some(notices) = app.try_state::<Notices>() else {
+        return Vec::new();
+    };
+    let mut open = notices.lock();
+    open.iter_mut()
+        .filter(|(_, p)| p.hidden == hidden)
+        .map(|(label, p)| {
+            p.hidden = !hidden;
+            label.clone()
+        })
+        .collect()
 }
 
 /// A capture is starting: hides the open notices. Main thread only.
 pub fn hide_for_capture<R: Runtime>(app: &AppHandle<R>) {
-    let Some(notices) = app.try_state::<Notices>() else {
-        return;
-    };
-    for (label, window) in app.webview_windows() {
-        if !label.starts_with(PREFIX) {
-            continue;
-        }
-        match window.hide() {
-            Ok(()) => notices.hid(&label),
-            Err(e) => log::warn!("could not hide {label}: {e}"),
+    for label in flip(app, false) {
+        if let Some(window) = app.get_webview_window(&label)
+            && let Err(e) = window.hide()
+        {
+            log::warn!("could not hide {label}: {e}");
         }
     }
 }
 
-/// The capture closed: shows the notices it hid. Main thread only.
+/// The capture closed: shows the notices it hid, without taking focus from the app the user
+/// was in. Main thread only.
 pub fn show_after_capture<R: Runtime>(app: &AppHandle<R>) {
-    let Some(notices) = app.try_state::<Notices>() else {
-        return;
-    };
-    let hidden = std::mem::take(&mut *lock(&notices.hidden));
-    for label in hidden {
-        let Some(window) = app.get_webview_window(&label) else {
-            continue;
-        };
-        if let Err(e) = window.show().and_then(|()| window.set_focus()) {
+    for label in flip(app, true) {
+        if let Some(window) = app.get_webview_window(&label)
+            && let Err(e) = window.show()
+        {
             log::warn!("could not show {label}: {e}");
         }
     }
@@ -192,20 +179,24 @@ pub fn show_after_capture<R: Runtime>(app: &AppHandle<R>) {
 #[tauri::command]
 pub(crate) fn notice<R: Runtime>(window: WebviewWindow<R>) -> Option<Notice> {
     let notices = window.state::<Notices>();
-    let open = lock(&notices.open);
+    let open = notices.lock();
     open.get(window.label()).map(|p| p.notice.clone())
 }
 
-/// A button was clicked (`primary`: the main one): answers and closes the window.
+/// A button was clicked (`primary`: the main one): answers and closes the window. An error
+/// means the window is still open; clicking again closes it.
 #[tauri::command]
-pub(crate) fn notice_answer<R: Runtime>(window: WebviewWindow<R>, primary: bool) {
-    let pending = lock(&window.state::<Notices>().open).remove(window.label());
+pub(crate) fn notice_answer<R: Runtime>(
+    window: WebviewWindow<R>,
+    primary: bool,
+) -> Result<(), String> {
+    let pending = window.state::<Notices>().lock().remove(window.label());
     if let Some(pending) = pending {
         let _ = pending.answer.send(primary);
     }
-    if let Err(e) = window.close() {
-        log::error!("could not close {}: {e}", window.label());
-    }
+    window.close().map_err(|e| e.to_string())?;
+    crate::windows::yield_focus(window.app_handle(), Some(window.label()));
+    Ok(())
 }
 
 /// Hides the traffic lights: the title bar is transparent and the board has none.
@@ -234,13 +225,13 @@ mod macos {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::overlay::window::tests::{self as overlay, Handle, wait_until};
     use tauri::async_runtime::{JoinHandle, block_on, spawn};
-    use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::test::{MockRuntime, mock_builder, mock_context, noop_assets};
 
-    fn app() -> tauri::App<tauri::test::MockRuntime> {
+    fn app() -> tauri::App<MockRuntime> {
         mock_builder()
             .manage(crate::overlay::Overlay::default())
             .manage(Notices::default())
@@ -254,25 +245,37 @@ mod tests {
         }
     }
 
-    /// Asks in the background and waits for the window.
-    fn asking(app: &Handle, notice: Notice) -> JoinHandle<Option<bool>> {
-        let label = notice.label();
-        let handle = app.clone();
-        let task = spawn(async move { ask(&handle, notice).await });
-        // The mock runtime keeps closed windows: wait for the question too.
-        wait_until("the notice window", || {
-            app.get_webview_window(label).is_some()
-                && lock(&app.state::<Notices>().open).contains_key(label)
-        });
-        task
+    /// The label of the open notice showing `notice`, once its window is up.
+    pub(crate) fn opened(app: &Handle, notice: &Notice) -> String {
+        let find = || {
+            let notices = app.state::<Notices>();
+            let open = notices.lock();
+            let (label, _) = open.iter().find(|(_, p)| &p.notice == notice)?;
+            app.get_webview_window(label).map(|_| label.clone())
+        };
+        wait_until("the notice window", || find().is_some());
+        find().unwrap()
     }
 
-    fn window(app: &Handle, label: &str) -> WebviewWindow<tauri::test::MockRuntime> {
-        app.get_webview_window(label).unwrap()
+    /// Asks in the background; returns the answer's task and the window.
+    fn asking(
+        app: &Handle,
+        notice: Notice,
+    ) -> (JoinHandle<Option<bool>>, WebviewWindow<MockRuntime>) {
+        let handle = app.clone();
+        let asked = notice.clone();
+        let task = spawn(async move { ask(&handle, asked).await });
+        let label = opened(app, &notice);
+        (task, app.get_webview_window(&label).unwrap())
     }
 
     fn hidden(app: &Handle) -> Vec<String> {
-        lock(&app.state::<Notices>().hidden).clone()
+        let notices = app.state::<Notices>();
+        let open = notices.lock();
+        open.iter()
+            .filter(|(_, p)| p.hidden)
+            .map(|(l, _)| l.clone())
+            .collect()
     }
 
     #[test]
@@ -302,33 +305,31 @@ mod tests {
         let app = app();
         let h = app.handle();
         for primary in [true, false] {
-            let task = asking(h, update());
-            let w = window(h, "notice-update");
-            assert_eq!(notice(w.clone()), Some(update()));
-            notice_answer(w.clone(), primary);
+            let (task, window) = asking(h, update());
+            assert_eq!(notice(window.clone()), Some(update()));
+            assert_eq!(notice_answer(window.clone(), primary), Ok(()));
             assert_eq!(block_on(task).unwrap(), Some(primary));
-            assert_eq!(notice(w), None, "answered");
+            assert_eq!(notice(window.clone()), None, "answered");
+            // A second click only closes the window again.
+            assert_eq!(notice_answer(window, primary), Ok(()));
         }
     }
 
     #[test]
-    fn a_window_closed_another_way_answers_nothing() {
+    fn each_question_gets_its_own_window() {
         let app = app();
         let h = app.handle();
-        let task = asking(h, update());
-        forget(h, "notice-update");
-        assert_eq!(block_on(task).unwrap(), None);
-    }
-
-    #[test]
-    fn asking_again_replaces_the_open_notice() {
-        let app = app();
-        let h = app.handle();
-        let first = asking(h, update());
-        let again = asking(h, update());
+        let (first, a) = asking(h, update());
+        let newer = Notice::UpdateReady {
+            version: "0.4.0".into(),
+        };
+        let (again, b) = asking(h, newer.clone());
+        assert_ne!(a.label(), b.label());
+        assert_eq!(notice(b.clone()), Some(newer), "each shows its own");
+        // The first window closing doesn't drop the newer question.
+        forget(h, a.label());
         assert_eq!(block_on(first).unwrap(), None);
-        assert_eq!(h.webview_windows().len(), 1, "same window");
-        notice_answer(window(h, "notice-update"), true);
+        notice_answer(b, true).unwrap();
         assert_eq!(block_on(again).unwrap(), Some(true));
     }
 
@@ -336,12 +337,12 @@ mod tests {
     fn a_capture_hides_the_notice_until_it_closes() {
         let app = app();
         let h = app.handle();
-        let task = asking(h, update());
+        let (task, window) = asking(h, update());
         let session = overlay::open(h, &[1]);
-        assert_eq!(hidden(h), ["notice-update"]);
+        assert_eq!(hidden(h), [window.label()]);
         crate::overlay::window::close_session(h, session);
         assert!(hidden(h).is_empty(), "shown again");
-        notice_answer(window(h, "notice-update"), false);
+        notice_answer(window, false).unwrap();
         assert_eq!(block_on(task).unwrap(), Some(false));
     }
 
@@ -350,24 +351,12 @@ mod tests {
         let app = app();
         let h = app.handle();
         let session = overlay::open(h, &[1]);
-        let task = asking(h, update());
-        assert_eq!(hidden(h), ["notice-update"]);
-        // Hiding twice keeps one entry.
-        hide_for_capture(h);
-        assert_eq!(hidden(h), ["notice-update"]);
+        let (task, window) = asking(h, update());
+        assert_eq!(hidden(h), [window.label()]);
         crate::overlay::window::close_session(h, session);
         assert!(hidden(h).is_empty());
-        forget(h, "notice-update");
+        forget(h, window.label());
         assert_eq!(block_on(task).unwrap(), None);
-    }
-
-    #[test]
-    fn showing_skips_windows_already_gone() {
-        let app = app();
-        let h = app.handle();
-        lock(&h.state::<Notices>().hidden).push("notice-gone".into());
-        show_after_capture(h);
-        assert!(hidden(h).is_empty());
     }
 
     #[test]

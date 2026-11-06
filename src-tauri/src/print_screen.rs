@@ -163,7 +163,12 @@ pub fn at_startup(
 }
 
 /// Tells the user why the shortcut moved off PrintScreen, with a button to open Settings.
-pub fn tell<R: Runtime>(app: &AppHandle<R>, reason: Reason, open_settings: Open<R>) {
+/// Returns at once; the task ends when the notice is answered.
+pub fn tell<R: Runtime>(
+    app: &AppHandle<R>,
+    reason: Reason,
+    open_settings: Open<R>,
+) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let notice = Notice::ShortcutChanged {
@@ -176,7 +181,7 @@ pub fn tell<R: Runtime>(app: &AppHandle<R>, reason: Reason, open_settings: Open<
         {
             log::error!("could not open settings: {e}");
         }
-    });
+    })
 }
 
 #[cfg(target_os = "windows")]
@@ -477,6 +482,7 @@ pub(crate) mod tests {
     fn the_notice_shows_the_fallback_and_open_settings_opens_settings() {
         use std::sync::atomic::{AtomicU32, Ordering};
         use tauri::Manager;
+        use tauri::async_runtime::block_on;
         use tauri::test::{MockRuntime, mock_builder, mock_context, noop_assets};
         static OPENED: AtomicU32 = AtomicU32::new(0);
         let app = mock_builder()
@@ -485,37 +491,25 @@ pub(crate) mod tests {
             .build(mock_context(noop_assets()))
             .unwrap();
         let h = app.handle();
-        let open: Open<MockRuntime> = |app| {
+        // Counts the calls; failing also covers the logged error.
+        let open: Open<MockRuntime> = |_| {
             OPENED.fetch_add(1, Ordering::SeqCst);
-            app.get_webview_window("notice-shortcut")
-                .ok_or(tauri::Error::WindowNotFound)
+            Err(tauri::Error::WindowNotFound)
         };
-        let wait = |what| {
-            crate::overlay::window::tests::wait_until(what, || {
-                h.get_webview_window("notice-shortcut").is_some()
-                    && notice::notice(h.get_webview_window("notice-shortcut").unwrap()).is_some()
-            })
+        let answer = |reason, primary| {
+            let told = tell(h, reason, open);
+            let shown = Notice::ShortcutChanged {
+                reason,
+                accelerator: FALLBACK.into(),
+            };
+            let label = notice::tests::opened(h, &shown);
+            notice::notice_answer(h.get_webview_window(&label).unwrap(), primary).unwrap();
+            block_on(told).unwrap();
         };
-        let window = || h.get_webview_window("notice-shortcut").unwrap();
 
-        tell(h, Reason::InUse, open);
-        wait("the notice");
-        assert_eq!(
-            notice::notice(window()),
-            Some(Notice::ShortcutChanged {
-                reason: Reason::InUse,
-                accelerator: FALLBACK.into()
-            })
-        );
-        notice::notice_answer(window(), true);
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        answer(Reason::InUse, true);
         assert_eq!(OPENED.load(Ordering::SeqCst), 0, "OK");
-
-        tell(h, Reason::SnippingTool, open);
-        wait("the notice again");
-        notice::notice_answer(window(), false);
-        crate::overlay::window::tests::wait_until("Settings", || {
-            OPENED.load(Ordering::SeqCst) == 1
-        });
+        answer(Reason::SnippingTool, false);
+        assert_eq!(OPENED.load(Ordering::SeqCst), 1, "Open Settings");
     }
 }

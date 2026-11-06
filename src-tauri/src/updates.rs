@@ -804,9 +804,11 @@ mod tests {
 
         let asking = TauriHost(app.handle().clone());
         let asked = tauri::async_runtime::spawn(async move { asking.ask_restart("99.0.0").await });
-        let notice = || app.get_webview_window("notice-update");
-        crate::overlay::window::tests::wait_until("the prompt", || notice().is_some());
-        crate::notice::notice_answer(notice().unwrap(), true);
+        let shown = crate::notice::Notice::UpdateReady {
+            version: "99.0.0".into(),
+        };
+        let label = crate::notice::tests::opened(app.handle(), &shown);
+        crate::notice::notice_answer(app.get_webview_window(&label).unwrap(), true).unwrap();
         assert!(block_on(asked).unwrap(), "Restart now");
         assert!(app.state::<AppUpdates>().ready().is_none());
         assert_eq!(ready_version(app.handle()), None);

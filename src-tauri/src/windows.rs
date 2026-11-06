@@ -25,6 +25,22 @@ pub fn show_window<'a, R: Runtime>(
     Ok(window)
 }
 
+/// Gives focus back to the app the user was in (macOS: hides this menu bar app), unless one of
+/// its regular windows (Settings, a notice) other than `closing` is on screen. Elsewhere the
+/// system does this when a window hides or closes.
+pub fn yield_focus<R: Runtime>(app: &AppHandle<R>, closing: Option<&str>) {
+    #[cfg(target_os = "macos")]
+    if !app.webview_windows().iter().any(|(label, w)| {
+        Some(label.as_str()) != closing
+            && crate::overlay::display_id(label).is_none()
+            && w.is_visible().unwrap_or(false)
+    }) {
+        let _ = app.hide();
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, closing);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

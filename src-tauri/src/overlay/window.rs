@@ -319,16 +319,9 @@ pub fn close_if<R: Runtime>(app: &AppHandle<R>, ok: impl FnOnce(&Phase) -> bool)
             log::warn!("could not tell {label} to free its frame: {e}");
         }
     }
-    // Before the check below, so a notice shown again keeps the app visible.
+    // First, so a notice shown again keeps the app visible, as Settings does.
     crate::notice::show_after_capture(app);
-    // Give focus back to the app the user was in, unless Settings or a notice is open.
-    #[cfg(target_os = "macos")]
-    if !windows
-        .iter()
-        .any(|(l, w)| display_id(l).is_none() && w.is_visible().unwrap_or(false))
-    {
-        let _ = app.hide();
-    }
+    crate::windows::yield_focus(app, None);
     // Last, so a waiting update restart sees the overlay gone.
     app.state::<Overlay>().idle.notify_waiters();
 }
