@@ -11,7 +11,7 @@
 3. Download the DMG from the draft, install it and check that it works.
 4. Publish the draft. Publishing creates the `v<version>` tag, and the updater starts offering the new version.
 
-Until you publish, every push to `main` without pending changesets rebuilds the draft from that commit. To rebuild by hand, run **Release** from the Actions tab on `main`. A published release is never rebuilt.
+A waiting draft is left alone by later merges that don't change the version. To rebuild it from the latest `main`, run **Release** from the Actions tab on `main`. The old draft is replaced only after the new build succeeds. A published release is never rebuilt.
 
 ## Secrets
 
