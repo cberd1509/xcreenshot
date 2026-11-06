@@ -3,8 +3,10 @@
 mod actions;
 /// Public for `examples/capture.rs`.
 pub mod capture;
+mod output;
 mod overlay;
 mod permission;
+mod prefs;
 mod shortcut;
 mod windows;
 
@@ -18,7 +20,7 @@ const SETTINGS_WINDOW: &str = "settings";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         // Must be first: a second launch focuses the running app instead.
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             handle(app, Action::OpenSettings)
@@ -33,15 +35,24 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        // Used from Rust only: the pages get no dialog or store permissions.
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_store::Builder::new().build());
+    // macOS writes the clipboard itself (`output::write_png`).
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.plugin(tauri_plugin_clipboard_manager::init());
+    builder
         .manage(overlay::Overlay::default())
         .manage(shortcut::Registered::default())
+        .manage(overlay::global_escape::<tauri::Wry>())
         .invoke_handler(tauri::generate_handler![
             overlay::window::overlay_ready,
             overlay::window::overlay_frame,
             overlay::window::overlay_painted,
             overlay::window::overlay_escaped,
             overlay::window::overlay_escape,
-            overlay::window::overlay_confirm,
+            overlay::export::overlay_copy,
+            overlay::export::overlay_save,
             overlay::window::close_overlay,
             permission::permission_granted,
             #[cfg(target_os = "macos")]

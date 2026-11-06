@@ -6,6 +6,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { box, fakeContext } from '../test/canvas'
 import Overlay from './Overlay.svelte'
 
+/** The platform the overlay sees (`isMac`). */
+const platform = vi.hoisted(() => ({ mac: false }))
+vi.mock('$lib/settings.svelte', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('$lib/settings.svelte')>()),
+  get isMac() {
+    return platform.mac
+  },
+}))
+
 type Info = {
   session: number
   width: number
@@ -19,7 +28,7 @@ type At = { x: number; y: number }
 let calls: { cmd: string; args: unknown }[]
 let ready: Info | null
 let frame: (args: { session: number }) => unknown
-let confirmed: () => unknown
+let finished: (cmd: string) => unknown
 let context: ReturnType<typeof fakeContext>
 let selected: { label: string; active: boolean }[]
 
@@ -46,6 +55,9 @@ const info: Info = {
 /** Esc from Rust, forwarded to this page. */
 const esc = (token = 1) => emit('overlay:escape', { session: 9, token })
 const answers = () => called('overlay_escaped').map((c) => c.args)
+/** The selection `drag({ x: 10, y: 10 }, { x: 110, y: 60 })` makes, in pixels. */
+const rect200 = { x: 20, y: 20, width: 200, height: 100 }
+const ctrl = (key: string) => `{Control>}${key}{/Control}`
 
 const overlay = () => screen.getByTestId('overlay')
 const selection = () => screen.queryByTestId('selection')
@@ -76,18 +88,19 @@ async function shown(props: { magnifier?: boolean } = {}) {
 
 describe('Overlay', () => {
   beforeEach(async () => {
+    platform.mac = false
     calls = []
     ready = null
     selected = []
     frame = () => rgba(4, 2)
-    confirmed = () => null
+    finished = () => null
     mockWindows('overlay-1')
     mockIPC(
       (cmd, args) => {
         calls.push({ cmd, args })
         if (cmd === 'overlay_ready') return ready
         if (cmd === 'overlay_frame') return frame(args as { session: number })
-        if (cmd === 'overlay_confirm') return confirmed()
+        if (cmd === 'overlay_copy' || cmd === 'overlay_save') return finished(cmd)
       },
       { shouldMockEvents: true },
     )
@@ -161,6 +174,19 @@ describe('Overlay', () => {
     expect(called('overlay_painted').map((c) => c.args)).toEqual([{ session: 2 }])
   })
 
+  it('does not paint a frame that arrives after the overlay closed', async () => {
+    let respond!: (buffer: ArrayBuffer) => void
+    frame = () => new Promise<ArrayBuffer>((r) => (respond = r))
+    const { container } = await mount()
+    await emit('overlay:show', small(1))
+    await waitFor(() => expect(called('overlay_frame')).toHaveLength(1))
+    await emit('overlay:closed')
+    respond(rgba(4, 2))
+    await tick()
+    expect(called('overlay_painted')).toHaveLength(0)
+    expect(container.querySelector('canvas')!.width).toBe(0)
+  })
+
   it('closes the overlay when the frame cannot be drawn', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     await mount()
@@ -172,18 +198,17 @@ describe('Overlay', () => {
     expect(called('overlay_painted')).toHaveLength(0)
   })
 
-  it('frees the frame when the window is hidden', async () => {
+  it('frees the frame when the overlay closes, not when it is only hidden', async () => {
     const { container } = await mount()
     await emit('overlay:show', small(1))
     await waitFor(() => expect(called('overlay_painted')).toHaveLength(1))
     const canvas = container.querySelector('canvas')!
-    const hidden = vi.spyOn(document, 'hidden', 'get')
-    hidden.mockReturnValue(false)
+    // Hidden for the Save dialog: the frame stays for when it shows again.
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
     document.dispatchEvent(new Event('visibilitychange'))
     expect(canvas.width).toBe(4)
-    hidden.mockReturnValue(true)
-    document.dispatchEvent(new Event('visibilitychange'))
-    expect([canvas.width, canvas.height]).toEqual([0, 0])
+    await emit('overlay:closed')
+    await waitFor(() => expect([canvas.width, canvas.height]).toEqual([0, 0]))
   })
 
   it('ignores a show for an older session', async () => {
@@ -409,15 +434,76 @@ describe('Overlay', () => {
       await waitFor(() => expect(answers()).toEqual([{ session: 9, token: 1, handled: false }]))
     })
 
-    it('confirms the pixel rect on Enter', async () => {
+    it('copies the pixel rect on Enter and Ctrl+C', async () => {
       await shown()
       await userEvent.keyboard('{Enter}')
-      expect(called('overlay_confirm')).toHaveLength(0)
+      await userEvent.keyboard(ctrl('c'))
+      expect(called('overlay_copy')).toHaveLength(0)
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       await userEvent.keyboard('{Enter}')
-      expect(called('overlay_confirm')[0].args).toEqual({
-        session: 9,
-        rect: { x: 20, y: 20, width: 200, height: 100 },
+      expect(called('overlay_copy')[0].args).toEqual({ session: 9, rect: rect200 })
+      await waitFor(async () => {
+        await userEvent.keyboard(ctrl('c'))
+        expect(called('overlay_copy')).toHaveLength(2)
+      })
+      expect(called('overlay_copy')[1].args).toEqual({ session: 9, rect: rect200 })
+    })
+
+    it('saves the pixel rect on Ctrl+S', async () => {
+      await shown()
+      await userEvent.keyboard(ctrl('s'))
+      expect(called('overlay_save')).toHaveLength(0)
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      await userEvent.keyboard(ctrl('s'))
+      expect(called('overlay_save')[0].args).toEqual({ session: 9, rect: rect200 })
+      expect(called('overlay_copy')).toHaveLength(0)
+    })
+
+    it('uses Cmd instead of Ctrl on macOS', async () => {
+      platform.mac = true
+      await shown()
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      await userEvent.keyboard(ctrl('c'))
+      await userEvent.keyboard(ctrl('s'))
+      expect(calls.filter((c) => c.cmd === 'overlay_copy' || c.cmd === 'overlay_save')).toEqual([])
+      await userEvent.keyboard('{Meta>}s{/Meta}')
+      await waitFor(() => expect(called('overlay_save')).toHaveLength(1))
+      await userEvent.keyboard('{Meta>}c{/Meta}')
+      await waitFor(() => expect(called('overlay_copy')).toHaveLength(1))
+    })
+
+    it('follows the physical key on a non-Latin layout', async () => {
+      await shown()
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      // Russian layout: the C key types "с", the S key "ы".
+      fireEvent.keyDown(window, { key: 'ы', code: 'KeyS', ctrlKey: true })
+      expect(called('overlay_save')).toHaveLength(1)
+      fireEvent.keyDown(window, { key: 'с', code: 'KeyD', ctrlKey: true })
+      expect(called('overlay_copy')).toHaveLength(0)
+    })
+
+    it('ignores other modifiers and plain letters', async () => {
+      await shown()
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      await userEvent.keyboard('cs')
+      await userEvent.keyboard('{Control>}{Shift>}s{/Shift}{/Control}')
+      await userEvent.keyboard('{Control>}{Alt>}c{/Alt}{/Control}')
+      expect(calls.filter((c) => c.cmd === 'overlay_copy' || c.cmd === 'overlay_save')).toEqual([])
+    })
+
+    it('runs one copy or save at a time', async () => {
+      let done!: () => void
+      finished = () => new Promise<void>((r) => (done = r))
+      await shown()
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      await userEvent.keyboard(ctrl('s'))
+      await userEvent.keyboard('{Enter}')
+      expect(called('overlay_save')).toHaveLength(1)
+      expect(called('overlay_copy')).toHaveLength(0)
+      done()
+      await waitFor(async () => {
+        await userEvent.keyboard('{Enter}')
+        expect(called('overlay_copy')).toHaveLength(1)
       })
     })
 
@@ -428,21 +514,44 @@ describe('Overlay', () => {
       expect(screen.queryByTestId('size-badge')).toBeNull()
       expect(selected).toEqual([])
       await userEvent.keyboard('{Enter}')
-      expect(called('overlay_confirm')).toHaveLength(0)
+      expect(called('overlay_copy')).toHaveLength(0)
     })
 
-    it('logs a confirm that fails and closes', async () => {
+    it('says so when copy or save fails, and stays open', async () => {
       const error = vi.spyOn(console, 'error').mockImplementation(() => {})
-      confirmed = () => {
-        throw new Error('empty')
+      finished = (cmd) => {
+        throw new Error(`${cmd} broke`)
       }
       await shown()
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       await userEvent.keyboard('{Enter}')
-      await waitFor(() => expect(called('close_overlay')).toHaveLength(1))
-      // Only the session it confirmed, never a newer one.
-      expect(called('close_overlay')[0].args).toEqual({ session: 9 })
+      expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't copy")
+      await userEvent.keyboard(ctrl('s'))
+      await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent("Couldn't save"))
+      expect(called('close_overlay')).toHaveLength(0)
+      expect(selection()).not.toBeNull()
       expect(error).toHaveBeenCalled()
+      // Gone when the overlay closes.
+      await emit('overlay:closed')
+      await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+    })
+
+    it('hides the message after a few seconds', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      finished = () => {
+        throw new Error('broke')
+      }
+      await shown()
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      try {
+        fireEvent.keyDown(window, { key: 'Enter' })
+        await vi.waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+        vi.advanceTimersByTime(3000)
+        await vi.waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+      } finally {
+        vi.useRealTimers()
+      }
     })
 
     it('sets an exact size from the badge', async () => {
@@ -451,10 +560,12 @@ describe('Overlay', () => {
       await userEvent.click(screen.getByRole('button', { name: /200 × 100/ }))
       const width = screen.getByLabelText('Width')
       await userEvent.clear(width)
-      // Typing does not nudge or confirm the selection.
+      // Typing does not nudge, copy or save the selection.
       await userEvent.type(width, '300{ArrowLeft}{Enter}')
       expect(rect()).toEqual([10, 10, 150, 50])
-      expect(called('overlay_confirm')).toHaveLength(0)
+      await userEvent.click(screen.getByRole('button', { name: /300 × 100/ }))
+      await userEvent.keyboard('{Control>}c{/Control}{Control>}s{/Control}{Escape}')
+      expect(calls.filter((c) => c.cmd === 'overlay_copy' || c.cmd === 'overlay_save')).toEqual([])
       // Clicks on the badge do not start a new selection.
       fireEvent.pointerDown(screen.getByTestId('size-badge'), point({ x: 20, y: 5 }))
       expect(rect()).toEqual([10, 10, 150, 50])
@@ -466,7 +577,7 @@ describe('Overlay', () => {
       await userEvent.click(screen.getByRole('button', { name: /200 × 100/ }))
       screen.getByRole('button', { name: 'Lock ratio' }).focus()
       await userEvent.keyboard('{Enter}')
-      expect(called('overlay_confirm')).toHaveLength(0)
+      expect(called('overlay_copy')).toHaveLength(0)
     })
 
     it('shows the loupe while drawing only when enabled', async () => {
@@ -502,13 +613,11 @@ describe('Overlay', () => {
       expect(screen.queryByTestId('magnifier')).toBeNull()
     })
 
-    it('drops the selection when hidden and on the next capture', async () => {
+    it('drops the selection when the overlay closes and on the next capture', async () => {
       await shown()
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
-      const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
-      document.dispatchEvent(new Event('visibilitychange'))
+      await emit('overlay:closed')
       await waitFor(() => expect(selection()).toBeNull())
-      hidden.mockReturnValue(false)
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       await emit('overlay:show', { ...info, session: 10 })
       await waitFor(() => expect(selection()).toBeNull())

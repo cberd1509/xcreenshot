@@ -50,8 +50,8 @@ prove on WebKit.
 - One scale for both sides: `overlay:show` sends the frame's pixel size and its display's
   logical size, and the page maps its selection with that ratio (the same edge rounding as
   `to_pixels`; the TS and Rust tests share cases). Enter sends the pixel rect the size badge
-  shows to `overlay_confirm`, which clamps it to the image, rejects an empty one and crops
-  exactly that (`capture::crop_pixels`). It only logs the size for now.
+  shows to `overlay_copy` (or `overlay_save`), which clamps it to the image, rejects an empty
+  one and crops exactly that (`capture::crop_pixels`).
 - Cost: the original stays in memory while the overlay is open (about 34 MB per display at this
   size). `close` frees it.
 
@@ -67,6 +67,83 @@ Hotkey to painted, release build, one 3600x2338 display, 15 captures with
 
 "After capture" is fetch, draw and show. It grew by 2–8 ms, near the noise between runs. The
 copy itself is about 1 ms. Capture time changes the most between runs.
+
+## Copy and save (#12)
+
+Measured on the same Mac with a full-display selection (3600x2338 px, a busy desktop), release
+build. `cargo run --release --example capture` prints the crop and the PNG levels.
+
+| PNG compression | Time | Size |
+| --- | --- | --- |
+| `Fast` | 62–64 ms | 11.1–11.5 MB |
+| `Level(1)` | ~230 ms | 13.0–13.4 MB |
+| `Level(2)` | ~250 ms | 11.2–11.7 MB |
+| `Level(3)` | 480–540 ms | 10.4–10.9 MB |
+| `Level(4)` | 560–730 ms | 10.4–10.8 MB |
+| `Default` | 2.2–2.5 s | 9.7–10.2 MB |
+
+Levels 1 and 2 are slower than `Fast` and no smaller. Level 3 saves about 6% for 8x the time,
+over the 300 ms budget. So one encoder, `Fast`, serves both copy and save (`encode_png`). A
+cancelled save encodes nothing: the PNG is made only once a path is picked.
+
+| Copy step | Time |
+| --- | --- |
+| Crop (`crop_pixels`) | ~1 ms |
+| PNG (`Fast`) | 62–64 ms |
+| Pasteboard write (PNG, TIFF promised) | ~4 ms |
+| TIFF, only when an app asks for it | ~136 ms, 32 MB |
+
+The whole copy is about 70 ms for a full display, less for a normal selection.
+
+- **Clipboard.** One `output::Clipboard`, called off the main thread. macOS: the PNG is encoded
+  on a worker, then the pasteboard is written on the main thread: the `NSPasteboardItem` is
+  built first (PNG data via `NSData::from_vec`, no copy), and only then the pasteboard is
+  cleared and written, with the result checked. TIFF is offered through a data provider, so
+  apps that only read TIFF get it, made on request: adding it up front would cost ~136 ms on
+  every copy. The provider and its PNG are released when the pasteboard is done with them
+  (`pasteboardFinishedWithDataProvider:`). AppKit needs `clearContents` before `writeObjects`;
+  since the item is complete before the clear, only the OS refusing the write itself loses the
+  old clipboard. `tauri-plugin-clipboard-manager` is not used on macOS: it takes RGBA and puts only
+  TIFF on the pasteboard. Windows: the plugin's `write_image` (arboard), which writes PNG and
+  `CF_DIBV5`. The overlay page has no clipboard permission.
+- **Save dialog.** `tauri-plugin-dialog` from Rust (`blocking_save_file` on a worker), PNG
+  filter, default name `xcreenshot-YYYY-MM-DD-HH.MM.SS.png` in local time. The filter makes the
+  dialog add `.png` where the platform does that. If Rust still has to add it and that file
+  exists, the dialog opens again with that name, so the user confirms the overwrite. We never
+  write to a name the user did not see (a file created in that folder between the check and
+  the write is an accepted, tiny window). A dialog error is reported as a failed save, not
+  taken for a cancel. The page has no dialog or fs permission.
+- **Default folder.** The last folder saved to, if it still exists, else the Desktop on macOS
+  (where its own screenshots go) and Pictures on Windows. Kept in `prefs.json` by the `prefs`
+  module (`tauri-plugin-store`, Rust only): one typed struct under one key, each field falling
+  back to its default on its own, paths as strings (a non-UTF-8 folder is not remembered). A
+  file that is not a JSON object is renamed to `prefs.corrupt-<time>.json` (a unique name) and
+  prefs start fresh. A file that cannot be read is left alone and the defaults are used.
+- **Overlay level.** The overlay windows sit at screen-saver level, above the dialog. Saving
+  hides them and releases Esc, so Esc cancels the dialog, but keeps the session and the frames.
+  The pages keep their frame and selection while hidden; they free them only on
+  `overlay:closed`, sent when the overlay closes. Rust holds Esc exactly when the phase wants
+  it (`sync_escape`, after every phase change).
+- **During the dialog** nothing closes the overlay (close, Esc forwarded by a page, copy), so a
+  save is never lost. Once a path is picked the file is always written; a window that finished
+  painting meanwhile stays hidden.
+- **Cancel.** The windows come back with the selection intact, so the user can save again, copy,
+  adjust it or press Esc. Closing on cancel would throw away the selection for a misclick.
+- **Writing.** A temp file (`tempfile`) in the target's folder, permissions copied from the file
+  it replaces, synced, renamed over the target, then the folder synced. A symlink is followed and
+  the real file replaced. The file never keeps old bytes after the new PNG (aCropalypse,
+  CVE-2023-28303), and a failed write leaves no half file. The PNG has only `IHDR`, `IDAT` and
+  `IEND`; tests check the file and the pasteboard bytes. Known limitation of the atomic replace: only the mode
+  bits are carried over, not ACLs or extended attributes. A failed folder sync after the rename
+  is only logged, since the file is complete. Writing through a symlink is deliberate: the user
+  picked that name in the dialog, which confirmed the overwrite, as TextEdit and Preview do. The write happens before the overlay
+  closes (its windows are already hidden), so a failure can bring it back to say so.
+- **Errors.** If copy or the write fails, it is logged and the overlay stays (or comes back) with
+  a short message ("Couldn't copy", "Couldn't save").
+
+Hotkey to painted after this change, release build with `XCREENSHOT_DEBUG_CAPTURE`, one
+3600x2338 display, warm runs: 70–105 ms (capture 53–79 ms), the same range as before. Nothing on
+that path changed.
 
 ## Dim layer while dragging (#9)
 
