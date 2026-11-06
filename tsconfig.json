@@ -1,4 +1,5 @@
 {
+  // "paths" is repeated here only because the shadcn-svelte CLI reads aliases from this file.
   "files": [],
   "references": [
     {

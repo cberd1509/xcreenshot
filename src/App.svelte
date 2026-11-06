@@ -1,17 +1,51 @@
 <script lang="ts">
+  import { getVersion } from '@tauri-apps/api/app'
   import { Kbd, KbdGroup } from '$lib/components/ui/kbd'
   import { Separator } from '$lib/components/ui/separator'
   import { Switch } from '$lib/components/ui/switch'
-  import { settings } from '$lib/settings.svelte'
   import SettingRow from '$lib/components/SettingRow.svelte'
+  import { settings, shortcutKeys, type ToggleKey } from '$lib/settings.svelte'
 
-  const sections = [
-    { id: 'shortcuts', label: 'Shortcuts' },
-    { id: 'capture', label: 'Capture' },
-    { id: 'general', label: 'General' },
-  ] as const
+  type Section = {
+    id: string
+    label: string
+    toggles: { key: ToggleKey; title: string; description: string }[]
+  }
 
-  let active = $state<string>('shortcuts')
+  const sections: Section[] = [
+    { id: 'shortcuts', label: 'Shortcuts', toggles: [] },
+    {
+      id: 'capture',
+      label: 'Capture',
+      toggles: [
+        {
+          key: 'rememberRegion',
+          title: 'Remember region',
+          description: 'Start with your last selection.',
+        },
+        { key: 'magnifier', title: 'Magnifier', description: 'Zoom in to select exact pixels.' },
+      ],
+    },
+    {
+      id: 'general',
+      label: 'General',
+      toggles: [
+        {
+          key: 'openAtLogin',
+          title: 'Open at login',
+          description: 'Start xcreenshot when you log in.',
+        },
+        {
+          key: 'checkForUpdates',
+          title: 'Check for updates',
+          description: 'Get new versions automatically.',
+        },
+      ],
+    },
+  ]
+
+  let active = $state('shortcuts')
+  const version = getVersion().catch(() => '')
 </script>
 
 <div class="flex h-screen bg-background text-foreground select-none">
@@ -22,66 +56,38 @@
     {#each sections as s (s.id)}
       <a
         href={`#${s.id}`}
-        aria-current={active === s.id ? 'page' : undefined}
+        aria-current={active === s.id ? 'true' : undefined}
         onclick={() => (active = s.id)}
-        class="rounded-md px-2.5 py-2 text-muted-foreground no-underline hover:bg-sidebar-accent aria-[current=page]:bg-sidebar-accent aria-[current=page]:font-medium aria-[current=page]:text-foreground"
+        class="rounded-md px-2.5 py-2 text-muted-foreground no-underline hover:bg-sidebar-accent aria-[current=true]:bg-sidebar-accent aria-[current=true]:font-medium aria-[current=true]:text-foreground"
       >
         {s.label}
       </a>
     {/each}
     <div class="grow"></div>
-    <div class="px-2.5 py-2 text-xs text-muted-foreground">Version 0.1.0</div>
+    {#await version then v}
+      {#if v}<div class="px-2.5 py-2 text-xs text-muted-foreground">Version {v}</div>{/if}
+    {/await}
   </nav>
 
   <main class="flex min-w-0 grow flex-col gap-6 overflow-y-auto px-9 py-7">
-    <section id="shortcuts" class="flex flex-col gap-3.5">
-      <h2 class="text-sm font-semibold">Shortcuts</h2>
-      <SettingRow title="Take a screenshot" description="Works from any app.">
-        <button
-          class="rounded-lg border px-2 py-1.5 hover:bg-accent"
-          aria-label={`Change shortcut, currently ${settings.shortcut.join(' ')}`}
-        >
-          <KbdGroup>
-            {#each settings.shortcut as key (key)}<Kbd>{key}</Kbd>{/each}
-          </KbdGroup>
-        </button>
-      </SettingRow>
-    </section>
-
-    <Separator />
-
-    <section id="capture" class="flex flex-col gap-3.5">
-      <h2 class="text-sm font-semibold">Capture</h2>
-      <SettingRow
-        title="Remember region"
-        description="Start with your last selection."
-        for="remember-region"
-      >
-        <Switch id="remember-region" bind:checked={settings.rememberRegion} />
-      </SettingRow>
-      <SettingRow title="Magnifier" description="Zoom in to select exact pixels." for="magnifier">
-        <Switch id="magnifier" bind:checked={settings.magnifier} />
-      </SettingRow>
-    </section>
-
-    <Separator />
-
-    <section id="general" class="flex flex-col gap-3.5">
-      <h2 class="text-sm font-semibold">General</h2>
-      <SettingRow
-        title="Open at login"
-        description="Start xcreenshot when you turn on your Mac."
-        for="open-at-login"
-      >
-        <Switch id="open-at-login" bind:checked={settings.openAtLogin} />
-      </SettingRow>
-      <SettingRow
-        title="Check for updates"
-        description="Get new versions automatically."
-        for="check-updates"
-      >
-        <Switch id="check-updates" bind:checked={settings.checkForUpdates} />
-      </SettingRow>
-    </section>
+    {#each sections as s, i (s.id)}
+      {#if i > 0}<Separator />{/if}
+      <section id={s.id} class="flex flex-col gap-3.5">
+        <h2 class="text-sm font-semibold">{s.label}</h2>
+        {#if s.id === 'shortcuts'}
+          <!-- Display only; recording a new shortcut comes in #21. -->
+          <SettingRow title="Take a screenshot" description="Works from any app.">
+            <KbdGroup>
+              {#each shortcutKeys(settings.shortcut) as key, k (k)}<Kbd>{key}</Kbd>{/each}
+            </KbdGroup>
+          </SettingRow>
+        {/if}
+        {#each s.toggles as t (t.key)}
+          <SettingRow title={t.title} description={t.description} for={t.key}>
+            <Switch id={t.key} bind:checked={settings[t.key]} />
+          </SettingRow>
+        {/each}
+      </section>
+    {/each}
   </main>
 </div>

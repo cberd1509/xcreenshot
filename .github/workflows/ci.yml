@@ -13,8 +13,8 @@ permissions:
   contents: read
 
 jobs:
-  frontend:
-    name: Frontend (lint, check, build)
+  lint:
+    name: Lint and type-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,14 +23,18 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm check
-      - run: pnpm build
+      - name: cargo fmt
+        working-directory: src-tauri
+        run: cargo fmt --check
 
   app:
     name: App (${{ matrix.os }})
-    needs: frontend
     strategy:
       fail-fast: false
       matrix:
@@ -45,19 +49,18 @@ jobs:
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt
+          components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
       - run: pnpm install --frozen-lockfile
-      - name: cargo fmt
-        working-directory: src-tauri
-        run: cargo fmt --check
+      # Builds the frontend (beforeBuildCommand) and the app with the debug profile,
+      # so the test step below reuses the same compiled dependencies.
+      - name: Build app (debug, no installer)
+        run: pnpm tauri build --debug --no-bundle
       - name: cargo clippy
         working-directory: src-tauri
         run: cargo clippy --all-targets -- -D warnings
       - name: cargo test
         working-directory: src-tauri
         run: cargo test
-      - name: Build app (unsigned, no installer)
-        run: pnpm tauri build --no-bundle
