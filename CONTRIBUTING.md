@@ -57,4 +57,4 @@ By contributing, you agree your work is released under the [MIT License](LICENSE
 
 ## Design
 
-UI follows the [design canvas](https://claude.ai/artifact/RAcQ8kKKNBJCeC4Z3MriRr). Name the artboard your change follows in the issue and the PR. If a screen has no artboard yet, design it there first.
+UI follows the [design canvas](https://claude.ai/artifact/RAcQ8kKKNBJCeC4Z3MriRr). Name the artboard your change follows in the issue and the PR. If a screen has no artboard yet, design it there first. The artboards are mirrored in `design/`.
