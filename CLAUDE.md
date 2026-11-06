@@ -19,7 +19,7 @@ pnpm check                # svelte-check + tsc
 pnpm coverage             # vitest, 90% minimum
 pnpm format               # autofix lint + formatting
 cd src-tauri && cargo clippy --all-targets -- -D warnings && cargo test
-./scripts/rust-coverage.sh  # Rust coverage, 90% minimum (skips main.rs/lib.rs)
+./scripts/rust-coverage.sh  # Rust coverage, 90% minimum (skips main.rs/lib.rs and share/macos.rs)
 ```
 
 ## Before opening a PR
@@ -39,7 +39,7 @@ cd src-tauri && cargo clippy --all-targets -- -D warnings && cargo test
 
 ## Code conventions
 
-- **Rust:** `lib.rs` only wires plugins, tray and shortcuts; logic lives in modules with unit tests. Keep pure logic (geometry, parsing) separate from OS calls so it's testable without a real screen. Put platform code behind `cfg(target_os = ...)` and keep Windows compiling.
+- **Rust:** `lib.rs` only wires plugins, tray and shortcuts; logic lives in modules with unit tests. Keep pure logic (geometry, parsing) separate from OS calls so it's testable without a real screen. Put platform code behind `cfg(target_os = ...)` and keep Windows compiling. Coverage skips only `share/macos.rs`, because it is thin FFI glue with no logic. Don't add logic there, and don't widen the exclusion; move decisions into a tested module instead.
 - **Frontend:** TypeScript strict, Svelte 5 runes, components covered by Testing Library tests.
 - **Speed:** hotkey-to-overlay must stay fast (target under 150 ms). Capture happens before any window appears. Benchmark capture changes with `cargo run --release --example capture`; don't swap the backend for a slower one.
 - **Privacy:** no telemetry, analytics or accounts. The only network requests are the update check (`latest.json` from GitHub Releases) and, when there is one, the update download. Checks are on by default and can be turned off. Keep the strict CSP in `tauri.conf.json`.

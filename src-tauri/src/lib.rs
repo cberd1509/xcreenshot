@@ -3,10 +3,14 @@
 mod actions;
 /// Public for `examples/capture.rs`.
 pub mod capture;
+#[cfg(all(target_os = "macos", not(test)))]
+mod macos;
 mod output;
 mod overlay;
 mod permission;
 mod prefs;
+/// Public so the overlay (and later commands) can call it; see `docs/share.md`.
+pub mod share;
 mod shortcut;
 mod updates;
 mod windows;
@@ -14,7 +18,7 @@ mod windows;
 use actions::Action;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager, WebviewUrl};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 const SETTINGS_WINDOW: &str = "settings";
@@ -87,8 +91,11 @@ pub fn run() {
             overlay::prewarm(app.handle());
             permission::on_startup(app.handle());
             updates::start(app.handle(), offer_update);
+            share::init(app.handle());
             #[cfg(debug_assertions)]
             overlay::debug::schedule(app.handle());
+            #[cfg(debug_assertions)]
+            share::debug::schedule(app.handle(), open_settings);
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -186,12 +193,11 @@ fn handle(app: &AppHandle, action: Action) {
 
 /// The Settings webview is created on demand and destroyed on close. The only webviews kept
 /// while idle are the hidden overlay windows, prewarmed so the hotkey is fast.
-fn open_settings(app: &AppHandle) -> tauri::Result<()> {
+fn open_settings(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     windows::show_window(app, SETTINGS_WINDOW, WebviewUrl::default(), |b| {
         b.title("xcreenshot Settings")
             .inner_size(880.0, 640.0)
             .min_inner_size(640.0, 480.0)
             .center()
-    })?;
-    Ok(())
+    })
 }
