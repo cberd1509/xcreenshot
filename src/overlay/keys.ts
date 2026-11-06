@@ -19,3 +19,10 @@ export const keyLabels = (mac = isMac) =>
 export const typing = (target: EventTarget | null) =>
   target instanceof HTMLElement &&
   (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))
+
+/** Whether `target` is a control that Enter and Space press: a button, menu item or link. */
+export const control = (target: EventTarget | null) =>
+  target instanceof Element &&
+  !!target.closest(
+    'button, a[href], [role=button], [role=menuitem], [role=menuitemcheckbox], [role=radio], [role=switch]',
+  )

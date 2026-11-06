@@ -113,6 +113,18 @@ export function resize(r: Rect, handle: Handle, dx: number, dy: number, bounds: 
 /** -1 for a negative size, else 1 (also for none). */
 const sign = (v: number | null) => (v !== null && v < 0 ? -1 : 1)
 
+/**
+ * `r` grown around its middle to the aspect ratio `ratio` (width / height), the smallest rect
+ * of that ratio holding it, then kept on the display.
+ */
+export function growToRatio(r: Rect, ratio: number, bounds: Size): Rect {
+  if (!(Number.isFinite(ratio) && ratio > 0)) return r
+  const width = Math.max(r.width, r.height * ratio)
+  const height = width / ratio
+  const grown = { x: r.x - (width - r.width) / 2, y: r.y - (height - r.height) / 2, width, height }
+  return move(grown, 0, 0, bounds)
+}
+
 /** Where a handle drags one axis from: its low edge, its high edge, or (edge handles) both. */
 type Anchor = 'low' | 'high' | 'middle'
 

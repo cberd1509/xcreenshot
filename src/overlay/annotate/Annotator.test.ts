@@ -42,6 +42,7 @@ type Api = {
   annotated: () => boolean
   painted: () => Rect | null
   menuOpen: () => boolean
+  keys: () => { enter: string | false | null; esc: string | null }
 }
 type Props = {
   selection: Rect | null
@@ -148,13 +149,32 @@ describe('Annotator', () => {
     await waitFor(() =>
       expect(screen.getByLabelText('Rectangle')).toHaveAttribute('data-state', 'on'),
     )
+    // With a tool, the drag draws and stops there.
+    await drag(150, 150, 250, 200)
+    expect(kinds()).toEqual(['Rect'])
+    expect(passed).not.toHaveBeenCalled()
     expect(api.key(press('v'))).toBe(true)
     await waitFor(() => expect(screen.getByLabelText('Select')).toHaveAttribute('data-state', 'on'))
-    // Without a drawing tool, a drag in the selection draws nothing and goes on to the overlay.
-    await drag(150, 150, 250, 200)
-    expect(kinds()).toEqual([])
-    expect(passed).toHaveBeenCalled()
+    // Without one, a drag off the shapes draws nothing and goes on to the overlay.
+    await drag(300, 300, 350, 320)
+    expect(kinds()).toEqual(['Rect'])
+    expect(passed).toHaveBeenCalledOnce()
     expect(api.key(press('V'))).toBe(true)
+  })
+
+  it('says what Enter and Esc do now, for the key hint', async () => {
+    const user = userEvent.setup()
+    const { api } = await setup()
+    expect(api.keys()).toEqual({ enter: null, esc: null })
+    api.key(press('r'))
+    await waitFor(() => expect(api.keys()).toEqual({ enter: null, esc: 'drop tool' }))
+    await user.click(screen.getByRole('button', { name: 'More' }))
+    await screen.findByText('Magnifier')
+    expect(api.keys()).toEqual({ enter: false, esc: 'close menu' })
+    api.escape()
+    await waitFor(() => expect(api.menuOpen()).toBe(false))
+    await place(api)
+    expect(api.keys()).toEqual({ enter: false, esc: 'finish text' })
   })
 
   it('draws a rect with R and an arrow with A, in display coordinates', async () => {
@@ -781,6 +801,7 @@ describe('Annotator', () => {
       // Enter on the selected text; emptying it deletes it.
       nodes()[0].fire('pointerdown')
       await waitFor(() => expect(transformer().attached).toHaveLength(1))
+      expect(api.keys()).toEqual({ enter: 'edit', esc: 'deselect' })
       const enter = press('Enter')
       expect(api.key(enter)).toBe(true)
       expect(enter.defaultPrevented).toBe(true)

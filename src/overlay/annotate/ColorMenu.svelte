@@ -108,7 +108,11 @@
       aria-label="Color"
       class="grid grid-cols-4 gap-2"
       value={style.color}
-      onValueChange={(color) => color && (style = { ...style, color })}
+      onValueChange={(color) => {
+        // A swatch wins over a hex color still being typed.
+        draft = null
+        if (color) style = { ...style, color }
+      }}
     >
       {#each COLORS as { color, name } (color)}
         <ToggleGroup.Item

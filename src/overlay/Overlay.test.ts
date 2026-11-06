@@ -773,7 +773,17 @@ describe('Overlay', () => {
       await shown()
       expect(hint()).toEqual(['Drag select area', 'Esc cancel'])
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
-      expect(hint()).toEqual(['Enter copy', 'Ctrl+S save', 'Space move', 'Esc cancel'])
+      expect(hint()).toEqual(['Enter copy', 'Ctrl+S save', 'Space move', 'Esc clear'])
+      // Typing a size: Enter applies it and Esc cancels the edit.
+      await userEvent.click(field('Width'))
+      expect(hint()).toEqual(['Enter apply', 'Ctrl+S save', 'Space move', 'Esc cancel'])
+    })
+
+    it('shows that Esc closes a remembered region', async () => {
+      frame = () => rgba(info.width, info.height)
+      await mount()
+      await emit('overlay:show', { ...info, region: { x: 10, y: 10, width: 100, height: 50 } })
+      await waitFor(() => expect(hint()).toContain('Esc cancel'))
     })
 
     it('shows ⌘ in the keys on macOS', async () => {
@@ -796,6 +806,18 @@ describe('Overlay', () => {
       fireEvent.pointerMove(overlay(), point({ x: 90, y: 70 }))
       expect(rect()).toEqual([30, 20, 60, 50])
       fireEvent.pointerUp(overlay(), point({ x: 90, y: 70 }))
+    })
+
+    it('moves the press point when Space comes before the first move', async () => {
+      await shown()
+      fireEvent.pointerDown(overlay(), point({ x: 10, y: 10 }))
+      await fireEvent.keyDown(window, { key: ' ' })
+      fireEvent.pointerMove(overlay(), point({ x: 50, y: 50 }))
+      expect(selection()).toBeNull()
+      await fireEvent.keyUp(window, { key: ' ' })
+      fireEvent.pointerMove(overlay(), point({ x: 80, y: 70 }))
+      expect(rect()).toEqual([50, 50, 30, 20])
+      fireEvent.pointerUp(overlay(), point({ x: 80, y: 70 }))
     })
 
     it('moves a selection being resized while Space is held, until the drag ends', async () => {
@@ -1035,6 +1057,58 @@ describe('Overlay', () => {
       })
       expect(body).toBeInstanceOf(Uint8Array)
       expect((body as Uint8Array).length).toBe(96 * 76 * 4)
+    })
+
+    it('shows what Enter and Esc do with annotations', async () => {
+      await annotated()
+      expect(hint()).toEqual(['Enter copy', 'Ctrl+S save', 'Space move', 'Esc drop tool'])
+      await colors()
+      expect(hint()).toEqual(['Ctrl+S save', 'Space move', 'Esc close menu'])
+    })
+
+    it('presses a focused button with Enter, not copy', async () => {
+      await annotated()
+      const save = await screen.findByRole('button', { name: 'Save' })
+      save.focus()
+      await userEvent.keyboard('{Enter}')
+      await waitFor(() => expect(called('overlay_save')).toHaveLength(1))
+      expect(called('overlay_copy')).toHaveLength(0)
+    })
+
+    it('moves the selection with Select, a drag off the shapes going to the overlay', async () => {
+      await annotated()
+      await userEvent.keyboard('v')
+      await waitFor(() =>
+        expect(screen.getByLabelText('Select')).toHaveAttribute('data-state', 'on'),
+      )
+      drag({ x: 80, y: 40 }, { x: 90, y: 45 }, layer())
+      expect(rect()).toEqual([20, 15, 100, 50])
+      expect(shapes()).toHaveLength(1)
+    })
+
+    it('lets a resize moved off the annotations with Space shrink freely', async () => {
+      await annotated()
+      fireEvent.pointerDown(handle('se'), point({ x: 110, y: 60 }))
+      await fireEvent.keyDown(window, { key: ' ' })
+      fireEvent.pointerMove(overlay(), point({ x: 310, y: 60 }))
+      expect(rect()).toEqual([210, 10, 100, 50])
+      await fireEvent.keyUp(window, { key: ' ' })
+      fireEvent.pointerMove(overlay(), point({ x: 220, y: 60 }))
+      expect(rect()).toEqual([210, 10, 10, 50])
+      fireEvent.pointerUp(overlay(), point({ x: 220, y: 60 }))
+    })
+
+    it('keeps the locked ratio when the annotations hold a resize back', async () => {
+      await annotated()
+      await userEvent.click(screen.getByRole('button', { name: 'Lock aspect ratio' }))
+      drag({ x: 110, y: 30 }, { x: 10, y: 30 }, handle('e'))
+      const [x, y, width, height] = rect()
+      expect(width / height).toBeCloseTo(2)
+      // It still holds the rect, painted from (16, 16) to (64, 54).
+      expect(x).toBeLessThanOrEqual(16)
+      expect(y).toBeLessThanOrEqual(16)
+      expect(x + width).toBeGreaterThanOrEqual(64)
+      expect(y + height).toBeGreaterThanOrEqual(54)
     })
 
     it('closes the overlay with Cancel', async () => {

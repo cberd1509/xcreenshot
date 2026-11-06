@@ -14,6 +14,7 @@ import {
   nudge,
   resize,
   resizeLocked,
+  growToRatio,
   resizeTo,
   span,
   toPhysical,
@@ -203,6 +204,21 @@ describe('hex', () => {
   it('formats the first pixel', () => {
     expect(hex([255, 0, 0, 255])).toBe('#FF0000')
     expect(hex(new Uint8ClampedArray([1, 2, 171, 0, 9, 9, 9, 9]))).toBe('#0102AB')
+  })
+})
+
+describe('growToRatio', () => {
+  it('grows the short side around the middle to the ratio', () => {
+    expect(growToRatio(rect(20, 20, 20, 20), 2, display)).toEqual(rect(10, 20, 40, 20))
+    expect(growToRatio(rect(20, 20, 40, 10), 2, display)).toEqual(rect(20, 15, 40, 20))
+  })
+
+  it('keeps it on the display', () => {
+    expect(growToRatio(rect(0, 0, 20, 20), 2, display)).toEqual(rect(0, 0, 40, 20))
+  })
+
+  it('leaves it as it is without a ratio', () => {
+    expect(growToRatio(rect(1, 2, 3, 4), 0, display)).toEqual(rect(1, 2, 3, 4))
   })
 })
 

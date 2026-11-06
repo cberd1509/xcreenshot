@@ -491,6 +491,25 @@
   }
 
   /**
+   * What Enter and Esc do now, for the key hint; `null` leaves them to the overlay. Enter is
+   * `false` when it does nothing here (a menu or the text box has it).
+   */
+  export function keys(): { enter: string | false | null; esc: string | null } {
+    const menu = menuOpen()
+    const enter = editing || menu ? false : selectedText ? 'edit' : null
+    const esc = menu
+      ? 'close menu'
+      : editing
+        ? 'finish text'
+        : selected
+          ? 'deselect'
+          : tool && selection
+            ? 'drop tool'
+            : null
+    return { enter, esc }
+  }
+
+  /**
    * The annotations alone at native size, for Rust to composite. `crop` is the physical rect
    * being captured; `ratio` is physical px per logical px on each axis. See
    * docs/annotations.md.

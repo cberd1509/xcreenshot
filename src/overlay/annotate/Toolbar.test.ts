@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/svelte'
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { COLORS, DEFAULT_STYLE, type Style, type Tool } from './shapes'
@@ -219,6 +219,18 @@ describe('Toolbar', () => {
     await user.type(hex, '123456')
     await user.tab()
     expect(style().color).toBe('#123456')
+  })
+
+  it('drops a hex color still being typed when a swatch is picked', async () => {
+    const { style, user } = setup()
+    await user.click(button('Color and size'))
+    const hex = await screen.findByLabelText<HTMLInputElement>('Hex')
+    await user.clear(hex)
+    await user.type(hex, '123456')
+    await fireEvent.click(choice('Blue'))
+    expect(hex.value).toBe('#3B82F6')
+    hex.blur()
+    expect(style().color).toBe('#3B82F6')
   })
 
   it('copies, saves and cancels; Share is coming', async () => {
