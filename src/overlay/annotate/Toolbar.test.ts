@@ -201,18 +201,24 @@ describe('Toolbar', () => {
     await user.click(button('Color and size'))
     const hex = await screen.findByLabelText<HTMLInputElement>('Hex')
     expect(hex.value).toBe(DEFAULT_STYLE.color)
+    // Typing changes nothing until Enter, so a color is one change.
     await user.clear(hex)
     await user.type(hex, '#0f0')
+    expect(hex.value).toBe('#0f0')
+    expect(style()).toEqual(DEFAULT_STYLE)
+    await user.keyboard('{Enter}')
     expect(style()).toEqual({ ...DEFAULT_STYLE, color: '#00FF00' })
-    // A partial value is kept as typed, without changing the color.
-    await user.type(hex, '8')
-    expect(hex.value).toBe('#0f08')
+    expect(hex.value).toBe('#00FF00')
+    // Something that is not a color is dropped.
+    await user.clear(hex)
+    await user.type(hex, '#0f08{Enter}')
     expect(style().color).toBe('#00FF00')
-    await user.type(hex, '00')
-    expect(style().color).toBe('#0F0800')
-    // Enter shows the color as kept; other keys type.
-    await user.type(hex, '{Backspace}{Enter}')
-    expect(hex.value).toBe('#0F0800')
+    expect(hex.value).toBe('#00FF00')
+    // Leaving the field takes the color too.
+    await user.clear(hex)
+    await user.type(hex, '123456')
+    await user.tab()
+    expect(style().color).toBe('#123456')
   })
 
   it('copies, saves and cancels; Share is coming', async () => {

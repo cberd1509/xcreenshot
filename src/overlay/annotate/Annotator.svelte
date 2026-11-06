@@ -2,7 +2,7 @@
   import { onMount, untrack } from 'svelte'
   import { contains, nudge, type Point, type Rect, type Scale, type Size } from '../geometry'
   import { shortcut } from '../keys'
-  import { PANEL } from '../panel'
+  import { TOAST } from '../panel'
   import { Board, exportShapes, loadKonva, type AnnotationExport } from './board'
   import { commit, empty, redo, replace, undo, without, type History, type Shapes } from './history'
   import { recall, remember } from './memory'
@@ -516,10 +516,7 @@
 ></div>
 
 {#if hint}
-  <div
-    class="pointer-events-none fixed bottom-[72px] left-1/2 z-1 -translate-x-1/2 px-3.5 py-2 text-xs whitespace-nowrap {PANEL}"
-    role="status"
-  >
+  <div class={TOAST} role="status">
     {hint}
   </div>
 {/if}

@@ -925,12 +925,12 @@ describe('Annotator', () => {
       hex.dispatchEvent(down)
       expect(down.defaultPrevented).toBe(false)
       hex.focus()
-      // The text stays open while the field has focus, and takes the color as it is typed.
+      // The text stays open while the field has focus, and takes the color on Enter.
       expect(editor()).toBe(field)
       await user.clear(hex)
       await user.type(hex, '00f')
-      expect(field.style.color).toBe('rgb(0, 0, 255)')
       await user.keyboard('{Enter}')
+      expect(field.style.color).toBe('rgb(0, 0, 255)')
       expect(field).toHaveFocus()
       expect(field.selectionStart).toBe(1)
       // Focus going anywhere else still commits.

@@ -5,7 +5,7 @@
   import ShareIcon from '@lucide/svelte/icons/share'
   import CancelIcon from '@lucide/svelte/icons/x'
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu'
-  import { PANEL } from '../panel'
+  import { KEY, PANEL } from '../panel'
   import Tip from './Tip.svelte'
   import type { Option, ToolbarActions } from './Toolbar.svelte'
 
@@ -137,9 +137,7 @@
     onclick={actions.copy}
   >
     <CopyIcon />Copy
-    <kbd class="rounded bg-zinc-200 px-[5px] py-px font-sans text-[11px] font-normal text-zinc-600"
-      >{mod}C</kbd
-    >
+    <kbd class="{KEY} py-px">{mod}C</kbd>
   </button>
   <Tip label="Cancel" keys="Esc" side="top" sideOffset={10} trigger={cancel} />
 </div>

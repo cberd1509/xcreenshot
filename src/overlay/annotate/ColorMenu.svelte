@@ -17,9 +17,12 @@
     keepFocus?: boolean
   } = $props()
 
-  const SIZE_LABELS = ['Thin', 'Medium', 'Thick']
-  /** Each size's bar in the menu, in px: thin, medium, thick. */
-  const BARS = [2, 4, 7]
+  /** Each size's name and its bar in the menu, in px. */
+  const SIZE_LOOKS = [
+    { label: 'Thin', bar: 2 },
+    { label: 'Medium', bar: 4 },
+    { label: 'Thick', bar: 7 },
+  ]
 
   const keep = (e: Event) => keepFocus && e.preventDefault()
 
@@ -33,17 +36,21 @@
     refocus = keepFocus && from instanceof HTMLElement ? from : null
   }
 
-  function oninput(e: Event & { currentTarget: HTMLInputElement }) {
-    draft = e.currentTarget.value
-    const color = parseHex(draft)
-    if (color) style = { ...style, color }
+  /**
+   * Takes the typed color, if it is one, as one change (one undo step for a selected shape),
+   * and shows the current color again.
+   */
+  function commit() {
+    const color = draft === null ? null : parseHex(draft)
+    draft = null
+    if (color && color !== style.color) style = { ...style, color }
   }
 
-  /** Enter keeps the color and gives focus back to the text being typed, if any. */
+  /** Enter takes the color and gives focus back to the text being typed, if any. */
   function onkeydown(e: KeyboardEvent) {
     if (e.key !== 'Enter') return
     e.preventDefault()
-    draft = null
+    commit()
     refocus?.focus()
     refocus = null
   }
@@ -116,9 +123,9 @@
         value={draft ?? style.color}
         onmousedown={(e) => e.stopPropagation()}
         {onfocus}
-        {oninput}
+        oninput={(e) => (draft = e.currentTarget.value)}
         {onkeydown}
-        onblur={() => (draft = null)}
+        onblur={commit}
       />
     </div>
     <div class="text-xs font-medium text-zinc-400">Size</div>
@@ -132,12 +139,12 @@
       {#each SIZES as size, i (size)}
         <ToggleGroup.Item
           value={String(size)}
-          aria-label={SIZE_LABELS[i]}
+          aria-label={SIZE_LOOKS[i].label}
           class="group flex h-[30px] items-center justify-center rounded-md data-[state=on]:bg-zinc-700"
         >
           <span
             class="w-[22px] rounded-full bg-zinc-400 group-data-[state=on]:bg-zinc-50"
-            style:height="{BARS[i]}px"
+            style:height="{SIZE_LOOKS[i].bar}px"
           ></span>
         </ToggleGroup.Item>
       {/each}

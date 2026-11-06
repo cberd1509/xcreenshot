@@ -761,8 +761,8 @@ describe('Overlay', () => {
       fireEvent.pointerMove(overlay(), point({ x: 20, y: 30 }))
       expect(screen.getByTestId('magnifier')).toHaveTextContent('40, 60 · #FF8000')
       const [down, across] = screen.getAllByTestId('guide')
-      expect(down.style).toMatchObject({ left: '20px', width: '1px' })
-      expect(across.style).toMatchObject({ top: '30px', height: '1px' })
+      expect(down.style.left).toBe('20px')
+      expect(across.style.top).toBe('30px')
       // Neither once there is a selection.
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       expect(screen.queryByTestId('magnifier')).toBeNull()

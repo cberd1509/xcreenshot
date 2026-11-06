@@ -18,6 +18,7 @@
   import * as Tooltip from '$lib/components/ui/tooltip'
   import { isMac } from '$lib/settings.svelte'
   import type { Rect, Size } from '../geometry'
+  import { keyLabels } from '../keys'
   import ActionBar from './ActionBar.svelte'
   import { railPosition, toolbarPosition } from './placement'
   import Rail from './Rail.svelte'
@@ -75,8 +76,7 @@
     mac?: boolean
   } = $props()
 
-  const mod = $derived(mac ? '⌘' : 'Ctrl+')
-  const shift = $derived(mac ? '⇧' : 'Shift+')
+  const { mod, shift } = $derived(keyLabels(mac))
 
   let colorsOpen = $state(false)
   let moreOpen = $state(false)

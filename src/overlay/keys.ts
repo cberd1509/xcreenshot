@@ -10,3 +10,7 @@ export function shortcut(e: KeyboardEvent, key: string, shift = false): boolean 
   const pressed = latin ? e.key.toLowerCase() === key : e.code === `Key${key.toUpperCase()}`
   return mod && !e.altKey && e.shiftKey === shift && pressed
 }
+
+/** How a shortcut writes ⌘ (Ctrl+ off the Mac) and ⇧ (Shift+). */
+export const keyLabels = (mac = isMac) =>
+  mac ? { mod: '⌘', shift: '⇧' } : { mod: 'Ctrl+', shift: 'Shift+' }

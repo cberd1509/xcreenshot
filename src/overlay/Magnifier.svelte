@@ -40,9 +40,15 @@
 </script>
 
 <div class="pointer-events-none flex flex-col items-center gap-1.5" data-testid="magnifier">
-  <div class="loupe">
+  <div class="loupe" style:width="{SIDE}px" style:height="{SIDE}px">
     <canvas bind:this={loupe} width={SIDE} height={SIDE} class="block"></canvas>
-    <div class="middle"></div>
+    <div
+      class="middle"
+      style:left="{SIDE / 2 - ZOOM / 2}px"
+      style:top="{SIDE / 2 - ZOOM / 2}px"
+      style:width="{ZOOM}px"
+      style:height="{ZOOM}px"
+    ></div>
   </div>
   <div
     class="rounded-md border border-zinc-800 bg-zinc-900 px-2 py-[3px] font-mono text-[11px] text-zinc-200 tabular-nums"
@@ -54,8 +60,6 @@
 <style>
   .loupe {
     position: relative;
-    width: 120px;
-    height: 120px;
     overflow: hidden;
     border: 2px solid white;
     border-radius: 50%;
@@ -66,10 +70,6 @@
   /* The pixel under the cursor, outlined in the selection color. */
   .middle {
     position: absolute;
-    left: 54px;
-    top: 54px;
-    width: 12px;
-    height: 12px;
     box-sizing: border-box;
     border: 2px solid var(--selection);
   }

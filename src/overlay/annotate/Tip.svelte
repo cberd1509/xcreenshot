@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
   import * as Tooltip from '$lib/components/ui/tooltip'
+  import { KEY } from '../panel'
 
   /** A tooltip on the overlay's bars: a white pill with the label and, if any, its key. */
   let {
@@ -29,13 +30,11 @@
     {side}
     {sideOffset}
     arrowClasses="hidden"
-    class="h-7 gap-2 rounded-md bg-zinc-50 px-2.5 py-0 text-xs font-medium text-zinc-950 shadow-[0_4px_12px_rgb(0_0_0/0.3)] has-data-[slot=kbd]:pr-2.5"
+    class="h-7 gap-2 rounded-md bg-zinc-50 px-2.5 py-0 text-xs font-medium text-zinc-950 shadow-[0_4px_12px_rgb(0_0_0/0.3)]"
   >
     {label}
     {#if keys}
-      <kbd class="rounded bg-zinc-200 px-[5px] font-sans text-[11px] font-normal text-zinc-600"
-        >{keys}</kbd
-      >
+      <kbd class={KEY}>{keys}</kbd>
     {/if}
   </Tooltip.Content>
 </Tooltip.Root>

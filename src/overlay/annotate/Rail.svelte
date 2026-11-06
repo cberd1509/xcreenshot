@@ -1,9 +1,3 @@
-<script lang="ts" module>
-  /** A 36 px rail button: grey, white on hover, and zinc-700 while on. */
-  export const BUTTON =
-    'flex size-9 items-center justify-center rounded-lg text-zinc-400 hover:bg-zinc-800 hover:text-zinc-50 disabled:pointer-events-none disabled:text-zinc-600 data-[state=on]:bg-zinc-700 data-[state=on]:text-zinc-50 [&_svg]:size-[18px]'
-</script>
-
 <script lang="ts">
   import ArrowIcon from '@lucide/svelte/icons/arrow-up-right'
   import BlurIcon from '@lucide/svelte/icons/eye-off'
@@ -19,7 +13,7 @@
   import UndoIcon from '@lucide/svelte/icons/undo-2'
   import { ToggleGroup } from 'bits-ui'
   import type { Component } from 'svelte'
-  import { PANEL } from '../panel'
+  import { BUTTON, DIVIDER, PANEL } from '../panel'
   import ColorMenu from './ColorMenu.svelte'
   import { READY, SELECT_KEY, TOOLS, type Style, type Tool } from './shapes'
   import type { ShownTextOptions, TextOptions } from './text'
@@ -134,10 +128,10 @@
   </ToggleGroup.Root>
 
   {#if text}
-    <TextOptionsBar options={text} onchange={ontext} button={BUTTON} />
+    <TextOptionsBar options={text} onchange={ontext} />
   {/if}
 
-  <div class="mx-1 my-1 h-px bg-zinc-800"></div>
+  <div class={DIVIDER}></div>
 
   <ColorMenu bind:style bind:open={colorsOpen} {keepFocus} />
   {@render action('Undo', `${mod}Z`, UndoIcon, onundo, !canUndo)}

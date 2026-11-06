@@ -3,7 +3,7 @@
   import { emit, listen } from '@tauri-apps/api/event'
   import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
   import { onMount } from 'svelte'
-  import { isMac, setCaptureOption, settings } from '$lib/settings.svelte'
+  import { setCaptureOption, settings } from '$lib/settings.svelte'
   import {
     CURSORS,
     badgePosition,
@@ -26,8 +26,8 @@
   } from './geometry'
   import Annotator from './annotate/Annotator.svelte'
   import { outputRequest } from './annotate/output'
-  import { shortcut } from './keys'
-  import { PANEL } from './panel'
+  import { keyLabels, shortcut } from './keys'
+  import { TOAST } from './panel'
   import Magnifier from './Magnifier.svelte'
   import Selection from './Selection.svelte'
   import SizeBadge from './SizeBadge.svelte'
@@ -134,13 +134,12 @@
   const loupeShown = $derived(
     loupeOn && onDisplay && (drag ? drag.kind !== 'move' : !selection) && frame.width > 0,
   )
-  const mod = $derived(isMac ? '⌘' : 'Ctrl+')
   /** The keys the hint at the bottom shows, for each state. */
   const hints = $derived(
     selection
       ? [
           ['Enter', 'copy'],
-          [`${mod}S`, 'save'],
+          [`${keyLabels().mod}S`, 'save'],
           ['Space', 'move'],
           ['Esc', 'cancel'],
         ]
@@ -469,20 +468,8 @@
   {:else}
     <div class="dim"></div>
     {#if onDisplay}
-      <div
-        class="guide"
-        style:left="{pointer.x}px"
-        style:width="1px"
-        style:top="0"
-        data-testid="guide"
-      ></div>
-      <div
-        class="guide"
-        style:top="{pointer.y}px"
-        style:height="1px"
-        style:left="0"
-        data-testid="guide"
-      ></div>
+      <div class="guide down" style:left="{pointer.x}px" data-testid="guide"></div>
+      <div class="guide across" style:top="{pointer.y}px" data-testid="guide"></div>
     {/if}
   {/if}
   {#if loupeShown}
@@ -498,7 +485,7 @@
     </div>
   {/if}
   {#if notice}
-    <div class="message {PANEL}" role="alert">{notice}</div>
+    <div class={TOAST} role="alert">{notice}</div>
   {/if}
   {#if frame.width > 0}
     <div class="hint" data-testid="hint">
@@ -552,22 +539,28 @@
     position: fixed;
     pointer-events: none;
     background: rgb(255 255 255 / 0.35);
-    width: 100%;
+  }
+
+  .down {
+    top: 0;
+    width: 1px;
     height: 100%;
   }
 
-  .hint,
-  .message {
+  .across {
+    left: 0;
+    width: 100%;
+    height: 1px;
+  }
+
+  /* The keys for the current state, at the bottom. */
+  .hint {
     position: fixed;
     left: 50%;
     transform: translateX(-50%);
     pointer-events: none;
     font-size: 12px;
     white-space: nowrap;
-  }
-
-  /* The keys for the current state, at the bottom. */
-  .hint {
     bottom: 28px;
     display: flex;
     gap: 16px;
@@ -581,12 +574,6 @@
   .hint b {
     color: #e4e4e7;
     font-weight: 600;
-  }
-
-  /* A short error, above the hint. */
-  .message {
-    bottom: 72px;
-    padding: 8px 14px;
   }
 
   .floating {
