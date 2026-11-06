@@ -6,6 +6,8 @@ import type { Rect } from '../geometry'
 import { fakeContext } from '../../test/canvas'
 import { isMac } from '$lib/settings.svelte'
 import Annotator from './Annotator.svelte'
+import { remember } from './memory'
+import { OUTPUT_HEADER, outputRequest } from './output'
 import type * as board from './board'
 
 // Konva loads as usual, unless a test makes the next loads fail.
@@ -31,7 +33,7 @@ const sel: Rect = { x: 100, y: 100, width: 400, height: 300 }
 type Api = {
   key: (e: KeyboardEvent) => boolean
   escape: () => boolean
-  reset: () => void
+  reset: (frame?: boolean) => void
   exportAnnotations: (
     crop: Rect,
     scale: { x: number; y: number },
@@ -345,7 +347,6 @@ describe('Annotator', () => {
     expect(api.key(press('c', mod))).toBe(false)
     // Ctrl on macOS, or ⌘ elsewhere, is not undo.
     expect(api.key(press('z', isMac ? { ctrlKey: true } : { metaKey: true }))).toBe(false)
-    expect(api.key(press('p'))).toBe(false)
     expect(api.key(press('x'))).toBe(false)
     expect(api.key(press('ArrowLeft'))).toBe(false)
     input.remove()
@@ -368,9 +369,176 @@ describe('Annotator', () => {
     api.reset()
     expect(api.annotated()).toBe(false)
     await waitFor(() => expect(kinds()).toEqual([]))
-    // The tool went too.
+    // The last tool stays for the next capture.
     await drag(150, 150, 250, 250)
-    expect(kinds()).toEqual([])
+    expect(kinds()).toEqual(['Rect'])
+  })
+
+  it('remembers the last tool, color and size for the next time', async () => {
+    const user = userEvent.setup()
+    const first = await setup()
+    first.api.key(press('e'))
+    await user.click(screen.getByRole('button', { name: 'Color and size' }))
+    await user.click(await screen.findByLabelText('Thick'))
+    // Dropping the tool keeps the last one used.
+    first.api.escape()
+    first.api.escape()
+    await waitFor(() =>
+      expect(screen.getByLabelText('Ellipse')).toHaveAttribute('data-state', 'off'),
+    )
+    first.api.reset()
+    await waitFor(() =>
+      expect(screen.getByLabelText('Ellipse')).toHaveAttribute('data-state', 'on'),
+    )
+    first.view.unmount()
+
+    stages.length = 0
+    const second = await setup()
+    expect(screen.getByLabelText('Ellipse')).toHaveAttribute('data-state', 'on')
+    // Without a selection, the remembered tool does not keep Esc from closing the overlay.
+    await second.view.rerender(props({ selection: null }))
+    expect(second.api.escape()).toBe(false)
+    await second.view.rerender(props({ selection: sel }))
+    await drag(150, 150, 250, 200)
+    expect(nodes()[0]).toMatchObject({ className: 'Ellipse' })
+    expect(nodes()[0].attrs).toMatchObject({ strokeWidth: 8, radiusX: 50, radiusY: 25 })
+  })
+
+  it('takes up what another overlay window remembered on the next capture', async () => {
+    const { api } = await setup()
+    remember({ tool: 'line', style: { color: '#007AFF', size: 2 } })
+    api.reset(true)
+    await waitFor(() => expect(screen.getByLabelText('Line')).toHaveAttribute('data-state', 'on'))
+    await drag(150, 150, 250, 150)
+    expect(nodes()[0].attrs).toMatchObject({ stroke: '#007AFF', strokeWidth: 2 })
+  })
+
+  it('restyles the selected shape, one undo step each; a blur keeps none', async () => {
+    const user = userEvent.setup()
+    const { api } = await setup()
+    api.key(press('e'))
+    await drag(150, 150, 250, 200)
+    api.key(press('b'))
+    await drag(300, 300, 350, 350)
+    const [ellipse, blur] = [nodes()[1], nodes()[0]]
+    ellipse.fire('pointerdown')
+    await user.click(screen.getByRole('button', { name: 'Color and size' }))
+    await user.click(await screen.findByLabelText('Color #007AFF'))
+    await waitFor(() => expect(ellipse.attrs.stroke).toBe('#007AFF'))
+    await user.click(screen.getByLabelText('Thick'))
+    await waitFor(() => expect(ellipse.attrs.strokeWidth).toBe(8))
+    // The toolbar shows the shape's style, not the tool's.
+    expect(screen.getByTestId('current-color').style.background).toBe('rgb(0, 122, 255)')
+    api.escape()
+    api.escape()
+    await waitFor(() =>
+      expect(screen.getByTestId('current-color').style.background).toBe('rgb(255, 59, 48)'),
+    )
+    api.key(press('z', mod))
+    await waitFor(() => expect(ellipse.attrs.strokeWidth).toBe(4))
+    expect(ellipse.attrs.stroke).toBe('#007AFF')
+    api.key(press('z', mod))
+    await waitFor(() => expect(ellipse.attrs.stroke).toBe('#FF3B30'))
+    // A selected blur has no color: the tool takes it, and the blur is left alone.
+    blur.fire('pointerdown')
+    await user.click(screen.getByRole('button', { name: 'Color and size' }))
+    await user.click(await screen.findByLabelText('Color #34C759'))
+    await waitFor(() =>
+      expect(screen.getByTestId('current-color').style.background).toBe('rgb(52, 199, 89)'),
+    )
+    // No undo step: the next undo takes the blur itself away.
+    api.escape()
+    api.key(press('z', mod))
+    await waitFor(() => expect(kinds()).toEqual(['Ellipse']))
+  })
+
+  it('draws a freehand pen stroke through the points it passes', async () => {
+    const { api } = await setup()
+    api.key(press('p'))
+    await fireEvent.pointerDown(element(), at(150, 150))
+    await fireEvent.pointerMove(element(), at(160, 150))
+    const line = draft()
+    expect(line).toMatchObject({ className: 'Line' })
+    expect(line.attrs.points).toEqual([0, 0, 10, 0])
+    // A move within a pixel or so adds nothing, and does not redraw.
+    const draws = (top() as FakeNode & { draws: number }).draws
+    await fireEvent.pointerMove(element(), at(161, 150))
+    expect((top() as FakeNode & { draws: number }).draws).toBe(draws)
+    await fireEvent.pointerMove(element(), at(170, 170))
+    // Past the selection, the stroke stays on its edge.
+    await fireEvent.pointerUp(element(), at(170, 900))
+    expect(kinds()).toEqual(['Line'])
+    const points = nodes()[0].attrs.points as number[]
+    expect(points.slice(0, 2)).toEqual([0, 0])
+    expect(points.slice(-2)).toEqual([20, 250])
+    // Smoothed: more points than the four it went through.
+    expect(points.length).toBeGreaterThan(8)
+  })
+
+  it('draws a wide, see-through highlighter with flat ends', async () => {
+    const { api } = await setup()
+    api.key(press('h'))
+    await drag(150, 150, 250, 150)
+    expect(nodes()[0].attrs).toMatchObject({ lineCap: 'butt', opacity: expect.any(Number) })
+    expect(nodes()[0].attrs.strokeWidth).toBeGreaterThan(8)
+  })
+
+  it('snaps or unsnaps the shape being drawn when Shift alone changes', async () => {
+    const { api } = await setup()
+    api.key(press('l'))
+    await fireEvent.pointerDown(element(), at(150, 150))
+    await fireEvent.pointerMove(element(), at(250, 155))
+    expect(draft().attrs.points).toEqual([0, 0, 100, 5])
+    await fireEvent.keyDown(window, { key: 'Shift', shiftKey: true })
+    expect(draft().attrs.points).toEqual([0, 0, expect.closeTo(100.12, 1), 0])
+    // Other keys, and Shift with no drag, change nothing.
+    await fireEvent.keyDown(window, { key: 'a' })
+    await fireEvent.keyUp(window, { key: 'Shift' })
+    expect(draft().attrs.points).toEqual([0, 0, 100, 5])
+    await fireEvent.pointerUp(element(), at(250, 155))
+    await fireEvent.keyUp(window, { key: 'Shift' })
+    expect(nodes()[0].attrs.points).toEqual([0, 0, 100, 5])
+  })
+
+  it('snaps lines to 15° and squares boxes while Shift is down', async () => {
+    const { api } = await setup()
+    api.key(press('l'))
+    await fireEvent.pointerDown(element(), at(150, 150))
+    await fireEvent.pointerMove(element(), { ...at(250, 155), shiftKey: true })
+    await fireEvent.pointerUp(element(), { ...at(250, 155), shiftKey: true })
+    expect(nodes()[0].attrs.points).toEqual([0, 0, expect.closeTo(100.12, 1), 0])
+    api.key(press('r'))
+    await fireEvent.pointerDown(element(), at(150, 150))
+    await fireEvent.pointerUp(element(), { ...at(250, 180), shiftKey: true })
+    expect(nodes()[1].attrs).toMatchObject({ width: 100, height: 100 })
+  })
+
+  it('previews a blur as blocks of the frame, and exports it for Rust to pixelate', async () => {
+    fakeContext()
+    const source = document.createElement('canvas')
+    source.width = 2000
+    source.height = 1400
+    const view = render(Annotator, { props: { ...props({ selection: sel }), source } })
+    await waitFor(() => expect(stages).toHaveLength(1))
+    await toolbar()
+    const api = view.component as unknown as Api
+    api.key(press('b'))
+    await drag(150, 160, 250, 200)
+    const node = nodes()[0]
+    // 200 × 80 frame px in Rust's 16 px blocks.
+    expect(node.attrs.blocks).toHaveLength(12 * 5)
+    node.fire('pointerdown')
+    api.key(press('ArrowRight'))
+    await waitFor(() => expect(node.attrs.x).toBe(150.5))
+
+    const crop = { x: 200, y: 200, width: 800, height: 600 }
+    const out = await api.exportAnnotations(crop, scale)
+    // The blur in physical px of the crop: (150.5, 160) at 2x, less the crop's corner.
+    expect(out.blurs).toEqual([{ x: 101, y: 120, width: 200, height: 80 }])
+    const { headers } = outputRequest(9, crop, out)
+    expect(JSON.parse(headers[OUTPUT_HEADER])).toMatchObject({
+      blurs: [{ x: 101, y: 120, width: 200, height: 80 }],
+    })
   })
 
   it('keeps annotations while the selection is gone', async () => {

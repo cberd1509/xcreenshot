@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/svelte'
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { COLORS, DEFAULT_STYLE, type Style, type Tool } from './shapes'
@@ -88,8 +88,9 @@ describe('Toolbar', () => {
     expect(choice('Rectangle')).toHaveAttribute('data-state', 'on')
     expect(choice('Arrow')).toHaveAttribute('data-state', 'off')
     expect(choice('Arrow')).toBeEnabled()
-    expect(choice('Pen')).toBeDisabled()
-    expect(choice('Blur to hide info')).toBeDisabled()
+    expect(choice('Pen')).toBeEnabled()
+    expect(choice('Blur to hide info')).toBeEnabled()
+    expect(choice('Text')).toBeEnabled()
   })
 
   it('shows every tool as unavailable when drawing could not load', () => {
@@ -141,6 +142,14 @@ describe('Toolbar', () => {
     await user.click(choice(`Color ${COLORS[4]}`))
     expect(style()).toEqual({ color: COLORS[4], size: 8 })
     expect(screen.getByTestId('current-color').style.background).not.toBe('')
+  })
+
+  it('picks a custom color', async () => {
+    const { style, user } = setup()
+    await user.click(button('Color and size'))
+    const custom = await screen.findByLabelText<HTMLInputElement>('Custom color')
+    await fireEvent.change(custom, { target: { value: '120' } })
+    expect(style()).toEqual({ ...DEFAULT_STYLE, color: '#00FF00' })
   })
 
   it('copies and saves; Share waits for #19', async () => {

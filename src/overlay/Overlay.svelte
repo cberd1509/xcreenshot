@@ -122,7 +122,7 @@
     selection = null
     drag = null
     editing = false
-    annotator?.reset()
+    annotator?.reset(true)
   }
 
   /** Gives up on `session` (never a newer one); Rust closes it. */
@@ -374,6 +374,7 @@
     {selection}
     {display}
     {scale}
+    source={canvas}
     options={{ rememberRegion: settings.rememberRegion, magnifier: settings.magnifier }}
     actions={{
       copy: () => physical && void finish('overlay_copy', physical),

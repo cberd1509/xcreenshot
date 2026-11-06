@@ -8,6 +8,8 @@ logic.
 | `shapes.ts`        | Shape model, tools and their shortcuts, drawing and transform math  |
 | `text.ts`          | Text sizes, font, padding and colors                                |
 | `history.ts`       | Undo and redo as snapshots of the shape list (last 200)             |
+| `memory.ts`        | The last tool, color and size, in localStorage                      |
+| `blocks.ts`        | The blur preview's blocks, as Rust paints them                      |
 | `placement.ts`     | Where the toolbar goes                                              |
 | `board.ts`         | The Konva stage, and `exportShapes`                                 |
 | `Annotator.svelte` | Pointer input, history, the toolbar, and the API the overlay calls |
@@ -22,13 +24,39 @@ relative to the display**, the same space as the selection. Shapes stay on the s
 the frozen frame when the selection moves or resizes; the selection only clips what is shown and
 exported. A shape dragged out of the selection is pulled back until 8 px of it shows.
 
-- `rect` and `blur`: `x`, `y`, `width`, `height`
-- `arrow`: `points: [x1, y1, x2, y2]`, head at the end
+- `rect`, `ellipse` (inside the box) and `blur`: `x`, `y`, `width`, `height`
+- `line` and `arrow`: `points: [x1, y1, x2, y2]`, an arrow's head at the end
+- `pen` and `highlighter`: `points: [x1, y1, x2, y2, …]`, freehand
 - `text`: `x`, `y`, `width`, `height` (its box, measured by Konva), `text`, `fontSize` and
   `background`. Font sizes are logical px (S 16, M 24, L 36), so they look the same on any
   display. Resizing scales the font; the box is measured again.
 
-The other tools (#14–#16) add kinds here.
+## Tools
+
+- **Pen** keeps a point once the pointer has moved 2 px (`extend`), and smooths the stroke with
+  two passes of Chaikin corner cutting (`smooth`). Smoothing never leaves the box of the points,
+  so the painted box stays exact.
+- **Highlighter** is a pen 4× as wide, at 40% opacity, with flat ends. It draws the same way on
+  screen and in the export (straight-alpha source-over), so text under it stays readable.
+- **Shift** (`constrain`): lines and arrows snap to 15° steps; rects, ellipses and blurs become
+  squares and circles. The end is pulled back along the drag to stay in the selection, so the
+  shape keeps its angle or stays square. Pressing or letting go of Shift mid-drag updates the
+  shape without a pointer move.
+- **Blur** shows the blocks Rust will paint: the same block size, from the corner of the part
+  of the blur inside the selection (`blocks.ts` mirrors `block_size` and `spans` in
+  `output/compose.rs`; their tests pin the same values). Each block is the average color of
+  the frame under it, read from a copy shrunk 16× per side (halved step by step, so every
+  pixel counts), made on the first blur after each new frame. The preview is only for the
+  screen: the export is Rust's pixelation (below). Blurs always sit under the other shapes,
+  because Rust pixelates the frame before it draws them.
+
+The color popover has preset colors, a hue slider for a custom color (in the page: the system color panel would open under the overlay) and three sizes. The
+last tool, color and size are kept in localStorage (`memory.ts`) and come back on the next
+capture (Text included). They are overlay state, not settings. With a shape selected, a new
+color or size restyles it as one undo step (text takes only the color; a blur has neither).
+
+Only the top layer redraws while drawing, and a pen stroke only when it gains a point. Building
+a smoothed stroke of 5000 points takes about 0.4 ms.
 
 ## Layers and input
 

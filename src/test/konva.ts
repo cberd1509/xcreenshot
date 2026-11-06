@@ -156,6 +156,9 @@ export const FakeKonva = {
   Arrow: shape('Arrow'),
   Group: shape('Group'),
   Text,
+  Line: shape('Line'),
+  Ellipse: shape('Ellipse'),
+  Shape: shape('Shape'),
 }
 
 /** Every stage made so far, newest last. */

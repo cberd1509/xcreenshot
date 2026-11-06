@@ -37,7 +37,7 @@
   import * as ToggleGroup from '$lib/components/ui/toggle-group'
   import * as Tooltip from '$lib/components/ui/tooltip'
   import { isMac } from '$lib/settings.svelte'
-  import { COLORS, READY, SIZES, TOOLS, type Style, type Tool } from './shapes'
+  import { COLORS, READY, SIZES, TOOLS, hueColor, type Style, type Tool } from './shapes'
   import type { ShownTextOptions, TextOptions } from './text'
   import TextOptionsBar from './TextOptions.svelte'
 
@@ -230,6 +230,15 @@
             </ToggleGroup.Item>
           {/each}
         </ToggleGroup.Root>
+        <!-- In the page, not the system color panel: that would open under the overlay. -->
+        <input
+          type="range"
+          min="0"
+          max="359"
+          aria-label="Custom color"
+          class="hue mt-2 block h-3 w-full cursor-pointer appearance-none rounded-full"
+          onchange={(e) => (style = { ...style, color: hueColor(Number(e.currentTarget.value)) })}
+        />
         <ToggleGroup.Root
           type="single"
           size="sm"
@@ -294,3 +303,9 @@
     </Button>
   </div>
 </Tooltip.Provider>
+
+<style>
+  .hue {
+    background: linear-gradient(to right, red, yellow, lime, cyan, blue, magenta, red);
+  }
+</style>

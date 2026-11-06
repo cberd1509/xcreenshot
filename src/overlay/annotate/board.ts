@@ -2,15 +2,19 @@
 // into shapes. Konva is loaded on first use, so opening the overlay never waits for it.
 
 import type Konva from 'konva'
-import type { Point, Rect, Scale, Size } from '../geometry'
+import { toPhysical, type Point, type Rect, type Scale, type Size } from '../geometry'
+import { BLOCK, blocks, type Block, type Shrunk } from './blocks'
 import {
+  HIGHLIGHTER_WIDTH,
   blurRects,
+  isPath,
   origin,
   paintedBounds,
   physicalIn,
   transform,
   type Shape,
   type TextShape,
+  type Transform,
 } from './shapes'
 import { radius, textColors, textFont } from './text'
 
@@ -33,43 +37,68 @@ export const loadKonva = once(() => import('konva').then((m) => m.default))
 
 /** Hit area around thin lines, in logical px. */
 const HIT = 12
+/** A blur before the frame's pixels are ready. */
 const BLUR_FILL = 'rgba(128, 128, 128, 0.5)'
+/** How much of what is under a highlighter shows through. */
+const HIGHLIGHTER_OPACITY = 0.4
 
-/** A shape's Konva attributes. Arrows are drawn from their start, so they move as one. */
+/**
+ * A shape's Konva attributes. Paths are drawn from their first point and boxes from their
+ * corner, so they move as one.
+ */
 export function attrs(shape: Shape): Konva.ShapeConfig {
   const { x, y } = origin(shape)
   const { color, size } = shape.style
-  if (shape.kind === 'arrow') {
-    const [x1, y1, x2, y2] = shape.points
-    const head = size * 3
-    return {
-      x,
-      y,
-      points: [0, 0, x2 - x1, y2 - y1],
-      stroke: color,
-      fill: color,
-      strokeWidth: size,
-      pointerLength: head,
-      pointerWidth: head,
-      hitStrokeWidth: HIT,
-      lineCap: 'round',
-      lineJoin: 'round',
-      scaleX: 1,
-      scaleY: 1,
-    }
-  }
-  if (shape.kind === 'text') return { x, y, scaleX: 1, scaleY: 1 }
-  const box = { x, y, width: shape.width, height: shape.height, scaleX: 1, scaleY: 1 }
-  if (shape.kind === 'blur') {
-    return { ...box, fill: BLUR_FILL, stroke: 'white', dash: [4, 4], strokeWidth: 1 }
-  }
-  return {
-    ...box,
+  const stroke = {
+    x,
+    y,
     stroke: color,
     strokeWidth: size,
     hitStrokeWidth: HIT,
-    strokeScaleEnabled: false,
+    scaleX: 1,
+    scaleY: 1,
   }
+  if (shape.kind === 'text') return { x, y, scaleX: 1, scaleY: 1 }
+  if (isPath(shape)) {
+    const [x0, y0] = shape.points
+    const points = shape.points.map((v, i) => v - (i % 2 ? y0 : x0))
+    const line = { ...stroke, points, lineCap: 'round', lineJoin: 'round' } as const
+    if (shape.kind === 'arrow') {
+      return { ...line, fill: color, pointerLength: size * 3, pointerWidth: size * 3 }
+    }
+    if (shape.kind === 'highlighter') {
+      // A marker: wide, flat ends, and what is under it shows through.
+      const width = size * HIGHLIGHTER_WIDTH
+      return {
+        ...line,
+        strokeWidth: width,
+        hitStrokeWidth: Math.max(width, HIT),
+        lineCap: 'butt',
+        opacity: HIGHLIGHTER_OPACITY,
+      }
+    }
+    return line
+  }
+  const box = { x, y, width: shape.width, height: shape.height, scaleX: 1, scaleY: 1 }
+  if (shape.kind === 'blur') {
+    // The outline shows where a blur is over a flat area. `blocks` come from the board.
+    const outline = { stroke: 'white', dash: [4, 4], strokeWidth: 1, strokeScaleEnabled: false }
+    return { ...box, ...outline, fill: BLUR_FILL, blocks: [], sceneFunc: drawBlur, hitFunc: hitBox }
+  }
+  if (shape.kind === 'ellipse') {
+    // Konva draws an ellipse around its center; the offset puts (x, y) at the box's corner.
+    const rx = shape.width / 2
+    const ry = shape.height / 2
+    return {
+      ...stroke,
+      radiusX: rx,
+      radiusY: ry,
+      offsetX: -rx,
+      offsetY: -ry,
+      strokeScaleEnabled: false,
+    }
+  }
+  return { ...stroke, ...box, strokeScaleEnabled: false }
 }
 
 /** The attributes of a text group's children: the background box and the text. */
@@ -90,27 +119,84 @@ export function textAttrs(shape: TextShape): { box: Konva.RectConfig; label: Kon
   }
 }
 
-function create(K: K, shape: Shape): Node {
-  if (shape.kind === 'text') {
-    const { box, label } = textAttrs(shape)
-    const group = new K.Group(attrs(shape))
-    group.add(new K.Rect(box))
-    group.add(new K.Text(label))
-    return group
+function create(K: K, shape: Shape, a = attrs(shape)): Node {
+  switch (shape.kind) {
+    case 'text': {
+      const { box, label } = textAttrs(shape)
+      const group = new K.Group(a)
+      group.add(new K.Rect(box))
+      group.add(new K.Text(label))
+      return group
+    }
+    case 'arrow':
+      return new K.Arrow(a as Konva.ArrowConfig)
+    case 'line':
+    case 'pen':
+    case 'highlighter':
+      return new K.Line(a as Konva.LineConfig)
+    case 'ellipse':
+      return new K.Ellipse(a as Konva.EllipseConfig)
+    case 'blur':
+      return new K.Shape(a)
+    default:
+      return new K.Rect(a)
   }
-  return shape.kind === 'arrow'
-    ? new K.Arrow(attrs(shape) as Konva.ArrowConfig)
-    : new K.Rect(attrs(shape))
 }
 
-/** Sets a node's attributes to match its shape. */
-function update(node: Node, shape: Shape) {
-  node.setAttrs(attrs(shape))
-  if (shape.kind !== 'text') return
-  const { box, label } = textAttrs(shape)
-  const [background, text] = (node as Konva.Group).getChildren()
-  background.setAttrs(box)
-  text.setAttrs(label)
+/** The box, filled and outlined: a blur's outline, and all of it for hit tests. */
+function hitBox(context: Konva.Context, shape: Konva.Shape) {
+  context.beginPath()
+  context.rect(0, 0, shape.width(), shape.height())
+  context.closePath()
+  context.fillStrokeShape(shape)
+}
+
+/** A blur: its blocks (`blocks`, in the node's own px), then its outline. */
+function drawBlur(context: Konva.Context, shape: Konva.Shape) {
+  for (const b of shape.getAttr('blocks') as Block[]) {
+    context.setAttr('fillStyle', b.color)
+    context.fillRect(b.x, b.y, b.width, b.height)
+  }
+  hitBox(context, shape)
+}
+
+/**
+ * The frame shrunk by `block` on each side (the smallest blur block), for the blur preview.
+ * Halved step by step, so every frame pixel counts. `null` without a frame or a 2D context.
+ */
+export function shrink(source: HTMLCanvasElement, block = BLOCK): Shrunk | null {
+  const w = Math.ceil(source.width / block)
+  const h = Math.ceil(source.height / block)
+  let image = source
+  while (image.width > w || image.height > h) {
+    const next = document.createElement('canvas')
+    next.width = Math.max(w, Math.ceil(image.width / 2))
+    next.height = Math.max(h, Math.ceil(image.height / 2))
+    const context = next.getContext('2d')
+    if (!context) return null
+    context.drawImage(image, 0, 0, next.width, next.height)
+    image = next
+  }
+  if (image === source) return null
+  const { width, height } = image
+  const data = image.getContext('2d')!.getImageData(0, 0, width, height).data
+  return { data, width, height, factor: { x: source.width / width, y: source.height / height } }
+}
+
+/** Frame px `v` at `s` per logical px, in the px of a node at `at` scaled by `k`. */
+const local = (v: number, s: number, at: number, k: number) => (v / s - at) / k
+
+/** Blurs stack under the other shapes. */
+const layerOf = (s: Shape) => (s.kind === 'blur' ? 0 : 1)
+
+/** The shape as its node now shows it, moved or resized. */
+function moved({ node, shape }: { node: Node; shape: Shape }): Shape {
+  return transform(shape, {
+    x: node.x(),
+    y: node.y(),
+    scaleX: node.scaleX(),
+    scaleY: node.scaleY(),
+  })
 }
 
 const CORNERS = ['top-left', 'top-right', 'bottom-left', 'bottom-right']
@@ -129,7 +215,9 @@ export type BoardEvents = {
  * One stage per overlay window, covering the display while there is a selection (and nothing
  * otherwise). Shapes sit on a layer clipped to the selection; the shape being drawn and the
  * resize handles sit on a small top layer, unclipped, so handles at the edge stay reachable
- * and drawing redraws only that layer.
+ * and drawing redraws only that layer. Blurs show the frame under them in blocks, from
+ * `source` (the frozen frame's canvas), and always sit under the other shapes, as in the
+ * exported image.
  */
 export class Board {
   private readonly stage: Konva.Stage
@@ -142,11 +230,19 @@ export class Board {
   private textHandles = false
   /** Lays out text off the stage, to measure it. Reused for every keystroke. */
   private measurer: Konva.Text | null = null
+  private display: Size = { width: 0, height: 0 }
+  private selection: Rect | null = null
+  /**
+   * The shrunk frame for the blur preview, the frame's size, and its px per logical px. Made
+   * on first use.
+   */
+  private pixels: { shrunk: Shrunk; size: Size; scale: Scale } | null = null
 
   constructor(
     private readonly K: K,
     container: HTMLDivElement,
     private readonly events: BoardEvents,
+    private readonly source: () => HTMLCanvasElement | null = () => null,
   ) {
     this.stage = new K.Stage({ container, width: 0, height: 0 })
     this.shapes = new K.Layer()
@@ -166,8 +262,70 @@ export class Board {
 
   /** Covers `display` and clips the shapes to `selection`; with no selection, nothing. */
   place(selection: Rect | null, display: Size) {
+    this.display = display
     this.stage.size(selection ? display : { width: 0, height: 0 })
-    if (selection) this.shapes.clip(selection)
+    if (!selection) return
+    this.shapes.clip(selection)
+    // Blur blocks line up with the part of the blur in the selection, as in the export.
+    this.selection = selection
+    for (const { node, shape } of this.nodes.values()) {
+      if (shape.kind === 'blur') node.setAttrs(this.attrsFor(shape))
+    }
+    this.shapes.batchDraw()
+  }
+
+  /** The frame changed: blurs drawn from now on preview the new one. */
+  newFrame() {
+    this.pixels = null
+  }
+
+  /** The shrunk frame, made on first use; `null` while there is no frame. */
+  private frame() {
+    if (this.pixels || !this.display.width || !this.display.height) return this.pixels
+    const source = this.source()
+    const shrunk = source && shrink(source)
+    if (!shrunk) return null
+    const size = { width: source.width, height: source.height }
+    const scale = { x: size.width / this.display.width, y: size.height / this.display.height }
+    return (this.pixels = { shrunk, size, scale })
+  }
+
+  /**
+   * The blocks Rust will paint for the blur `r` (logical px), in the px of a node placed by
+   * `t`: in whole frame px, clipped to the selection like the export, from its corner.
+   */
+  private blocksFor(r: Rect, t: Transform): Block[] {
+    const frame = this.frame()
+    if (!frame || !this.selection) return []
+    const { shrunk, size, scale } = frame
+    const crop = toPhysical(this.selection, scale, size)
+    const p = physicalIn(r, crop, scale)
+    if (!p) return []
+    return blocks({ ...p, x: p.x + crop.x, y: p.y + crop.y }, shrunk).map((b) => ({
+      color: b.color,
+      x: local(b.x, scale.x, t.x, t.scaleX),
+      y: local(b.y, scale.y, t.y, t.scaleY),
+      width: b.width / scale.x / t.scaleX,
+      height: b.height / scale.y / t.scaleY,
+    }))
+  }
+
+  /** Like `attrs`, with a blur's blocks: those of `shape`, drawn by a node placed by `t`. */
+  private attrsFor(shape: Shape, t?: Transform): Konva.ShapeConfig {
+    const a = attrs(shape)
+    if (shape.kind !== 'blur') return a
+    const shown = this.blocksFor(shape, t ?? { x: shape.x, y: shape.y, scaleX: 1, scaleY: 1 })
+    // Without blocks yet, the grey fill shows; with them, the fill is clear but still hit.
+    return { ...a, blocks: shown, fill: shown.length ? 'transparent' : a.fill }
+  }
+
+  /** Keeps a blur showing the blocks under it while it is dragged or resized. */
+  private follow(id: string) {
+    const entry = this.nodes.get(id)
+    if (!entry || entry.shape.kind !== 'blur') return
+    const { node } = entry
+    const t = { x: node.x(), y: node.y(), scaleX: node.scaleX(), scaleY: node.scaleY() }
+    node.setAttrs({ blocks: this.attrsFor(moved(entry), t).blocks })
   }
 
   /** Makes the board show `shapes`, with handles on the selected one. */
@@ -177,16 +335,17 @@ export class Board {
       seen.add(shape.id)
       const entry = this.nodes.get(shape.id)
       if (entry) {
-        if (entry.shape !== shape) update(entry.node, shape)
+        if (entry.shape !== shape) this.update(entry.node, shape)
         entry.shape = shape
         continue
       }
-      const node = create(this.K, shape)
+      const node = create(this.K, shape, this.attrsFor(shape))
       node.draggable(true)
       // Konva's `on` overloads differ between Shape and Group; Node's are shared.
       const events: Konva.Node = node
       events.on('pointerdown', () => this.events.onselect(shape.id))
       events.on('dragend transformend', () => this.changed(shape.id))
+      if (shape.kind === 'blur') events.on('dragmove transform', () => this.follow(shape.id))
       if (shape.kind === 'text') events.on('dblclick dbltap', () => this.events.onedit(shape.id))
       this.shapes.add(node)
       this.nodes.set(shape.id, { node, shape })
@@ -196,8 +355,11 @@ export class Board {
       node.destroy()
       this.nodes.delete(id)
     }
-    // Stacked in model order, so undo and redo restore what was on top.
-    for (const shape of shapes) this.nodes.get(shape.id)!.node.moveToTop()
+    // Stacked in model order, so undo and redo restore what was on top. Blurs go under the
+    // rest: Rust pixelates the frame before it draws the other shapes.
+    for (const shape of shapes.toSorted((a, b) => layerOf(a) - layerOf(b))) {
+      this.nodes.get(shape.id)!.node.moveToTop()
+    }
     const entry = selected ? this.nodes.get(selected) : undefined
     // Text resizes from its corners and keeps its proportions: only the font size changes.
     const text = entry?.shape.kind === 'text'
@@ -221,14 +383,24 @@ export class Board {
       this.draft.node.destroy()
       this.draft = null
     }
-    if (shape && this.draft) update(this.draft.node, shape)
+    if (shape && this.draft) this.update(this.draft.node, shape)
     else if (shape) {
-      const node = create(this.K, shape)
+      const node = create(this.K, shape, this.attrsFor(shape))
       node.listening(false)
       this.top.add(node)
       this.draft = { node, kind: shape.kind }
     }
     this.top.batchDraw()
+  }
+
+  /** Sets a node's attributes to match its shape. */
+  private update(node: Node, shape: Shape) {
+    node.setAttrs(this.attrsFor(shape))
+    if (shape.kind !== 'text') return
+    const { box, label } = textAttrs(shape)
+    const [background, text] = (node as Konva.Group).getChildren()
+    background.setAttrs(box)
+    text.setAttrs(label)
   }
 
   /** The box `text` takes at `fontSize`, padding included, as Konva lays it out. */
@@ -247,12 +419,7 @@ export class Board {
     const entry = this.nodes.get(id)
     if (!entry) return
     const { node, shape } = entry
-    let next = transform(shape, {
-      x: node.x(),
-      y: node.y(),
-      scaleX: node.scaleX(),
-      scaleY: node.scaleY(),
-    })
+    let next = moved(entry)
     // Resized text is measured again at its new font size.
     // A flipped resize keeps the node's origin, now the box's far corner, in place.
     if (next.kind === 'text' && shape.kind === 'text' && next.fontSize !== shape.fontSize) {
@@ -262,7 +429,7 @@ export class Board {
       next = { ...next, x, y, ...m }
     }
     // Back to the model: the change comes back through `render` once it is kept.
-    node.setAttrs(attrs(shape))
+    node.setAttrs(this.attrsFor(shape))
     this.events.onchange(next)
   }
 
