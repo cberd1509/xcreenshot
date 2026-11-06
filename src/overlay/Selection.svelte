@@ -1,8 +1,12 @@
 <script lang="ts">
-  import { CURSORS, HANDLES, type Rect } from './geometry'
+  import { CURSORS, HANDLES, type Handle, type Rect } from './geometry'
 
   /** The selection in logical px. Handles carry `data-handle`; the overlay handles the drag. */
   let { rect }: { rect: Rect } = $props()
+
+  /** A handle's offset along one axis: at the start edge, the end edge or the middle. */
+  const offset = (h: Handle, start: string, end: string) =>
+    h.includes(start) ? '0' : h.includes(end) ? '100%' : '50%'
 </script>
 
 <div
@@ -14,7 +18,13 @@
   style:height="{rect.height}px"
 >
   {#each HANDLES as handle (handle)}
-    <div class="handle {handle}" data-handle={handle} style:cursor={CURSORS[handle]}></div>
+    <div
+      class="handle"
+      data-handle={handle}
+      style:left={offset(handle, 'w', 'e')}
+      style:top={offset(handle, 'n', 's')}
+      style:cursor={CURSORS[handle]}
+    ></div>
   {/each}
 </div>
 
@@ -35,34 +45,5 @@
     background: white;
     border: 1px solid rgb(0 0 0 / 0.5);
     border-radius: 2px;
-  }
-
-  .nw,
-  .n,
-  .ne {
-    top: 0;
-  }
-  .sw,
-  .s,
-  .se {
-    top: 100%;
-  }
-  .e,
-  .w {
-    top: 50%;
-  }
-  .nw,
-  .w,
-  .sw {
-    left: 0;
-  }
-  .ne,
-  .e,
-  .se {
-    left: 100%;
-  }
-  .n,
-  .s {
-    left: 50%;
   }
 </style>

@@ -5,7 +5,7 @@ import {
   badgePosition,
   contains,
   fromPoints,
-  hexAt,
+  hex,
   isEmpty,
   lockedSize,
   loupePosition,
@@ -13,7 +13,6 @@ import {
   nudge,
   resize,
   resizeTo,
-  toLogical,
   toPhysical,
   type Rect,
 } from './geometry'
@@ -69,14 +68,14 @@ describe('move and nudge', () => {
     expect(move(rect(0, 0, 200, 200), 0, 0, display)).toEqual(rect(0, 0, 100, 80))
   })
 
-  it('nudges with the arrow keys only', () => {
+  it('nudges by physical pixels with the arrow keys only', () => {
     const r = rect(10, 10, 20, 20)
-    expect(nudge(r, 'ArrowLeft', 1, display)).toEqual(rect(9, 10, 20, 20))
-    expect(nudge(r, 'ArrowRight', 10, display)).toEqual(rect(20, 10, 20, 20))
-    expect(nudge(r, 'ArrowUp', 1, display)).toEqual(rect(10, 9, 20, 20))
-    expect(nudge(r, 'ArrowDown', 10, display)).toEqual(rect(10, 20, 20, 20))
-    expect(nudge(rect(0, 0, 5, 5), 'ArrowLeft', 10, display)).toEqual(rect(0, 0, 5, 5))
-    expect(nudge(r, 'a', 1, display)).toBeNull()
+    expect(nudge(r, 'ArrowLeft', 1, retina, display)).toEqual(rect(9.5, 10, 20, 20))
+    expect(nudge(r, 'ArrowRight', 10, retina, display)).toEqual(rect(15, 10, 20, 20))
+    expect(nudge(r, 'ArrowUp', 1, { x: 1, y: 1 }, display)).toEqual(rect(10, 9, 20, 20))
+    expect(nudge(r, 'ArrowDown', 10, retina, display)).toEqual(rect(10, 15, 20, 20))
+    expect(nudge(rect(0, 0, 5, 5), 'ArrowLeft', 10, retina, display)).toEqual(rect(0, 0, 5, 5))
+    expect(nudge(r, 'a', 1, retina, display)).toBeNull()
   })
 })
 
@@ -116,25 +115,34 @@ describe('resize', () => {
   })
 })
 
-describe('logical and physical', () => {
-  const frame = { width: 200, height: 160 }
+const frameAt = (s: number) => ({ width: Math.round(100 * s), height: Math.round(80 * s) })
+const at = (s: number) => ({ x: s, y: s })
 
-  it('scales to whole pixels', () => {
-    expect(toPhysical(rect(10, 20, 30, 40), retina, frame)).toEqual(rect(20, 40, 60, 80))
-    // Half points are whole pixels at 2x.
-    expect(toPhysical(rect(0.5, 0.5, 1, 1), retina, frame)).toEqual(rect(1, 1, 2, 2))
-    // 1.5x: edges round to the nearest pixel, like Rust's `to_pixels`.
-    expect(toPhysical(rect(1, 1, 2, 2), { x: 1.5, y: 1.5 }, frame)).toEqual(rect(2, 2, 3, 3))
+// Same cases as `maps_points_to_pixels_at_each_scale` and `clamps_to_the_display` in
+// src-tauri/src/capture/geometry.rs: a 100 x 80 point display, so both round the same way.
+describe('logical to physical (shared with Rust)', () => {
+  it('maps points to pixels at each scale', () => {
+    const cases: [number, Rect, Rect][] = [
+      [1, rect(10, 20, 30, 40), rect(10, 20, 30, 40)],
+      [2, rect(10, 20, 30, 40), rect(20, 40, 60, 80)],
+      [2, rect(0.5, 0.5, 1, 1), rect(1, 1, 2, 2)], // half points are whole pixels
+      [1.5, rect(10, 20, 30, 40), rect(15, 30, 45, 60)],
+      [1.5, rect(1, 1, 2, 2), rect(2, 2, 3, 3)], // 1.5 -> 2, 4.5 -> 5
+    ]
+    for (const [s, r, expected] of cases) {
+      expect({ s, r, p: toPhysical(r, at(s), frameAt(s)) }).toEqual({ s, r, p: expected })
+    }
   })
 
-  it('clamps to the frame', () => {
-    expect(toPhysical(rect(90, 70, 50, 50), retina, frame)).toEqual(rect(180, 140, 20, 20))
-  })
-
-  it('round-trips whole pixels', () => {
-    const p = rect(21, 41, 61, 81)
-    expect(toPhysical(toLogical(p, retina), retina, frame)).toEqual(p)
-    expect(toLogical(p, { x: 2, y: 1 })).toEqual(rect(10.5, 41, 30.5, 81))
+  it('clamps to the display', () => {
+    const cases: [Rect, Rect][] = [
+      [rect(-10, -10, 30, 30), rect(0, 0, 40, 40)],
+      [rect(90, 70, 50, 50), rect(180, 140, 20, 20)],
+      [rect(-1e9, -1e9, 2e9, 2e9), rect(0, 0, 200, 160)],
+    ]
+    for (const [r, expected] of cases) {
+      expect({ r, p: toPhysical(r, retina, frameAt(2)) }).toEqual({ r, p: expected })
+    }
   })
 })
 
@@ -169,28 +177,10 @@ describe('exact size', () => {
   })
 })
 
-describe('hexAt', () => {
-  const frame = { width: 2, height: 2 }
-  const pixels = new Uint8ClampedArray([
-    255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 1, 2, 171, 255,
-  ])
-
-  it('reads the pixel color', () => {
-    expect(hexAt(pixels, frame, 0, 0)).toBe('#FF0000')
-    expect(hexAt(pixels, frame, 1, 0)).toBe('#00FF00')
-    expect(hexAt(pixels, frame, 0, 1)).toBe('#0000FF')
-    expect(hexAt(pixels, frame, 1, 1)).toBe('#0102AB')
-  })
-
-  it('is null outside the frame', () => {
-    for (const [x, y] of [
-      [-1, 0],
-      [0, -1],
-      [2, 0],
-      [0, 2],
-    ]) {
-      expect(hexAt(pixels, frame, x, y)).toBeNull()
-    }
+describe('hex', () => {
+  it('formats the first pixel', () => {
+    expect(hex([255, 0, 0, 255])).toBe('#FF0000')
+    expect(hex(new Uint8ClampedArray([1, 2, 171, 0, 9, 9, 9, 9]))).toBe('#0102AB')
   })
 })
 

@@ -5,11 +5,20 @@
   import { Toggle } from '$lib/components/ui/toggle'
   import { lockedSize, type Size } from './geometry'
 
-  /** The selection size in physical px. Click to type an exact size. */
-  let { size, onresize }: { size: Size; onresize: (size: Size, keepRatio: boolean) => void } =
-    $props()
+  /**
+   * The selection size in physical px. Click to type an exact size. `editing` is bindable so
+   * Esc can cancel the edit.
+   */
+  let {
+    size,
+    onresize,
+    editing = $bindable(false),
+  }: {
+    size: Size
+    onresize: (size: Size, keepRatio: boolean) => void
+    editing?: boolean
+  } = $props()
 
-  let editing = $state(false)
   let width = $state(0)
   let height = $state(0)
   let lock = $state(false)
@@ -49,6 +58,7 @@
 <div
   class="rounded-md bg-popover/90 text-xs text-popover-foreground tabular-nums shadow-md"
   data-testid="size-badge"
+  data-size-badge
 >
   {#if editing}
     <form bind:this={form} class="flex items-center gap-1 p-1" onsubmit={apply} {onfocusout}>

@@ -2,7 +2,6 @@
 
 use super::{CaptureError, DisplayFrame};
 use image::RgbaImage;
-use image::math::Rect as PixelRect;
 
 /// A display's position and size in one coordinate space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -15,12 +14,22 @@ pub struct Bounds {
 
 /// A selection in logical points, relative to the display's top-left corner.
 /// Negative sizes (dragging up or left) are allowed.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {
     pub x: f64,
     pub y: f64,
     pub width: f64,
     pub height: f64,
+}
+
+/// A rect in a frame's native pixels, from its top-left corner. The overlay page sends the
+/// selection this way, so the crop is exactly the size its badge showed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+pub struct PixelRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
 /// Same rule as Tauri's `dpi::validate_scale_factor`; anything else falls back to 1.
@@ -110,10 +119,27 @@ fn to_pixels(frame: &DisplayFrame, rect: Rect) -> Result<PixelRect, CaptureError
 
 /// Cuts a logical selection out of a frame at native resolution.
 pub fn crop(frame: &DisplayFrame, rect: Rect) -> Result<RgbaImage, CaptureError> {
-    let p = to_pixels(frame, rect)?;
-    let stride = frame.image.width() as usize * 4;
+    crop_pixels(&frame.image, to_pixels(frame, rect)?)
+}
+
+/// Cuts a pixel rect out of an image, clamped to it. Empty after clamping is an error.
+pub fn crop_pixels(image: &RgbaImage, rect: PixelRect) -> Result<RgbaImage, CaptureError> {
+    let (w, h) = image.dimensions();
+    let (x0, y0) = (rect.x.min(w), rect.y.min(h));
+    let x1 = rect.x.saturating_add(rect.width).min(w);
+    let y1 = rect.y.saturating_add(rect.height).min(h);
+    if x1 <= x0 || y1 <= y0 {
+        return Err(CaptureError::EmptySelection);
+    }
+    let p = PixelRect {
+        x: x0,
+        y: y0,
+        width: x1 - x0,
+        height: y1 - y0,
+    };
+    let stride = w as usize * 4;
     let (left, row) = (p.x as usize * 4, p.width as usize * 4);
-    let src = frame.image.as_raw();
+    let src = image.as_raw();
     let mut out = vec![0; row * p.height as usize];
     for (y, dst) in (p.y as usize..).zip(out.chunks_exact_mut(row)) {
         let start = y * stride + left;
@@ -206,6 +232,7 @@ mod tests {
         }
     }
 
+    // Shared with `toPhysical` in src/overlay/geometry.test.ts: keep both in step.
     #[test]
     fn maps_points_to_pixels_at_each_scale() {
         let cases = [
@@ -267,6 +294,7 @@ mod tests {
         );
     }
 
+    // Shared with `toPhysical` in src/overlay/geometry.test.ts.
     #[test]
     fn clamps_to_the_display() {
         let f = scaled_frame(100, 80, 2.0);
@@ -308,5 +336,33 @@ mod tests {
         let img = crop(&f, rect(10.0, 5.0, 4.0, 3.0)).unwrap();
         let expected = RgbaImage::from_fn(8, 6, |x, y| Rgba([20 + x as u8, 10 + y as u8, 0, 255]));
         assert_eq!(img, expected);
+    }
+
+    #[test]
+    fn crops_a_pixel_rect_clamped_to_the_image() {
+        let img = scaled_frame(100, 80, 2.0).image; // 200 x 160 px
+        let at = |x, y, w, h| crop_pixels(&img, px(x, y, w, h)).map(|i| i.dimensions());
+        assert_eq!(at(20, 10, 8, 6), Ok((8, 6)));
+        assert_eq!(at(190, 150, 50, 50), Ok((10, 10)));
+        assert_eq!(at(0, 0, u32::MAX, u32::MAX), Ok((200, 160)));
+        let cut = crop_pixels(&img, px(20, 10, 2, 1)).unwrap();
+        assert_eq!(cut.as_raw(), &[20, 10, 0, 255, 21, 10, 0, 255]);
+        for empty in [
+            px(5, 5, 0, 5),
+            px(5, 5, 5, 0),
+            px(200, 0, 5, 5),
+            px(0, 160, 5, 5),
+        ] {
+            let r = crop_pixels(&img, empty);
+            assert_eq!(r, Err(CaptureError::EmptySelection), "{empty:?}");
+        }
+    }
+
+    #[test]
+    fn pixel_rect_comes_from_json() {
+        let r: PixelRect = serde_json::from_str(r#"{"x":1,"y":2,"width":3,"height":4}"#).unwrap();
+        assert_eq!(r, px(1, 2, 3, 4));
+        let negative = r#"{"x":-1,"y":0,"width":1,"height":1}"#;
+        assert!(serde_json::from_str::<PixelRect>(negative).is_err());
     }
 }

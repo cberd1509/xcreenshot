@@ -4,7 +4,7 @@ fn main() {
         "overlay_ready",
         "overlay_frame",
         "overlay_painted",
-        "overlay_selection",
+        "overlay_escaped",
         "overlay_confirm",
         "close_overlay",
     ];

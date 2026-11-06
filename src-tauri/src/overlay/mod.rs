@@ -13,8 +13,9 @@ pub(crate) mod window;
 
 pub use window::{Overlay, prewarm, start_capture};
 
-use crate::capture::{self, CaptureError, Display, DisplayFrame, Rect};
+use crate::capture::{Display, DisplayFrame};
 use image::RgbaImage;
+use std::sync::Arc;
 use std::time::Instant;
 
 const LABEL_PREFIX: &str = "overlay-";
@@ -71,12 +72,17 @@ pub fn display_at(displays: &[Display], x: f64, y: f64) -> Option<u32> {
         .map(|d| d.id)
 }
 
-/// What the overlay window needs to draw a frame; sent with `overlay:show`.
+/// What the overlay window needs to draw a frame; sent with `overlay:show`. The page maps its
+/// logical (CSS) px to the frame's pixels with `width / logical_width`, the same scale Rust
+/// uses, and sends the crop as a pixel rect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FrameInfo {
     pub session: u64,
     pub width: u32,
     pub height: u32,
+    pub logical_width: u32,
+    pub logical_height: u32,
 }
 
 /// The overlay's whole state. One capture at a time: the hotkey is ignored unless `Idle`.
@@ -100,25 +106,17 @@ pub struct Session {
     /// The display under the cursor, if it has a frame. It gets keyboard focus.
     focus: Option<u32>,
     painted: Vec<u32>,
-    /// The display with a selection. There is at most one across all displays.
-    selection: Option<u32>,
+    /// The last Esc forwarded to the pages that none of them has handled yet.
+    escape: Option<u64>,
 }
 
 /// One display's original frame, kept for the crop. Its window gets a copy, once.
 #[derive(Debug)]
 struct Slot {
+    display: u32,
     info: FrameInfo,
-    frame: DisplayFrame,
+    image: Arc<RgbaImage>,
     sent: bool,
-}
-
-/// What Esc does.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Escape {
-    /// Clear the selection on this display.
-    Clear(u32),
-    /// Nothing is selected: close the overlay.
-    Close,
 }
 
 /// What to do when a window reports it painted.
@@ -166,21 +164,24 @@ impl Phase {
         let focus = focus.filter(|&d| frames.iter().any(|f| f.id == d));
         let slots: Vec<Slot> = frames
             .into_iter()
-            .map(|frame| {
-                let (width, height) = frame.image.dimensions();
+            .map(|f| {
+                let (width, height) = f.image.dimensions();
                 let info = FrameInfo {
                     session,
                     width,
                     height,
+                    logical_width: f.logical.width,
+                    logical_height: f.logical.height,
                 };
                 Slot {
+                    display: f.id,
                     info,
-                    frame,
+                    image: Arc::new(f.image),
                     sent: false,
                 }
             })
             .collect();
-        let shows = slots.iter().map(|s| (s.frame.id, s.info)).collect();
+        let shows = slots.iter().map(|s| (s.display, s.info)).collect();
         *self = Phase::Open(Session {
             id: session,
             started,
@@ -188,7 +189,7 @@ impl Phase {
             slots,
             focus,
             painted: Vec::new(),
-            selection: None,
+            escape: None,
         });
         Some(shows)
     }
@@ -212,7 +213,7 @@ impl Phase {
 
     fn slot(&mut self, session: u64, display: u32) -> Option<&mut Slot> {
         let s = self.current(session)?;
-        s.slots.iter_mut().find(|slot| slot.frame.id == display)
+        s.slots.iter_mut().find(|slot| slot.display == display)
     }
 
     /// A display's frame info while its frame is not sent yet, for a window that loaded after
@@ -221,60 +222,52 @@ impl Phase {
         let Phase::Open(s) = self else { return None };
         s.slots
             .iter()
-            .find(|slot| slot.frame.id == display && !slot.sent)
+            .find(|slot| slot.display == display && !slot.sent)
             .map(|slot| slot.info)
     }
 
-    /// A copy of a display's frame as raw RGBA for its window, once. The original stays here
-    /// for [`Phase::crop`]. The copy takes about 1 ms for a 3600x2338 frame.
-    pub fn frame_copy(&mut self, session: u64, display: u32) -> Option<Vec<u8>> {
+    /// A display's frame for its window, once. The caller copies it outside the lock; the
+    /// original stays here for the crop.
+    pub fn frame_for_page(&mut self, session: u64, display: u32) -> Option<Arc<RgbaImage>> {
         let slot = self.slot(session, display)?;
         if slot.sent {
             return None;
         }
         slot.sent = true;
-        Some(slot.frame.image.as_raw().to_vec())
+        Some(Arc::clone(&slot.image))
     }
 
-    /// Cuts a logical selection out of a display's original frame, at native resolution.
-    /// `None` if the session or display is gone.
-    pub fn crop(
-        &mut self,
-        session: u64,
-        display: u32,
-        rect: Rect,
-    ) -> Option<Result<RgbaImage, CaptureError>> {
-        let slot = self.slot(session, display)?;
-        Some(capture::crop(&slot.frame, rect))
+    /// A display's original frame, to crop outside the lock.
+    pub fn image(&mut self, session: u64, display: u32) -> Option<Arc<RgbaImage>> {
+        self.slot(session, display)
+            .map(|slot| Arc::clone(&slot.image))
     }
 
-    /// A display gained or lost its selection. Returns the display whose selection to clear:
-    /// starting a selection on one display clears the one on another.
-    pub fn select(&mut self, session: u64, display: u32, active: bool) -> Option<u32> {
-        let s = self.current(session)?;
-        if active {
-            s.selection.replace(display).filter(|&d| d != display)
-        } else {
-            if s.selection == Some(display) {
-                s.selection = None;
-            }
-            None
+    /// Esc was pressed. Returns `true` if it goes to the pages (they clear a selection first),
+    /// `false` if nothing is open and the overlay should just close.
+    pub fn forward_escape(&mut self, token: u64) -> bool {
+        let Phase::Open(s) = self else { return false };
+        s.escape = Some(token);
+        true
+    }
+
+    /// A page handled the last Esc.
+    pub fn escape_handled(&mut self, session: u64) {
+        if let Some(s) = self.current(session) {
+            s.escape = None;
         }
     }
 
-    /// Esc clears the selection if there is one, else closes the overlay.
-    pub fn escape(&mut self) -> Escape {
-        match self {
-            Phase::Open(s) => s.selection.take().map_or(Escape::Close, Escape::Clear),
-            _ => Escape::Close,
-        }
+    /// Whether Esc `token` is still unhandled; if so, the pages are not responding.
+    pub fn escape_unhandled(&mut self, token: u64) -> bool {
+        let Phase::Open(s) = self else { return false };
+        s.escape.take_if(|t| *t == token).is_some()
     }
 
     /// A window drew its frame. `None` if the session is gone or it already painted.
     pub fn painted(&mut self, session: u64, display: u32) -> Option<Paint> {
-        self.slot(session, display)?;
         let s = self.current(session)?;
-        if s.painted.contains(&display) {
+        if !s.slots.iter().any(|slot| slot.display == display) || s.painted.contains(&display) {
             return None;
         }
         let first = s
@@ -299,7 +292,7 @@ impl Phase {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::capture::Bounds;
+    use crate::capture::{Bounds, PixelRect};
 
     /// A display frame of `width` x `height` pixels at 2x, placed at x = id * 1000 points.
     pub(crate) fn frame(id: u32, width: u32, height: u32) -> DisplayFrame {
@@ -323,6 +316,15 @@ pub(crate) mod tests {
             },
             scale_factor: 2.0,
             image,
+        }
+    }
+
+    pub(crate) fn px(x: u32, y: u32, width: u32, height: u32) -> PixelRect {
+        PixelRect {
+            x,
+            y,
+            width,
+            height,
         }
     }
 
@@ -413,77 +415,60 @@ pub(crate) mod tests {
             session: 4,
             width,
             height,
+            logical_width: width / 2,
+            logical_height: height / 2,
         };
         assert_eq!(shows, [(1, info(4, 2)), (2, info(6, 8))]);
         assert_eq!(p.pending_frame(2), Some(info(6, 8)));
         assert_eq!(p.pending_frame(3), None);
+        let json = serde_json::to_value(info(4, 2)).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "session": 4, "width": 4, "height": 2, "logicalWidth": 2, "logicalHeight": 1
+            })
+        );
     }
 
     #[test]
-    fn each_frame_is_copied_to_its_window_once() {
+    fn each_frame_goes_to_its_window_once_and_stays_for_the_crop() {
         let mut p = open(None);
-        assert_eq!(p.frame_copy(6, 1), None, "other session");
-        let bytes = p.frame_copy(7, 1).unwrap();
-        assert_eq!(bytes, frame(1, 4, 2).image.into_raw());
-        assert_eq!(p.frame_copy(7, 1), None);
+        assert_eq!(p.frame_for_page(6, 1), None, "other session");
+        let image = p.frame_for_page(7, 1).unwrap();
+        assert_eq!(*image, frame(1, 4, 2).image);
+        assert_eq!(p.frame_for_page(7, 1), None);
         assert_eq!(p.pending_frame(1), None);
-        assert_eq!(p.frame_copy(7, 9), None, "unknown display");
-        assert_eq!(Phase::Idle.frame_copy(7, 1), None);
-    }
-
-    fn rect(x: f64, y: f64, width: f64, height: f64) -> Rect {
-        Rect {
-            x,
-            y,
-            width,
-            height,
-        }
+        assert_eq!(p.frame_for_page(7, 9), None, "unknown display");
+        assert_eq!(Phase::Idle.frame_for_page(7, 1), None);
+        // The original is shared, not moved.
+        assert!(Arc::ptr_eq(&image, &p.image(7, 1).unwrap()));
+        assert_eq!(p.image(7, 9), None);
+        assert_eq!(p.image(6, 1), None);
     }
 
     #[test]
-    fn crops_the_original_after_the_copy_was_sent() {
+    fn esc_goes_to_the_pages_until_one_handles_it() {
         let mut p = open(None);
-        p.frame_copy(7, 2).unwrap();
-        // 4x2 px at 2x: logical (1, 0, 1, 1) is pixels x 2..4, y 0..2.
-        let image = p.crop(7, 2, rect(1.0, 0.0, 1.0, 1.0)).unwrap().unwrap();
-        let expected = RgbaImage::from_fn(2, 2, |x, y| image::Rgba([2 + x as u8, y as u8, 9, 255]));
-        assert_eq!(image, expected);
-        let empty = p.crop(7, 2, rect(1.0, 0.0, 0.0, 1.0)).unwrap();
-        assert_eq!(empty, Err(CaptureError::EmptySelection));
-        assert!(
-            p.crop(6, 2, rect(0.0, 0.0, 1.0, 1.0)).is_none(),
-            "other session"
-        );
-        assert!(
-            p.crop(7, 9, rect(0.0, 0.0, 1.0, 1.0)).is_none(),
-            "unknown display"
-        );
+        assert!(p.forward_escape(1));
+        p.escape_handled(6); // other session
+        p.escape_handled(7);
+        assert!(!p.escape_unhandled(1), "handled");
+
+        assert!(p.forward_escape(2));
+        assert!(p.forward_escape(3));
+        assert!(!p.escape_unhandled(2), "a newer Esc replaced it");
+        assert!(p.escape_unhandled(3));
+        assert!(!p.escape_unhandled(3), "reported once");
     }
 
     #[test]
-    fn one_selection_across_displays() {
-        let mut p = open(None);
-        assert_eq!(p.select(6, 1, true), None, "other session");
-        assert_eq!(p.select(7, 1, true), None);
-        assert_eq!(p.select(7, 1, true), None, "same display again");
-        assert_eq!(p.select(7, 2, true), Some(1), "display 1 is cleared");
-        assert_eq!(p.select(7, 1, false), None, "display 1 had none left");
-        assert_eq!(p.escape(), Escape::Clear(2));
-        assert_eq!(p.escape(), Escape::Close);
-    }
-
-    #[test]
-    fn esc_closes_without_a_selection() {
-        let mut p = open(None);
-        p.select(7, 1, true);
-        p.select(7, 1, false);
-        assert_eq!(p.escape(), Escape::Close);
-        assert_eq!(Phase::Idle.escape(), Escape::Close);
+    fn esc_closes_when_nothing_is_open() {
+        assert!(!Phase::Idle.forward_escape(1));
+        assert!(!Phase::Idle.escape_unhandled(1));
         let mut capturing = Phase::default();
         capturing.begin(1, Instant::now());
-        assert_eq!(capturing.escape(), Escape::Close);
+        assert!(!capturing.forward_escape(1));
     }
-
     #[test]
     fn first_paint_reports_the_timing_once() {
         let mut p = open(None);

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core'
+  import { emit, listen } from '@tauri-apps/api/event'
   import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
   import { onMount } from 'svelte'
   import { settings } from '$lib/settings.svelte'
@@ -25,7 +26,17 @@
   import SizeBadge from './SizeBadge.svelte'
 
   /** Sent with `overlay:show` (see `FrameInfo` in Rust). */
-  type FrameInfo = { session: number; width: number; height: number }
+  type FrameInfo = {
+    session: number
+    width: number
+    height: number
+    logicalWidth: number
+    logicalHeight: number
+  }
+
+  /** Broadcast to every overlay page, so only one display has a selection. */
+  const SELECTED = 'overlay:selected'
+  type Selected = { label: string; active: boolean }
 
   type Drag =
     | { kind: 'draw'; start: Point }
@@ -36,58 +47,68 @@
   let { magnifier }: { magnifier?: boolean } = $props()
   const loupeOn = $derived(magnifier ?? settings.magnifier)
 
+  const view = getCurrentWebviewWindow()
   let canvas: HTMLCanvasElement = $state()!
   // The latest session asked to draw, so a show event and the load check never draw twice
   // and an older fetch never paints over a newer one.
   let current = -1
-  // This display's frame: its size in physical px and its RGBA pixels (for the loupe color).
+  /** The drawn frame: its size in physical px and its display's size in logical px. */
   let frame = $state<Size>({ width: 0, height: 0 })
-  let pixels = $state.raw<Uint8ClampedArray | null>(null)
-  let innerWidth = $state(0)
-  let innerHeight = $state(0)
-  const display = $derived({ width: innerWidth, height: innerHeight })
-  const scale = $derived({ x: frame.width / innerWidth, y: frame.height / innerHeight })
+  let display = $state<Size>({ width: 0, height: 0 })
+  // Same scale as Rust: frame pixels per logical px.
+  const scale = $derived({ x: frame.width / display.width, y: frame.height / display.height })
 
   /** The selection in logical px, relative to this display. */
   let selection = $state<Rect | null>(null)
   let drag = $state<Drag | null>(null)
+  /** Another display's window that has the selection. */
+  let elsewhere: string | null = null
+  let editing = $state(false)
   let pointer = $state<Point>({ x: 0, y: 0 })
   let badge = $state<Size>({ width: 0, height: 0 })
-  const loupeSize = { width: 121, height: 145 }
+  let loupe = $state<Size>({ width: 0, height: 0 })
 
   const physical = $derived(selection && toPhysical(selection, scale, frame))
   const cursor = $derived(
     drag?.kind === 'move' ? CURSORS.move : drag?.kind === 'resize' ? CURSORS[drag.handle] : null,
   )
   const loupeAt = $derived({
-    x: Math.min(Math.floor(pointer.x * scale.x), frame.width - 1),
-    y: Math.min(Math.floor(pointer.y * scale.y), frame.height - 1),
+    x: Math.max(0, Math.min(Math.floor(pointer.x * scale.x), frame.width - 1)),
+    y: Math.max(0, Math.min(Math.floor(pointer.y * scale.y), frame.height - 1)),
   })
+
+  function reset() {
+    selection = null
+    drag = null
+    elsewhere = null
+    editing = false
+  }
 
   // Draws this display's frozen frame, then tells Rust, which shows the (hidden) window.
   async function draw(info: FrameInfo) {
     if (info.session === current) return
     current = info.session
-    selection = null
+    reset()
     try {
       const data = await invoke<ArrayBuffer | Uint8Array<ArrayBuffer>>('overlay_frame', {
         session: info.session,
       })
       if (current !== info.session) return
       // Raw RGBA. Tauri returns an ArrayBuffer; accept a view too.
-      const bytes =
+      const pixels =
         data instanceof ArrayBuffer
           ? new Uint8ClampedArray(data)
           : new Uint8ClampedArray(data.buffer, data.byteOffset, data.byteLength)
       // Empty: the session closed while this window was loading.
-      if (bytes.length === 0) return
+      if (pixels.length === 0) return
       canvas.width = info.width
       canvas.height = info.height
       // Opaque: the frame covers the canvas, so skip alpha blending.
       const context = canvas.getContext('2d', { alpha: false })!
-      context.putImageData(new ImageData(bytes, info.width, info.height), 0, 0)
+      // Not kept afterwards: the canvas has the pixels and Rust keeps the original.
+      context.putImageData(new ImageData(pixels, info.width, info.height), 0, 0)
       frame = { width: info.width, height: info.height }
-      pixels = bytes
+      display = { width: info.logicalWidth, height: info.logicalHeight }
       await invoke('overlay_painted', { session: info.session })
     } catch (e) {
       // Never leave the user on a dead overlay.
@@ -96,19 +117,38 @@
     }
   }
 
-  /** Sets the selection and tells Rust when this display gains or loses one (for Esc). */
+  /** Sets the selection and tells the other displays when this one gains or loses it. */
   function select(rect: Rect | null) {
     const active = rect !== null
     if (active !== (selection !== null)) {
-      void invoke('overlay_selection', { session: current, active })
+      void emit(SELECTED, { label: view.label, active } satisfies Selected)
     }
     selection = rect
   }
 
+  /** Drops the selection and any drag, so the next pointer move does not bring it back. */
+  function clear() {
+    drag = null
+    select(null)
+  }
+
+  /** Esc, from Rust or the page: undo one thing here, or close if nothing is selected. */
+  function escape() {
+    if (editing) editing = false
+    else if (selection || drag) clear()
+    else {
+      // Another display has the selection: its page handles this Esc.
+      if (!elsewhere) void invoke('close_overlay')
+      return
+    }
+    void invoke('overlay_escaped', { session: current })
+  }
+
   function confirm(rect: Rect) {
-    invoke('overlay_confirm', { session: current, rect }).catch((e) =>
-      console.error('could not confirm the selection', e),
-    )
+    invoke('overlay_confirm', { session: current, rect }).catch((e) => {
+      console.error('could not confirm the selection', e)
+      void invoke('close_overlay')
+    })
   }
 
   // Frees the frame once the window is hidden after a capture. The next frame is drawn
@@ -117,15 +157,15 @@
     if (!document.hidden) return
     canvas.width = 0
     canvas.height = 0
-    pixels = null
-    selection = null
-    drag = null
+    reset()
   }
 
   const at = (e: PointerEvent): Point => ({ x: e.clientX, y: e.clientY })
 
   function onpointerdown(e: PointerEvent) {
-    if (e.button !== 0) return
+    if (e.button !== 0 || frame.width === 0) return
+    // Keys go to the display with the selection.
+    view.setFocus().catch((err) => console.error('could not focus the overlay', err))
     const start = at(e)
     pointer = start
     const handle = (e.target as Element).closest<HTMLElement>('[data-handle]')?.dataset.handle
@@ -134,8 +174,8 @@
     } else if (selection && contains(selection, start)) {
       drag = { kind: 'move', start, origin: selection }
     } else {
-      drag = { kind: 'draw', start }
       select(null)
+      drag = { kind: 'draw', start }
     }
     ;(e.currentTarget as Element).setPointerCapture?.(e.pointerId)
   }
@@ -145,15 +185,12 @@
     if (!drag) return
     const dx = pointer.x - drag.start.x
     const dy = pointer.y - drag.start.y
-    if (drag.kind === 'draw') {
-      const rect = fromPoints(drag.start, pointer, display)
-      select(isEmpty(rect) ? null : rect)
-    } else if (drag.kind === 'move') {
-      select(move(drag.origin, dx, dy, display))
-    } else {
-      const rect = resize(drag.origin, drag.handle, dx, dy, display)
-      select(isEmpty(rect) ? null : rect)
-    }
+    if (drag.kind === 'move') return select(move(drag.origin, dx, dy, display))
+    const rect =
+      drag.kind === 'draw'
+        ? fromPoints(drag.start, pointer, display)
+        : resize(drag.origin, drag.handle, dx, dy, display)
+    select(isEmpty(rect) ? null : rect)
   }
 
   function onpointerup() {
@@ -161,21 +198,19 @@
   }
 
   function onkeydown(e: KeyboardEvent) {
-    // Typing in the size badge.
-    if (e.target instanceof HTMLInputElement) return
-    if (e.key === 'Escape') {
-      // Rust owns Esc while the overlay is open (`overlay:clear`); this is the fallback.
-      if (selection) select(null)
-      else void invoke('close_overlay')
-    } else if (e.key === 'Enter' && selection) {
+    if (e.key === 'Escape') return escape()
+    // Typing in the size badge: Enter applies the size there.
+    if (e.target instanceof Element && e.target.closest('[data-size-badge]')) return
+    if (!selection || !physical) return
+    if (e.key === 'Enter') {
       e.preventDefault()
-      confirm(selection)
-    } else if (selection) {
-      const moved = nudge(selection, e.key, e.shiftKey ? 10 : 1, display)
-      if (moved) {
-        e.preventDefault()
-        select(moved)
-      }
+      if (!isEmpty(physical)) confirm(physical)
+      return
+    }
+    const moved = nudge(selection, e.key, e.shiftKey ? 10 : 1, scale, display)
+    if (moved) {
+      e.preventDefault()
+      select(moved)
     }
   }
 
@@ -184,11 +219,19 @@
   }
 
   onMount(() => {
-    const window = getCurrentWebviewWindow()
     const listeners = Promise.all([
-      window.listen<FrameInfo>('overlay:show', (e) => void draw(e.payload)),
-      // Esc with a selection, or a selection started on another display.
-      window.listen('overlay:clear', () => (selection = null)),
+      view.listen<FrameInfo>('overlay:show', (e) => void draw(e.payload)),
+      view.listen('overlay:escape', escape),
+      listen<Selected>(SELECTED, ({ payload }) => {
+        if (payload.label === view.label) return
+        if (payload.active) {
+          elsewhere = payload.label
+          drag = null
+          selection = null
+        } else if (elsewhere === payload.label) {
+          elsewhere = null
+        }
+      }),
     ])
     // Asked only once the listeners are registered, so a frame sent while this window was
     // loading is never missed.
@@ -199,7 +242,7 @@
   })
 </script>
 
-<svelte:window {onkeydown} bind:innerWidth bind:innerHeight />
+<svelte:window {onkeydown} />
 <svelte:document {onvisibilitychange} />
 
 <div
@@ -214,9 +257,9 @@
   onpointercancel={onpointerup}
 >
   <canvas bind:this={canvas} width="0" height="0"></canvas>
-  {#if selection && physical}
-    <Selection rect={selection} />
-    {@const p = badgePosition(selection, badge, display)}
+  {#if physical}
+    <Selection rect={selection!} />
+    {@const p = badgePosition(selection!, badge, display)}
     <div
       class="floating"
       style:left="{p.x}px"
@@ -226,15 +269,21 @@
       onpointerdown={(e) => e.stopPropagation()}
       role="presentation"
     >
-      <SizeBadge size={physical} {onresize} />
+      <SizeBadge size={physical} {onresize} bind:editing />
     </div>
   {:else}
     <div class="dim"></div>
   {/if}
-  {#if loupeOn && drag && drag.kind !== 'move' && pixels}
-    {@const p = loupePosition(pointer, loupeSize, display)}
-    <div class="floating" style:left="{p.x}px" style:top="{p.y}px">
-      <Magnifier source={canvas} {pixels} {frame} at={loupeAt} />
+  {#if loupeOn && drag && drag.kind !== 'move'}
+    {@const p = loupePosition(pointer, loupe, display)}
+    <div
+      class="floating"
+      style:left="{p.x}px"
+      style:top="{p.y}px"
+      bind:offsetWidth={loupe.width}
+      bind:offsetHeight={loupe.height}
+    >
+      <Magnifier source={canvas} {frame} at={loupeAt} />
     </div>
   {/if}
 </div>

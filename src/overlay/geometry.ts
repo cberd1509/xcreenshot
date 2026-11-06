@@ -23,7 +23,7 @@ export const CURSORS: Record<Handle | 'move', string> = {
 }
 
 /** Arrow keys as unit steps. */
-export const ARROWS: Record<string, Point> = {
+const ARROWS: Record<string, Point> = {
   ArrowLeft: { x: -1, y: 0 },
   ArrowRight: { x: 1, y: 0 },
   ArrowUp: { x: 0, y: -1 },
@@ -33,7 +33,6 @@ export const ARROWS: Record<string, Point> = {
 const clamp = (v: number, min: number, max: number) => Math.min(Math.max(v, min), max)
 /** A logical edge in whole physical pixels, on the frame. */
 const pixelEdge = (v: number, s: number, max: number) => clamp(Math.round(v * s), 0, max)
-const hexByte = (v: number) => v.toString(16).padStart(2, '0')
 
 /** The rect spanning two points (any order), clamped to the display. */
 export function fromPoints(a: Point, b: Point, bounds: Size): Rect {
@@ -62,10 +61,19 @@ export function move(r: Rect, dx: number, dy: number, bounds: Size): Rect {
   }
 }
 
-/** Arrow-key nudge: one step in the arrow's direction, or `null` for any other key. */
-export function nudge(r: Rect, key: string, step: number, bounds: Size): Rect | null {
+/**
+ * Arrow-key nudge by `pixels` physical px in the arrow's direction, or `null` for any other
+ * key.
+ */
+export function nudge(
+  r: Rect,
+  key: string,
+  pixels: number,
+  scale: Scale,
+  bounds: Size,
+): Rect | null {
   const d = ARROWS[key]
-  return d ? move(r, d.x * step, d.y * step, bounds) : null
+  return d ? move(r, (d.x * pixels) / scale.x, (d.y * pixels) / scale.y, bounds) : null
 }
 
 /**
@@ -96,7 +104,7 @@ export function toPhysical(r: Rect, scale: Scale, frame: Size): Rect {
   }
 }
 
-export function toLogical(p: Rect, scale: Scale): Rect {
+function toLogical(p: Rect, scale: Scale): Rect {
   return {
     x: p.x / scale.x,
     y: p.y / scale.y,
@@ -130,11 +138,10 @@ export function resizeTo(r: Rect, size: Size, scale: Scale, frame: Size, keepRat
   return toLogical({ x: p.x, y: p.y, width, height }, scale)
 }
 
-/** Hex color of a physical pixel in raw RGBA, or `null` outside the frame. */
-export function hexAt(pixels: Uint8ClampedArray, frame: Size, x: number, y: number): string | null {
-  if (x < 0 || y < 0 || x >= frame.width || y >= frame.height) return null
-  const i = (y * frame.width + x) * 4
-  return `#${hexByte(pixels[i])}${hexByte(pixels[i + 1])}${hexByte(pixels[i + 2])}`.toUpperCase()
+/** `#RRGGBB` for the first pixel of raw RGBA. */
+export function hex(rgba: ArrayLike<number>): string {
+  const byte = (i: number) => rgba[i].toString(16).padStart(2, '0')
+  return `#${byte(0)}${byte(1)}${byte(2)}`.toUpperCase()
 }
 
 /** Where to put a box of `size` above `r` (or below if there is no room, else inside). */

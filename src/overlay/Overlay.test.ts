@@ -1,41 +1,43 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import userEvent from '@testing-library/user-event'
-import { emit } from '@tauri-apps/api/event'
+import { emit, listen } from '@tauri-apps/api/event'
 import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { box, fakeContext } from '../test/canvas'
 import Overlay from './Overlay.svelte'
 
-type Info = { session: number; width: number; height: number }
+type Info = {
+  session: number
+  width: number
+  height: number
+  logicalWidth: number
+  logicalHeight: number
+}
+type At = { x: number; y: number }
 
-const putImageData = vi.fn<(image: ImageData, x: number, y: number) => void>()
-const drawImage = vi.fn<(...args: unknown[]) => void>()
 let calls: { cmd: string; args: unknown }[]
 let ready: Info | null
 let frame: (args: { session: number }) => unknown
+let confirmed: () => unknown
+let context: ReturnType<typeof fakeContext>
+let selected: { label: string; active: boolean }[]
 
 const rgba = (width: number, height: number) => new Uint8Array(width * height * 4).fill(7).buffer
 const called = (cmd: string) => calls.filter((c) => c.cmd === cmd)
-
-/** Renders and waits until the show listener is registered and the load check ran. */
-async function mount() {
-  const view = render(Overlay)
-  await waitFor(() => expect(called('overlay_ready')).toHaveLength(1))
-  return view
-}
-
 const tick = () => new Promise((r) => setTimeout(r, 0))
+const small = (session: number): Info => ({
+  session,
+  width: 4,
+  height: 2,
+  logicalWidth: 2,
+  logicalHeight: 1,
+})
+// A 2x display of 1000 x 700 points.
+const info: Info = { session: 9, width: 2000, height: 1400, logicalWidth: 1000, logicalHeight: 700 }
 
-// jsdom's window is 1024 x 768; a 2048 x 1536 frame makes it a 2x display.
-const info = { session: 9, width: 2048, height: 1536 }
 const overlay = () => screen.getByTestId('overlay')
 const selection = () => screen.queryByTestId('selection')
-const box = () => {
-  const s = selection()!.style
-  return [s.left, s.top, s.width, s.height].map((v) => parseFloat(v))
-}
-const selections = () => called('overlay_selection').map((c) => c.args)
-
-type At = { x: number; y: number }
+const rect = () => box(selection()!)
 const point = ({ x, y }: At) => ({ clientX: x, clientY: y, button: 0, pointerId: 1 })
 
 function drag(from: At, to: At, target: Element = overlay()) {
@@ -44,35 +46,43 @@ function drag(from: At, to: At, target: Element = overlay()) {
   fireEvent.pointerUp(overlay(), point(to))
 }
 
-async function shown(props: { magnifier?: boolean } = {}) {
-  frame = () => rgba(info.width, info.height)
+/** Renders and waits until the listeners are registered and the load check ran. */
+async function mount(props: { magnifier?: boolean } = {}) {
   const view = render(Overlay, { props })
   await waitFor(() => expect(called('overlay_ready')).toHaveLength(1))
+  return view
+}
+
+/** Mounts and draws the 2x frame. */
+async function shown(props: { magnifier?: boolean } = {}) {
+  frame = () => rgba(info.width, info.height)
+  const view = await mount(props)
   await emit('overlay:show', info)
   await waitFor(() => expect(called('overlay_painted')).toHaveLength(1))
   return view
 }
 
 describe('Overlay', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     calls = []
     ready = null
+    selected = []
     frame = () => rgba(4, 2)
+    confirmed = () => null
     mockWindows('overlay-1')
     mockIPC(
       (cmd, args) => {
         calls.push({ cmd, args })
         if (cmd === 'overlay_ready') return ready
         if (cmd === 'overlay_frame') return frame(args as { session: number })
+        if (cmd === 'overlay_confirm') return confirmed()
       },
       { shouldMockEvents: true },
     )
-    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
-      putImageData,
-      drawImage,
-      fillRect: vi.fn<(...args: unknown[]) => void>(),
-      strokeRect: vi.fn<(...args: unknown[]) => void>(),
-    } as unknown as CanvasRenderingContext2D)
+    context = fakeContext()
+    await listen<{ label: string; active: boolean }>('overlay:selected', (e) =>
+      selected.push(e.payload),
+    )
   })
 
   afterEach(async () => {
@@ -81,26 +91,24 @@ describe('Overlay', () => {
     await tick()
     clearMocks()
     vi.restoreAllMocks()
-    putImageData.mockReset()
-    drawImage.mockReset()
   })
 
   it('draws the frame on show, then reports the paint', async () => {
     const { container } = await mount()
     expect(called('overlay_frame')).toHaveLength(0)
 
-    await emit('overlay:show', { session: 3, width: 4, height: 2 })
+    await emit('overlay:show', small(3))
     await waitFor(() => expect(called('overlay_painted')).toHaveLength(1))
     expect(called('overlay_frame')[0].args).toEqual({ session: 3 })
     expect(called('overlay_painted')[0].args).toEqual({ session: 3 })
     const canvas = container.querySelector('canvas')!
     expect([canvas.width, canvas.height]).toEqual([4, 2])
-    const [image, x, y] = putImageData.mock.calls[0]
+    const [image, x, y] = context.putImageData.mock.calls[0]
     expect([image.width, image.height, image.data.length, x, y]).toEqual([4, 2, 32, 0, 0])
   })
 
   it('draws a frame sent while it was loading', async () => {
-    ready = { session: 5, width: 4, height: 2 }
+    ready = small(5)
     await mount()
     await waitFor(() => expect(called('overlay_painted')).toHaveLength(1))
     // The show event for the same session does not fetch again.
@@ -111,18 +119,21 @@ describe('Overlay', () => {
   it('accepts the frame as a byte view', async () => {
     frame = () => new Uint8Array(rgba(4, 2))
     await mount()
-    await emit('overlay:show', { session: 1, width: 4, height: 2 })
+    await emit('overlay:show', small(1))
     await waitFor(() => expect(called('overlay_painted')).toHaveLength(1))
   })
 
   it('does nothing when the session is already gone', async () => {
     frame = () => new ArrayBuffer(0)
     await mount()
-    await emit('overlay:show', { session: 1, width: 4, height: 2 })
+    await emit('overlay:show', small(1))
     await waitFor(() => expect(called('overlay_frame')).toHaveLength(1))
-    expect(putImageData).not.toHaveBeenCalled()
+    expect(context.putImageData).not.toHaveBeenCalled()
     expect(called('overlay_painted')).toHaveLength(0)
     expect(called('close_overlay')).toHaveLength(0)
+    // Nothing drawn: no selection either.
+    drag({ x: 0, y: 0 }, { x: 1, y: 1 })
+    expect(selection()).toBeNull()
   })
 
   it('drops an older frame when a newer session arrives first', async () => {
@@ -130,8 +141,8 @@ describe('Overlay', () => {
     frame = ({ session }) =>
       session === 1 ? new Promise<ArrayBuffer>((r) => (respond = r)) : rgba(4, 2)
     await mount()
-    await emit('overlay:show', { session: 1, width: 4, height: 2 })
-    await emit('overlay:show', { session: 2, width: 4, height: 2 })
+    await emit('overlay:show', small(1))
+    await emit('overlay:show', small(2))
     await waitFor(() => expect(called('overlay_painted')).toHaveLength(1))
     respond(rgba(4, 2))
     await tick()
@@ -142,7 +153,7 @@ describe('Overlay', () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     await mount()
     // Wrong size for the pixels: ImageData throws.
-    await emit('overlay:show', { session: 1, width: 5, height: 5 })
+    await emit('overlay:show', { ...small(1), width: 5, height: 5 })
     await waitFor(() => expect(called('close_overlay')).toHaveLength(1))
     expect(error).toHaveBeenCalled()
     expect(called('overlay_painted')).toHaveLength(0)
@@ -150,7 +161,7 @@ describe('Overlay', () => {
 
   it('frees the frame when the window is hidden', async () => {
     const { container } = await mount()
-    await emit('overlay:show', { session: 1, width: 4, height: 2 })
+    await emit('overlay:show', small(1))
     await waitFor(() => expect(called('overlay_painted')).toHaveLength(1))
     const canvas = container.querySelector('canvas')!
     const hidden = vi.spyOn(document, 'hidden', 'get')
@@ -162,30 +173,47 @@ describe('Overlay', () => {
     expect([canvas.width, canvas.height]).toEqual([0, 0])
   })
 
-  it('closes on Esc only', async () => {
+  it('closes on Esc with nothing selected', async () => {
     await mount()
     await userEvent.keyboard('a')
     expect(called('close_overlay')).toHaveLength(0)
     await userEvent.keyboard('{Escape}')
     expect(called('close_overlay')).toHaveLength(1)
+    expect(called('overlay_escaped')).toHaveLength(0)
   })
 
   it('stops listening when unmounted', async () => {
     const { unmount } = await mount()
     unmount()
     await tick()
-    await emit('overlay:show', { session: 1, width: 4, height: 2 })
+    await emit('overlay:show', small(1))
     expect(called('overlay_frame')).toHaveLength(0)
   })
 
   describe('selection', () => {
-    it('draws a selection in any direction and shows its size in real pixels', async () => {
+    it('draws in any direction and shows its size in real pixels', async () => {
       await shown()
       expect(selection()).toBeNull()
       drag({ x: 110, y: 70 }, { x: 10, y: 20 })
-      expect(box()).toEqual([10, 20, 100, 50])
+      expect(rect()).toEqual([10, 20, 100, 50])
       expect(screen.getByTestId('size-badge')).toHaveTextContent('200 × 100')
-      expect(selections()).toEqual([{ session: 9, active: true }])
+      expect(selected).toEqual([{ label: 'overlay-1', active: true }])
+    })
+
+    it('focuses its window on press, so keys reach it', async () => {
+      await shown()
+      fireEvent.pointerDown(overlay(), point({ x: 5, y: 5 }))
+      expect(called('plugin:window|set_focus')).toHaveLength(1)
+    })
+
+    it('logs a failed focus', async () => {
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+      await shown()
+      mockIPC((cmd) => {
+        if (cmd === 'plugin:window|set_focus') throw new Error('no window')
+      })
+      fireEvent.pointerDown(overlay(), point({ x: 5, y: 5 }))
+      await waitFor(() => expect(error).toHaveBeenCalled())
     })
 
     it('ignores a click without a drag and other buttons', async () => {
@@ -195,21 +223,17 @@ describe('Overlay', () => {
       fireEvent.pointerDown(overlay(), { ...point({ x: 1, y: 1 }), button: 2 })
       fireEvent.pointerMove(overlay(), point({ x: 50, y: 50 }))
       expect(selection()).toBeNull()
-      expect(selections()).toEqual([])
+      expect(selected).toEqual([])
     })
 
     it('moves when dragged inside and starts over when dragged outside', async () => {
       await shown()
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       drag({ x: 50, y: 30 }, { x: 60, y: 25 }, selection()!)
-      expect(box()).toEqual([20, 5, 100, 50])
+      expect(rect()).toEqual([20, 5, 100, 50])
       drag({ x: 500, y: 500 }, { x: 520, y: 530 })
-      expect(box()).toEqual([500, 500, 20, 30])
-      expect(selections()).toEqual([
-        { session: 9, active: true },
-        { session: 9, active: false },
-        { session: 9, active: true },
-      ])
+      expect(rect()).toEqual([500, 500, 20, 30])
+      expect(selected.map((s) => s.active)).toEqual([true, false, true])
     })
 
     it('resizes with the handles', async () => {
@@ -217,9 +241,9 @@ describe('Overlay', () => {
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       const handle = (h: string) => selection()!.querySelector(`[data-handle="${h}"]`)!
       drag({ x: 110, y: 60 }, { x: 130, y: 90 }, handle('se'))
-      expect(box()).toEqual([10, 10, 120, 80])
+      expect(rect()).toEqual([10, 10, 120, 80])
       drag({ x: 10, y: 10 }, { x: 0, y: 0 }, handle('nw'))
-      expect(box()).toEqual([0, 0, 130, 90])
+      expect(rect()).toEqual([0, 0, 130, 90])
       // Collapsing it to nothing clears it.
       drag({ x: 130, y: 0 }, { x: 0, y: 0 }, handle('e'))
       expect(selection()).toBeNull()
@@ -237,38 +261,76 @@ describe('Overlay', () => {
       expect(overlay().style.cursor).toBe('move')
     })
 
-    it('nudges with the arrow keys', async () => {
+    it('nudges by physical pixels with the arrow keys', async () => {
       await shown()
       await userEvent.keyboard('{ArrowRight}')
       expect(selection()).toBeNull()
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       await userEvent.keyboard('{ArrowRight}{ArrowDown}')
-      expect(box()).toEqual([11, 11, 100, 50])
+      expect(rect()).toEqual([10.5, 10.5, 100, 50])
       await userEvent.keyboard('{Shift>}{ArrowLeft}{ArrowUp}{/Shift}')
-      expect(box()).toEqual([1, 1, 100, 50])
+      expect(rect()).toEqual([5.5, 5.5, 100, 50])
       await userEvent.keyboard('a')
-      expect(box()).toEqual([1, 1, 100, 50])
+      expect(rect()).toEqual([5.5, 5.5, 100, 50])
     })
 
-    it('clears the selection on Esc, then closes', async () => {
+    it('clears the selection on Esc and acks it, then closes', async () => {
       await shown()
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
-      await userEvent.keyboard('{Escape}')
-      expect(selection()).toBeNull()
-      expect(selections().at(-1)).toEqual({ session: 9, active: false })
-      expect(called('close_overlay')).toHaveLength(0)
-      await userEvent.keyboard('{Escape}')
-      expect(called('close_overlay')).toHaveLength(1)
-    })
-
-    it('clears the selection when Rust says so', async () => {
-      await shown()
-      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
-      await emit('overlay:clear')
+      await emit('overlay:escape')
       await waitFor(() => expect(selection()).toBeNull())
+      expect(called('overlay_escaped')[0].args).toEqual({ session: 9 })
+      expect(selected.at(-1)).toEqual({ label: 'overlay-1', active: false })
+      expect(called('close_overlay')).toHaveLength(0)
+      await emit('overlay:escape')
+      await waitFor(() => expect(called('close_overlay')).toHaveLength(1))
     })
 
-    it('confirms the selection on Enter', async () => {
+    it('Esc during a drag stops it for good', async () => {
+      await shown()
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      fireEvent.pointerDown(selection()!, point({ x: 50, y: 30 }))
+      await userEvent.keyboard('{Escape}')
+      fireEvent.pointerMove(overlay(), point({ x: 70, y: 40 }))
+      expect(selection()).toBeNull()
+      // A drag that has not drawn anything yet is undone too.
+      fireEvent.pointerDown(overlay(), point({ x: 5, y: 5 }))
+      await userEvent.keyboard('{Escape}')
+      expect(called('overlay_escaped')).toHaveLength(2)
+      expect(called('close_overlay')).toHaveLength(0)
+    })
+
+    it('Esc cancels a size edit before the selection', async () => {
+      await shown()
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      await userEvent.click(screen.getByRole('button', { name: /200 × 100/ }))
+      await emit('overlay:escape')
+      await waitFor(() => expect(screen.queryByLabelText('Width')).toBeNull())
+      expect(selection()).not.toBeNull()
+      expect(called('overlay_escaped')).toHaveLength(1)
+    })
+
+    it('keeps one selection across displays', async () => {
+      await shown()
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      await emit('overlay:selected', { label: 'overlay-2', active: true })
+      await waitFor(() => expect(selection()).toBeNull())
+      // Display 2 has the selection: its page handles Esc, this one does nothing.
+      await emit('overlay:escape')
+      await tick()
+      expect(called('close_overlay')).toHaveLength(0)
+      expect(called('overlay_escaped')).toHaveLength(0)
+      // Another display losing a selection it never had changes nothing.
+      await emit('overlay:selected', { label: 'overlay-3', active: false })
+      await emit('overlay:escape')
+      await tick()
+      expect(called('close_overlay')).toHaveLength(0)
+      await emit('overlay:selected', { label: 'overlay-2', active: false })
+      await emit('overlay:escape')
+      await waitFor(() => expect(called('close_overlay')).toHaveLength(1))
+    })
+
+    it('confirms the pixel rect on Enter', async () => {
       await shown()
       await userEvent.keyboard('{Enter}')
       expect(called('overlay_confirm')).toHaveLength(0)
@@ -276,19 +338,28 @@ describe('Overlay', () => {
       await userEvent.keyboard('{Enter}')
       expect(called('overlay_confirm')[0].args).toEqual({
         session: 9,
-        rect: { x: 10, y: 10, width: 100, height: 50 },
+        rect: { x: 20, y: 20, width: 200, height: 100 },
       })
     })
 
-    it('logs a confirm that fails', async () => {
-      const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    it('does not confirm a selection under one pixel', async () => {
       await shown()
-      mockIPC((cmd) => {
-        if (cmd === 'overlay_confirm') throw new Error('empty')
-      })
+      drag({ x: 10, y: 10 }, { x: 10.2, y: 60 })
+      expect(selection()).not.toBeNull()
+      await userEvent.keyboard('{Enter}')
+      expect(called('overlay_confirm')).toHaveLength(0)
+    })
+
+    it('logs a confirm that fails and closes', async () => {
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+      confirmed = () => {
+        throw new Error('empty')
+      }
+      await shown()
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       await userEvent.keyboard('{Enter}')
-      await waitFor(() => expect(error).toHaveBeenCalled())
+      await waitFor(() => expect(called('close_overlay')).toHaveLength(1))
+      expect(error).toHaveBeenCalled()
     })
 
     it('sets an exact size from the badge', async () => {
@@ -299,19 +370,29 @@ describe('Overlay', () => {
       await userEvent.clear(width)
       // Typing does not nudge or confirm the selection.
       await userEvent.type(width, '300{ArrowLeft}{Enter}')
-      expect(box()).toEqual([10, 10, 150, 50])
+      expect(rect()).toEqual([10, 10, 150, 50])
       expect(called('overlay_confirm')).toHaveLength(0)
       // Clicks on the badge do not start a new selection.
       fireEvent.pointerDown(screen.getByTestId('size-badge'), point({ x: 20, y: 5 }))
-      expect(box()).toEqual([10, 10, 150, 50])
+      expect(rect()).toEqual([10, 10, 150, 50])
+    })
+
+    it('Enter on the lock toggle stays in the badge', async () => {
+      await shown()
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      await userEvent.click(screen.getByRole('button', { name: /200 × 100/ }))
+      screen.getByRole('button', { name: 'Lock ratio' }).focus()
+      await userEvent.keyboard('{Enter}')
+      expect(called('overlay_confirm')).toHaveLength(0)
     })
 
     it('shows the loupe while drawing only when enabled', async () => {
+      context = fakeContext([255, 128, 0, 255])
       await shown({ magnifier: true })
       fireEvent.pointerDown(overlay(), point({ x: 10, y: 10 }))
       fireEvent.pointerMove(overlay(), point({ x: 20, y: 30 }))
       expect(screen.getByTestId('magnifier')).toHaveTextContent('40, 60')
-      expect(screen.getByTestId('magnifier')).toHaveTextContent('#070707')
+      expect(screen.getByTestId('magnifier')).toHaveTextContent('#FF8000')
       fireEvent.pointerUp(overlay())
       expect(screen.queryByTestId('magnifier')).toBeNull()
       // Not while moving.

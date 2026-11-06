@@ -4,13 +4,14 @@
 //! thread and place the hidden windows while it runs. Capture done (worker): open the session
 //! and send `overlay:show` with each frame's size. Each window fetches its frame
 //! (`overlay_frame`: a copy of the raw RGBA buffer), draws it and calls `overlay_painted`,
-//! which shows that window. The page reports when it has a selection (`overlay_selection`), so
-//! Esc clears the selection first (`overlay:clear`). Enter sends `overlay_confirm`. Esc with no
-//! selection, `close_overlay`, closing a window or the watchdog hide everything.
+//! which shows that window. Esc goes to the pages (`overlay:escape`): the one with something
+//! to undo (a size edit, a selection) does it and acks (`overlay_escaped`); with nothing to
+//! undo, a page calls `close_overlay`. If no page answers in time, Rust closes anyway. Enter
+//! sends `overlay_confirm`. `close_overlay`, closing a window or the watchdog hide everything.
 //! Window and shortcut calls stay on the main thread.
 
-use super::{Escape, FrameInfo, Phase, diff, display_at, display_id, label};
-use crate::capture::{self, Bounds, CaptureError, Display, DisplayFrame, Rect};
+use super::{FrameInfo, Phase, diff, display_at, display_id, label};
+use crate::capture::{self, Bounds, CaptureError, Display, DisplayFrame, PixelRect};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -23,14 +24,17 @@ use tauri::{
 use tauri_plugin_global_shortcut::{GlobalShortcut, ShortcutState};
 
 const SHOW_EVENT: &str = "overlay:show";
-/// Tells a window to drop its selection.
-const CLEAR_EVENT: &str = "overlay:clear";
+/// Esc, forwarded to every overlay page.
+const ESCAPE_EVENT: &str = "overlay:escape";
 const ESCAPE: &str = "Escape";
+/// How long the pages get to handle Esc before Rust closes the overlay itself.
+const ESCAPE_TIMEOUT: Duration = Duration::from_millis(300);
 /// If no window paints within this time the overlay page is broken: close everything, so a
 /// hung page never locks the user out.
 const WATCHDOG: Duration = Duration::from_secs(2);
 
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
+static NEXT_ESCAPE: AtomicU64 = AtomicU64::new(1);
 
 /// Overlay state, managed by the app.
 #[derive(Default)]
@@ -222,19 +226,32 @@ pub fn close<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-/// Esc with a selection clears it; without one, it closes the overlay.
-fn escape<R: Runtime>(app: &AppHandle<R>) {
-    let action = phase(app).escape();
-    match action {
-        Escape::Clear(display) => clear(app, display),
-        Escape::Close => close(app),
+/// Forwards Esc to the pages, which know what to undo. Closes if nothing is open yet, or if
+/// no page answers within `timeout` (a hung page never locks the user out).
+fn escape<R: Runtime>(app: &AppHandle<R>, timeout: Duration) {
+    let token = NEXT_ESCAPE.fetch_add(1, Ordering::Relaxed);
+    let forwarded = phase(app).forward_escape(token);
+    if !forwarded {
+        return close(app);
     }
-}
-
-fn clear<R: Runtime>(app: &AppHandle<R>, display: u32) {
-    if let Err(e) = app.emit_to(label(display).as_str(), CLEAR_EVENT, ()) {
-        log::warn!("could not clear the selection on overlay {display}: {e}");
+    for label in app.webview_windows().into_keys() {
+        if display_id(&label).is_some()
+            && let Err(e) = app.emit_to(label.as_str(), ESCAPE_EVENT, ())
+        {
+            log::warn!("could not send Esc to {label}: {e}");
+        }
     }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(timeout);
+        on_main(&app, move |app| {
+            let unhandled = phase(app).escape_unhandled(token);
+            if unhandled {
+                log::warn!("no overlay page handled Esc within {timeout:?}; closing");
+                close(app);
+            }
+        });
+    });
 }
 
 /// Esc belongs to the app while the overlay is open, so it works even if the page is broken.
@@ -246,7 +263,7 @@ fn set_escape<R: Runtime>(app: &AppHandle<R>, on: bool) {
     let result = if on {
         shortcuts.on_shortcut(ESCAPE, |app, _, event| {
             if event.state() == ShortcutState::Pressed {
-                escape(app);
+                escape(app, ESCAPE_TIMEOUT);
             }
         })
     } else if shortcuts.is_registered(ESCAPE) {
@@ -380,48 +397,39 @@ pub(crate) async fn overlay_frame<R: Runtime>(
     state: tauri::State<'_, Overlay>,
     session: u64,
 ) -> Result<Response, ()> {
-    let bytes = display_id(window.label()).and_then(|d| state.phase().frame_copy(session, d));
-    Ok(Response::new(bytes.unwrap_or_default()))
+    let image = display_id(window.label()).and_then(|d| state.phase().frame_for_page(session, d));
+    // Copied after the lock is released (about 1 ms for 3600x2338).
+    Ok(Response::new(
+        image.map(|i| i.as_raw().to_vec()).unwrap_or_default(),
+    ))
 }
 
-/// The calling window gained or lost its selection. A selection on another display is
-/// cleared, so there is one at a time.
+/// A page handled Esc (cancelled a size edit or cleared its selection).
 #[tauri::command]
-pub(crate) fn overlay_selection<R: Runtime>(
-    window: WebviewWindow<R>,
-    state: tauri::State<'_, Overlay>,
-    session: u64,
-    active: bool,
-) {
-    let Some(display) = display_id(window.label()) else {
-        return;
-    };
-    let other = state.phase().select(session, display, active);
-    if let Some(other) = other {
-        clear(window.app_handle(), other);
-    }
+pub(crate) fn overlay_escaped(state: tauri::State<'_, Overlay>, session: u64) {
+    state.phase().escape_handled(session);
 }
 
-/// Enter: crops the selection (logical px on the calling window's display) from the original
-/// frame and closes the overlay. Copy and save come in #12; for now the crop is only logged.
+/// Enter: crops the selection (native pixels on the calling window's display, as the page's
+/// size badge showed it) from the original frame and closes the overlay. Copy and save come
+/// in #12; for now the crop is only logged. An empty rect is an error and closes nothing.
 #[tauri::command]
 pub(crate) fn overlay_confirm<R: Runtime>(
     window: WebviewWindow<R>,
     state: tauri::State<'_, Overlay>,
     session: u64,
-    rect: Rect,
+    rect: PixelRect,
 ) -> Result<(), CaptureError> {
-    let Some(display) = display_id(window.label()) else {
+    let frame = display_id(window.label()).and_then(|d| state.phase().image(session, d));
+    let Some(frame) = frame else {
         return Ok(());
     };
-    let cropped = state.phase().crop(session, display, rect);
-    let Some(image) = cropped.transpose()? else {
-        return Ok(());
-    };
+    let image = capture::crop_pixels(&frame, rect)?;
     log::info!(
-        "confirmed a {}x{} px selection on display {display} ({rect:?})",
+        "confirmed a {}x{} px selection on {} ({rect:?})",
         image.width(),
-        image.height()
+        image.height(),
+        window.label()
     );
     close(window.app_handle());
     Ok(())
@@ -461,7 +469,7 @@ pub(crate) fn close_overlay<R: Runtime>(app: AppHandle<R>) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::frame;
+    use super::super::tests::{frame, px};
     use super::*;
     use std::sync::mpsc;
     use tauri::ipc::{InvokeResponseBody, IpcResponse};
@@ -755,29 +763,35 @@ mod tests {
         assert!(!shortcuts.is_registered(ESCAPE));
     }
 
-    fn rect(x: f64, y: f64, width: f64, height: f64) -> Rect {
-        Rect {
-            x,
-            y,
-            width,
-            height,
-        }
-    }
-
     #[test]
-    fn esc_clears_the_selection_before_closing() {
+    fn esc_handled_by_a_page_keeps_the_overlay_open() {
         let app = app();
         let h = app.handle();
         let session = open(h, &[1, 2]);
-        overlay_selection(window(h, 1), h.state(), session, true);
-        // A selection started on display 2 clears the one on display 1.
-        overlay_selection(window(h, 2), h.state(), session, true);
-        escape(h);
-        assert!(is_open(h, session), "the first Esc clears the selection");
-        escape(h);
+        escape(h, Duration::from_millis(20));
+        overlay_escaped(h.state(), session);
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(is_open(h, session));
+    }
+
+    #[test]
+    fn esc_closes_when_no_page_answers() {
+        let app = app();
+        let h = app.handle();
+        let session = open(h, &[1]);
+        escape(h, Duration::from_millis(10));
+        assert!(is_open(h, session), "the pages get a chance first");
+        wait_until("the overlay to close", || is_idle(h));
+    }
+
+    #[test]
+    fn esc_during_the_capture_closes_at_once() {
+        let app = app();
+        let h = app.handle();
+        let (_, release) = press(h, &[1]);
+        escape(h, WATCHDOG);
         assert!(is_idle(h));
-        escape(h);
-        assert!(is_idle(h), "Esc while idle");
+        release.send(true).unwrap();
     }
 
     #[test]
@@ -786,21 +800,16 @@ mod tests {
         let h = app.handle();
         let session = open(h, &[1]);
         assert!(!fetch(h, 1, session).is_empty());
-        let empty = overlay_confirm(window(h, 1), h.state(), session, rect(0.0, 0.0, 0.0, 1.0));
+        let empty = overlay_confirm(window(h, 1), h.state(), session, px(0, 0, 0, 1));
         assert_eq!(empty, Err(CaptureError::EmptySelection));
         assert!(
             is_open(h, session),
             "an empty selection keeps the overlay open"
         );
-        let old = overlay_confirm(
-            window(h, 1),
-            h.state(),
-            session + 1,
-            rect(0.0, 0.0, 1.0, 1.0),
-        );
+        let old = overlay_confirm(window(h, 1), h.state(), session + 1, px(0, 0, 1, 1));
         assert_eq!(old, Ok(()));
         assert!(is_open(h, session), "another session's confirm is ignored");
-        let ok = overlay_confirm(window(h, 1), h.state(), session, rect(0.0, 0.0, 2.0, 1.0));
+        let ok = overlay_confirm(window(h, 1), h.state(), session, px(0, 0, 4, 2));
         assert_eq!(ok, Ok(()));
         assert!(is_idle(h));
     }
@@ -814,9 +823,7 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(overlay_ready(settings.clone(), h.state()), None);
-        overlay_selection(settings.clone(), h.state(), session, true);
-        assert_eq!(phase(h).escape(), Escape::Close, "no selection recorded");
-        let r = rect(0.0, 0.0, 1.0, 1.0);
+        let r = px(0, 0, 1, 1);
         assert_eq!(
             overlay_confirm(settings.clone(), h.state(), session, r),
             Ok(())
