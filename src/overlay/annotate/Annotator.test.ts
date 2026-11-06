@@ -483,6 +483,63 @@ describe('Annotator', () => {
       await waitFor(() => expect(texts()).toEqual(['A']))
     })
 
+    it('only commits on a press on the layer itself, opening no other text', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      await user.type(await place(api), 'A')
+      // The whole click lands on the layer: it commits, and the text tool starts nothing.
+      await fireEvent.pointerDown(element(), at(300, 300))
+      await fireEvent.pointerUp(element(), at(300, 300))
+      await waitFor(() => expect(texts()).toEqual(['A']))
+      expect(editor()).not.toBeInTheDocument()
+      // The next click places a caret as usual.
+      await drag(300, 300, 300, 300)
+      await waitFor(() => expect(editor()).toBeInTheDocument())
+    })
+
+    it('keeps text as typed and where the editor was, clipped by the selection', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      // Near the selection's right edge (500): the text runs past it.
+      await user.type(await place(api, 480, 200), 'Hello world{Enter}  ')
+      expect(editor()!.style).toMatchObject({ left: '473px', top: '178px' })
+      api.escape()
+      await waitFor(() => expect(texts()).toEqual(['Hello world\n  ']))
+      // Not moved: it is clipped like any shape. Both lines are measured, the last one too.
+      expect(nodes()[0].attrs).toMatchObject({ x: 473, y: 178 })
+      expect(nodes()[0].children[0].attrs).toMatchObject({ width: 146, height: 74 })
+    })
+
+    it('caps a long paste, and measures only what is kept', async () => {
+      const { api } = await setup()
+      const field = await place(api)
+      expect(field.maxLength).toBe(2000)
+      // jsdom does not apply maxlength to a set value: the measure and the commit still cut it.
+      field.value = 'x'.repeat(5000)
+      await fireEvent.input(field)
+      // 2000 characters at 12 px, plus padding.
+      await waitFor(() => expect(field.style.width).toBe(`${2000 * 12 + 14 + 2}px`))
+      api.escape()
+      await waitFor(() => expect(texts()).toEqual(['x'.repeat(2000)]))
+    })
+
+    it('adds no undo step for a text committed unchanged', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      api.key(press('r'))
+      await drag(300, 300, 350, 350)
+      await user.type(await place(api), 'Hi')
+      api.escape()
+      await waitFor(() => expect(texts()).toEqual([undefined, 'Hi']))
+      nodes()[1].fire('dblclick')
+      await waitFor(() => expect(editor()).toHaveValue('Hi'))
+      api.escape()
+      await waitFor(() => expect(editor()).not.toBeInTheDocument())
+      // One undo takes the text away: the unchanged commit left no step.
+      api.key(press('z', mod))
+      await waitFor(() => expect(texts()).toEqual([undefined]))
+    })
+
     it('keeps presses on the editor from the overlay', async () => {
       const { api } = await setup()
       await fireEvent.pointerDown(await place(api), at(150, 150))
@@ -577,7 +634,7 @@ describe('Annotator', () => {
       api.escape()
       await waitFor(() => expect(texts()).toEqual(['Hi']))
       const [box, label] = nodes()[0].children
-      expect(label.attrs).toMatchObject({ fontSize: 36, fill: '#FFFFFF' })
+      expect(label.attrs).toMatchObject({ fontSize: 36, fill: '#000000' })
       expect(box.attrs.fill).toBe('#FF3B30')
       // The next text uses them too.
       await place(api, 300, 300)
@@ -748,11 +805,15 @@ describe('Annotator', () => {
       await waitFor(() => expect(nodes()[0].children[1].attrs.fill).toBe('#FF3B30'))
       api.escape()
       await user.click(screen.getByLabelText('Large text'))
-      // 5 x 18 + 2 x 11 wide, 45 + 22 tall: 8 px of it stays inside (500, 400).
+      // 5 x 18 + 2 x 11 = 112 wide, 45 + 22 = 67 tall: moved into the corner at (500, 400).
       await waitFor(() => expect(nodes()[0].children[1].attrs.fontSize).toBe(36))
       const { x, y } = nodes()[0].attrs as { x: number; y: number }
-      expect(x).toBeLessThanOrEqual(492)
-      expect(y).toBeLessThanOrEqual(392)
+      const { width, height } = nodes()[0].children[0].attrs as { width: number; height: number }
+      expect([x, y, width, height]).toEqual([388, 333, 112, 67])
+      expect(x).toBeGreaterThanOrEqual(sel.x)
+      expect(y).toBeGreaterThanOrEqual(sel.y)
+      expect(x + width).toBeLessThanOrEqual(sel.x + sel.width)
+      expect(y + height).toBeLessThanOrEqual(sel.y + sel.height)
     })
 
     it('commits the text being typed before exporting', async () => {

@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Point, Size } from '../geometry'
-  import { radius, textColors, textFont } from './text'
+  import { MAX_TEXT, radius, textColors, textFont } from './text'
 
   /**
    * Edits a text annotation in place: a textarea over the board, laid out like the text it
@@ -27,7 +27,8 @@
     oncommit: () => void
   } = $props()
 
-  const size = $derived(measure(text, fontSize))
+  // A paste longer than MAX_TEXT is cut by `maxlength`; only what is kept is measured.
+  const size = $derived(measure(text.slice(0, MAX_TEXT), fontSize))
   const colors = $derived(textColors(color, background))
   const font = $derived(textFont(fontSize))
 
@@ -43,6 +44,7 @@
   aria-label="Text"
   spellcheck="false"
   wrap="off"
+  maxlength={MAX_TEXT}
   bind:value={text}
   {@attach focus}
   style:left="{at.x}px"

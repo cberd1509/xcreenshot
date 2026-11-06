@@ -72,13 +72,17 @@ describe('text attrs', () => {
     const { box, label } = textAttrs(text)
     expect(box).toEqual({ width: 50, height: 30, fill: 'transparent', cornerRadius: 5 })
     expect(label).toMatchObject({ text: 'Hi', fontSize: 20, padding: 6, fill: style.color })
-    expect(label.fontFamily).toContain('system-ui')
+    expect(label.fontFamily).toBe('system-ui, -apple-system, "Segoe UI", sans-serif')
   })
 
   it('fills the box with the color and contrasts the text on a background', () => {
     const { box, label } = textAttrs({ ...text, background: true })
     expect(box.fill).toBe(style.color)
-    expect(label.fill).toBe('#FFFFFF')
+    // On red, black has the higher contrast ratio.
+    expect(label.fill).toBe('#000000')
+    expect(
+      textAttrs({ ...text, style: { ...style, color: '#000000' }, background: true }).label.fill,
+    ).toBe('#FFFFFF')
   })
 })
 

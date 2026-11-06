@@ -21,7 +21,9 @@
   } from './shapes'
   import {
     DEFAULT_TEXT,
+    MAX_TEXT,
     TEXT_SIZES,
+    within,
     boxAt,
     sizeOf,
     type ShownTextOptions,
@@ -182,38 +184,39 @@
   }
 
   /**
-   * Commits the text being edited, as one undo step. Empty text is dropped (an edited text
-   * that is emptied is deleted).
+   * Commits the text being edited, as typed and where the editor was, as one undo step (none if
+   * nothing changed). Text that is all whitespace is dropped (an edited text emptied is deleted).
    */
   function finish() {
     const e = editing
     if (!e || !board) return
     editing = null
-    const text = e.text.trimEnd()
+    const text = e.text.slice(0, MAX_TEXT)
     if (!text.trim()) {
       if (e.existing) set(without(history.present, e.id))
       return
     }
     const { id, fontSize, style: textStyle } = e
-    const shape = fit({
+    const { background } = textOptions
+    const before = history.present.find((s) => s.id === id)
+    const same =
+      before?.kind === 'text' &&
+      before.text === text &&
+      before.fontSize === fontSize &&
+      before.background === background &&
+      before.style.color === textStyle.color
+    if (same) return
+    const shape: TextShape = {
       id,
       kind: 'text',
       style: textStyle,
       ...e.at,
-      width: 0,
-      height: 0,
+      ...board.measure(text, fontSize),
       text,
       fontSize,
-      background: textOptions.background,
-    })
+      background,
+    }
     set(e.existing ? replace(history.present, shape) : [...history.present, shape])
-  }
-
-  /** The text measured for its content and size, and kept in the selection. */
-  function fit(text: TextShape): TextShape {
-    const measured = { ...text, ...board!.measure(text.text, text.fontSize) }
-    // Moving a shape keeps its kind.
-    return selection ? (keepInside(measured, selection) as TextShape) : measured
   }
 
   const selectedShape = $derived(history.present.find((s) => s.id === selected))
@@ -240,9 +243,12 @@
   function setText(change: Partial<TextOptions>) {
     const fontSize = change.size && TEXT_SIZES[change.size]
     if (selectedText && !editing) {
-      const { fontSize: size, background } = selectedText
+      const { fontSize: size, background, text } = selectedText
       const next = { fontSize: fontSize || size, background: change.background ?? background }
-      return set(replace(history.present, fit({ ...selectedText, ...next })))
+      const box = { ...selectedText, ...next, ...board!.measure(text, next.fontSize) }
+      // A text that grows stays wholly in the selection, if it fits.
+      const kept = selection ? { ...box, ...within(box, selection) } : box
+      return set(replace(history.present, kept))
     }
     textOptions = { ...textOptions, ...change }
     if (editing && fontSize) editing.fontSize = fontSize
@@ -259,10 +265,14 @@
     if (editing) editing.style = next
   }
 
+  /** The press that committed the text being edited: it does nothing more. */
+  let committing: Event | null = null
+
   /** A press while text is edited commits it and does nothing more; Konva never sees it. */
   function onpointerdowncapture(e: PointerEvent) {
     if (!editing || e.button !== 0) return
     e.stopPropagation()
+    committing = e
     finish()
   }
 
@@ -274,6 +284,8 @@
   const at = (e: PointerEvent): Point => ({ x: e.clientX, y: e.clientY })
 
   function onpointerdown(e: PointerEvent) {
+    // On the layer itself, the press that committed text reaches this handler too.
+    if (e === committing) return e.stopPropagation()
     if (e.button !== 0 || !selection || !board) return
     // On a shape or its handles: Konva moves or resizes it.
     if (board.hits(at(e))) return e.stopPropagation()

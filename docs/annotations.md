@@ -60,8 +60,11 @@ a selection starts on another display.
 With the Text tool, a click in the selection opens a textarea there, laid out like the Konva text
 it becomes (system UI font, same padding and line height). Double-click a text, or press Enter
 with it selected, to edit it again; it leaves the board meanwhile. Esc, a press elsewhere, or the
-textarea losing focus commits it as one undo step; empty text is dropped (an emptied text is
-deleted). Copy and Save commit it first. A press on the board while editing only commits: it is
+textarea losing focus commits it as one undo step (none if nothing changed), as typed (line
+breaks and trailing spaces kept) and where the editor was: it is not moved back into the
+selection, which clips it like any shape. Text that is all whitespace is dropped (an emptied text
+is deleted). A text keeps at most 2,000 characters (`maxlength`, so a long paste is cut), and only
+what is kept is measured. Copy and Save commit it first. A press on the board while editing only commits: it is
 stopped in the capture phase, so Konva never sees it. Text resizes from its corners and keeps its
 proportions (Shift does not stretch it); the font scales and the box is measured again.
 
@@ -72,8 +75,9 @@ presses on the toolbar and its color menu leave focus in the textarea (`keepFocu
 stays the active edit and follows the size, Background and color. A tool or Clear all commits it
 first; Undo drops it, and Redo waits until it is committed (committing would drop what can be
 redone). With a text selected, the toolbar shows its options and they apply to it, one undo step
-each, leaving the tool's own options as they were. With Background, the box is filled with the
-color and the text is black or white, whichever reads better.
+each, leaving the tool's own options as they were; a text that grows is moved to sit wholly in
+the selection, if it fits. With Background, the box is filled with the color and the text is
+black or white, whichever has the higher WCAG contrast ratio.
 
 ## Speed
 
