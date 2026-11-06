@@ -153,6 +153,9 @@ describe('exact size', () => {
     expect(lockedSize('width', 300, 1.5)).toEqual({ width: 300, height: 200 })
     expect(lockedSize('height', 200, 1.5)).toEqual({ width: 300, height: 200 })
     expect(lockedSize('width', 1, 4)).toEqual({ width: 1, height: 1 })
+    for (const bad of [0, Number.NaN, Infinity, -2]) {
+      expect(lockedSize('width', 30, bad)).toEqual({ width: 30, height: 30 })
+    }
   })
 
   it('resizes from the top-left in physical px', () => {

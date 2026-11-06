@@ -32,7 +32,11 @@
     height: number
     logicalWidth: number
     logicalHeight: number
+    /** Whether Rust owns Esc. If not, the page forwards its own Esc key to Rust. */
+    escapeShortcut: boolean
   }
+  /** Sent with `overlay:escape`; answered with the same token. */
+  type EscapeEvent = { session: number; token: number }
 
   /** Broadcast to every overlay page, so only one display has a selection. */
   const SELECTED = 'overlay:selected'
@@ -61,8 +65,7 @@
   /** The selection in logical px, relative to this display. */
   let selection = $state<Rect | null>(null)
   let drag = $state<Drag | null>(null)
-  /** Another display's window that has the selection. */
-  let elsewhere: string | null = null
+  let escapeShortcut = true
   let editing = $state(false)
   let pointer = $state<Point>({ x: 0, y: 0 })
   let badge = $state<Size>({ width: 0, height: 0 })
@@ -73,21 +76,31 @@
     drag?.kind === 'move' ? CURSORS.move : drag?.kind === 'resize' ? CURSORS[drag.handle] : null,
   )
   const loupeAt = $derived({
-    x: Math.max(0, Math.min(Math.floor(pointer.x * scale.x), frame.width - 1)),
-    y: Math.max(0, Math.min(Math.floor(pointer.y * scale.y), frame.height - 1)),
+    x: Math.floor(pointer.x * scale.x),
+    y: Math.floor(pointer.y * scale.y),
   })
+  // A captured drag can go past this display; the loupe hides until the pointer is back.
+  const onDisplay = $derived(
+    pointer.x >= 0 && pointer.y >= 0 && pointer.x < display.width && pointer.y < display.height,
+  )
 
   function reset() {
     selection = null
     drag = null
-    elsewhere = null
     editing = false
+  }
+
+  /** Gives up on `session` (never a newer one); Rust closes it. */
+  function close(session: number) {
+    void invoke('close_overlay', { session })
   }
 
   // Draws this display's frozen frame, then tells Rust, which shows the (hidden) window.
   async function draw(info: FrameInfo) {
-    if (info.session === current) return
+    // Session ids only grow: an older (or the same) session never redraws.
+    if (info.session <= current) return
     current = info.session
+    escapeShortcut = info.escapeShortcut
     reset()
     try {
       const data = await invoke<ArrayBuffer | Uint8Array<ArrayBuffer>>('overlay_frame', {
@@ -113,12 +126,16 @@
     } catch (e) {
       // Never leave the user on a dead overlay.
       console.error('overlay could not draw its frame', e)
-      void invoke('close_overlay')
+      close(info.session)
     }
   }
 
-  /** Sets the selection and tells the other displays when this one gains or loses it. */
-  function select(rect: Rect | null) {
+  /**
+   * Sets the selection and tells the other displays when this one gains or loses it. A rect
+   * under one physical pixel on either side is no selection.
+   */
+  function select(next: Rect | null) {
+    const rect = next && !isEmpty(toPhysical(next, scale, frame)) ? next : null
     const active = rect !== null
     if (active !== (selection !== null)) {
       void emit(SELECTED, { label: view.label, active } satisfies Selected)
@@ -132,22 +149,23 @@
     select(null)
   }
 
-  /** Esc, from Rust or the page: undo one thing here, or close if nothing is selected. */
-  function escape() {
+  /**
+   * Esc from Rust: undo one thing here (the size edit, else the selection or drag) and say
+   * whether anything was undone. Rust closes the overlay when no page undid anything.
+   */
+  function escape({ session, token }: EscapeEvent) {
+    let handled = true
     if (editing) editing = false
     else if (selection || drag) clear()
-    else {
-      // Another display has the selection: its page handles this Esc.
-      if (!elsewhere) void invoke('close_overlay')
-      return
-    }
-    void invoke('overlay_escaped', { session: current })
+    else handled = false
+    void invoke('overlay_escaped', { session, token, handled })
   }
 
   function confirm(rect: Rect) {
-    invoke('overlay_confirm', { session: current, rect }).catch((e) => {
+    const session = current
+    invoke('overlay_confirm', { session, rect }).catch((e) => {
       console.error('could not confirm the selection', e)
-      void invoke('close_overlay')
+      close(session)
     })
   }
 
@@ -193,7 +211,7 @@
       drag.kind === 'draw'
         ? fromPoints(drag.start, pointer, display)
         : resize(drag.origin, drag.handle, dx, dy, display)
-    select(isEmpty(rect) ? null : rect)
+    select(rect)
   }
 
   function onpointerup() {
@@ -201,13 +219,18 @@
   }
 
   function onkeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') return escape()
+    if (e.key === 'Escape') {
+      // Rust owns Esc and forwards it, so one press is one action. Only if its shortcut
+      // could not be registered does the page's own key go to Rust.
+      if (!escapeShortcut) void invoke('overlay_escape')
+      return
+    }
     // Typing in the size badge: Enter applies the size there.
     if (e.target instanceof Element && e.target.closest('[data-size-badge]')) return
     if (!selection || !physical) return
     if (e.key === 'Enter') {
       e.preventDefault()
-      if (!isEmpty(physical)) confirm(physical)
+      confirm(physical)
       return
     }
     const moved = nudge(selection, e.key, e.shiftKey ? 10 : 1, scale, display)
@@ -224,16 +247,12 @@
   onMount(() => {
     const listeners = Promise.all([
       view.listen<FrameInfo>('overlay:show', (e) => void draw(e.payload)),
-      view.listen('overlay:escape', escape),
+      view.listen<EscapeEvent>('overlay:escape', (e) => escape(e.payload)),
+      // A selection started on another display clears this one's.
       listen<Selected>(SELECTED, ({ payload }) => {
-        if (payload.label === view.label) return
-        if (payload.active) {
-          elsewhere = payload.label
-          drag = null
-          selection = null
-        } else if (elsewhere === payload.label) {
-          elsewhere = null
-        }
+        if (payload.label === view.label || !payload.active) return
+        drag = null
+        selection = null
       }),
     ])
     // Asked only once the listeners are registered, so a frame sent while this window was
@@ -277,7 +296,7 @@
   {:else}
     <div class="dim"></div>
   {/if}
-  {#if loupeOn && drag && drag.kind !== 'move'}
+  {#if loupeOn && drag && drag.kind !== 'move' && onDisplay}
     {@const p = loupePosition(pointer, loupe, display)}
     <div
       class="floating"

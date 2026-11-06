@@ -83,6 +83,9 @@ pub struct FrameInfo {
     pub height: u32,
     pub logical_width: u32,
     pub logical_height: u32,
+    /// Whether Rust owns Esc (the global shortcut registered). If not, the page forwards its
+    /// own Esc key to Rust instead.
+    pub escape_shortcut: bool,
 }
 
 /// The overlay's whole state. One capture at a time: the hotkey is ignored unless `Idle`.
@@ -106,8 +109,16 @@ pub struct Session {
     /// The display under the cursor, if it has a frame. It gets keyboard focus.
     focus: Option<u32>,
     painted: Vec<u32>,
-    /// The last Esc forwarded to the pages that none of them has handled yet.
-    escape: Option<u64>,
+    /// The Esc forwarded to the pages that is still waiting for their answers.
+    escape: Option<EscapeWait>,
+}
+
+/// One Esc press, until a page handles it or every shown page says it had nothing to undo.
+#[derive(Debug)]
+struct EscapeWait {
+    token: u64,
+    /// Shown displays whose page had nothing to undo.
+    declined: Vec<u32>,
 }
 
 /// One display's original frame, kept for the crop. Its window gets a copy, once.
@@ -144,12 +155,14 @@ impl Phase {
 
     /// The capture finished. Opens the session if this capture is still current (Esc may have
     /// closed it) and returns each display's frame info to send. `focus` is the display under
-    /// the cursor; it gets keyboard focus if it was captured.
+    /// the cursor; it gets keyboard focus if it was captured. `escape_shortcut` tells the pages
+    /// whether Rust owns Esc.
     pub fn open(
         &mut self,
         session: u64,
         frames: Vec<DisplayFrame>,
         focus: Option<u32>,
+        escape_shortcut: bool,
     ) -> Option<Vec<(u32, FrameInfo)>> {
         let Phase::Capturing {
             session: id,
@@ -172,6 +185,7 @@ impl Phase {
                     height,
                     logical_width: f.logical.width,
                     logical_height: f.logical.height,
+                    escape_shortcut,
                 };
                 Slot {
                     display: f.id,
@@ -243,25 +257,48 @@ impl Phase {
             .map(|slot| Arc::clone(&slot.image))
     }
 
-    /// Esc was pressed. Returns `true` if it goes to the pages (they clear a selection first),
-    /// `false` if nothing is open and the overlay should just close.
-    pub fn forward_escape(&mut self, token: u64) -> bool {
-        let Phase::Open(s) = self else { return false };
-        s.escape = Some(token);
-        true
+    /// Esc was pressed. Returns the session if Esc goes to its pages (one may have a size edit
+    /// or a selection to undo), `None` if nothing is shown yet and the overlay should close.
+    pub fn forward_escape(&mut self, token: u64) -> Option<u64> {
+        let Phase::Open(s) = self else { return None };
+        if s.painted.is_empty() {
+            return None;
+        }
+        s.escape = Some(EscapeWait {
+            token,
+            declined: Vec::new(),
+        });
+        Some(s.id)
     }
 
-    /// A page handled the last Esc.
-    pub fn escape_handled(&mut self, session: u64) {
-        if let Some(s) = self.current(session) {
+    /// A page answered Esc `token`: it undid something (`handled`) or had nothing to undo.
+    /// Returns `true` when every shown page had nothing to undo, so the overlay should close.
+    /// Answers to an older Esc or session are ignored.
+    pub fn escape_reply(&mut self, session: u64, token: u64, display: u32, handled: bool) -> bool {
+        let Some(s) = self.current(session) else {
+            return false;
+        };
+        let Some(wait) = s.escape.as_mut().filter(|w| w.token == token) else {
+            return false;
+        };
+        if handled {
+            s.escape = None;
+            return false;
+        }
+        if s.painted.contains(&display) && !wait.declined.contains(&display) {
+            wait.declined.push(display);
+        }
+        let close = s.painted.iter().all(|d| wait.declined.contains(d));
+        if close {
             s.escape = None;
         }
+        close
     }
 
-    /// Whether Esc `token` is still unhandled; if so, the pages are not responding.
+    /// Whether Esc `token` is still unanswered; if so, the pages are not responding.
     pub fn escape_unhandled(&mut self, token: u64) -> bool {
         let Phase::Open(s) = self else { return false };
-        s.escape.take_if(|t| *t == token).is_some()
+        s.escape.take_if(|w| w.token == token).is_some()
     }
 
     /// A window drew its frame. `None` if the session is gone or it already painted.
@@ -341,7 +378,7 @@ pub(crate) mod tests {
     fn open(focus: Option<u32>) -> Phase {
         let mut p = Phase::default();
         assert!(p.begin(7, Instant::now()));
-        p.open(7, vec![frame(1, 4, 2), frame(2, 4, 2)], focus)
+        p.open(7, vec![frame(1, 4, 2), frame(2, 4, 2)], focus, true)
             .unwrap();
         p
     }
@@ -388,7 +425,7 @@ pub(crate) mod tests {
         assert!(p.begin(1, Instant::now()));
         assert!(!p.begin(2, Instant::now()), "pressed while capturing");
         assert_eq!(p.session(), Some(1));
-        p.open(1, vec![frame(1, 4, 2)], None).unwrap();
+        p.open(1, vec![frame(1, 4, 2)], None, true).unwrap();
         assert!(!p.begin(3, Instant::now()), "pressed while open");
         assert_eq!(p.session(), Some(1));
     }
@@ -398,9 +435,13 @@ pub(crate) mod tests {
         let mut p = Phase::default();
         assert!(p.begin(1, Instant::now()));
         p = Phase::Idle; // Esc during the capture
-        assert_eq!(p.open(1, vec![frame(1, 4, 2)], None), None);
+        assert_eq!(p.open(1, vec![frame(1, 4, 2)], None, true), None);
         assert!(p.begin(2, Instant::now()));
-        assert_eq!(p.open(1, vec![frame(1, 4, 2)], None), None, "older capture");
+        assert_eq!(
+            p.open(1, vec![frame(1, 4, 2)], None, true),
+            None,
+            "older capture"
+        );
         assert!(matches!(p, Phase::Capturing { session: 2, .. }));
     }
 
@@ -409,7 +450,7 @@ pub(crate) mod tests {
         let mut p = Phase::default();
         p.begin(4, Instant::now());
         let shows = p
-            .open(4, vec![frame(1, 4, 2), frame(2, 6, 8)], None)
+            .open(4, vec![frame(1, 4, 2), frame(2, 6, 8)], None, true)
             .unwrap();
         let info = |width, height| FrameInfo {
             session: 4,
@@ -417,6 +458,7 @@ pub(crate) mod tests {
             height,
             logical_width: width / 2,
             logical_height: height / 2,
+            escape_shortcut: true,
         };
         assert_eq!(shows, [(1, info(4, 2)), (2, info(6, 8))]);
         assert_eq!(p.pending_frame(2), Some(info(6, 8)));
@@ -425,7 +467,8 @@ pub(crate) mod tests {
         assert_eq!(
             json,
             serde_json::json!({
-                "session": 4, "width": 4, "height": 2, "logicalWidth": 2, "logicalHeight": 1
+                "session": 4, "width": 4, "height": 2, "logicalWidth": 2, "logicalHeight": 1,
+                "escapeShortcut": true
             })
         );
     }
@@ -447,27 +490,66 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn esc_goes_to_the_pages_until_one_handles_it() {
-        let mut p = open(None);
-        assert!(p.forward_escape(1));
-        p.escape_handled(6); // other session
-        p.escape_handled(7);
-        assert!(!p.escape_unhandled(1), "handled");
-
-        assert!(p.forward_escape(2));
-        assert!(p.forward_escape(3));
-        assert!(!p.escape_unhandled(2), "a newer Esc replaced it");
-        assert!(p.escape_unhandled(3));
-        assert!(!p.escape_unhandled(3), "reported once");
+    fn esc_is_done_when_one_page_handles_it() {
+        let mut p = shown();
+        assert_eq!(p.forward_escape(1), Some(7));
+        assert!(
+            !p.escape_reply(7, 1, 1, false),
+            "display 2 has not answered"
+        );
+        assert!(
+            !p.escape_reply(7, 1, 2, true),
+            "display 2 cleared its selection"
+        );
+        assert!(!p.escape_unhandled(1), "nothing left to wait for");
     }
 
     #[test]
-    fn esc_closes_when_nothing_is_open() {
-        assert!(!Phase::Idle.forward_escape(1));
+    fn esc_closes_when_every_shown_page_had_nothing_to_undo() {
+        let mut p = shown();
+        p.forward_escape(1);
+        assert!(!p.escape_reply(7, 1, 2, false));
+        assert!(!p.escape_reply(7, 1, 2, false), "the same page twice");
+        assert!(!p.escape_reply(7, 1, 9, false), "not a shown display");
+        assert!(p.escape_reply(7, 1, 1, false));
+        assert!(!p.escape_unhandled(1));
+    }
+
+    #[test]
+    fn answers_to_an_older_esc_or_session_are_ignored() {
+        let mut p = shown();
+        p.forward_escape(1);
+        p.forward_escape(2);
+        assert!(!p.escape_reply(7, 1, 1, true), "older Esc");
+        assert!(!p.escape_reply(6, 2, 1, true), "older session");
+        assert!(!p.escape_reply(7, 1, 1, false));
+        assert!(!p.escape_reply(7, 1, 2, false));
+        assert!(p.escape_unhandled(2), "the newer Esc is still waiting");
+        assert!(!p.escape_unhandled(2), "reported once");
+        assert!(!p.escape_reply(7, 2, 1, true), "no Esc waiting");
+        assert!(!Phase::Idle.escape_reply(7, 2, 1, false));
+    }
+
+    #[test]
+    fn esc_closes_when_nothing_is_shown() {
+        assert_eq!(Phase::Idle.forward_escape(1), None);
         assert!(!Phase::Idle.escape_unhandled(1));
         let mut capturing = Phase::default();
         capturing.begin(1, Instant::now());
-        assert!(!capturing.forward_escape(1));
+        assert_eq!(capturing.forward_escape(1), None);
+        assert_eq!(
+            open(None).forward_escape(1),
+            None,
+            "open, nothing painted yet"
+        );
+    }
+
+    /// An open session with both displays painted.
+    fn shown() -> Phase {
+        let mut p = open(None);
+        p.painted(7, 1);
+        p.painted(7, 2);
+        p
     }
     #[test]
     fn first_paint_reports_the_timing_once() {

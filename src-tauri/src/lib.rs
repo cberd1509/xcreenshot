@@ -37,6 +37,7 @@ pub fn run() {
             overlay::window::overlay_frame,
             overlay::window::overlay_painted,
             overlay::window::overlay_escaped,
+            overlay::window::overlay_escape,
             overlay::window::overlay_confirm,
             overlay::window::close_overlay,
         ])

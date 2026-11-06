@@ -12,6 +12,7 @@ type Info = {
   height: number
   logicalWidth: number
   logicalHeight: number
+  escapeShortcut: boolean
 }
 type At = { x: number; y: number }
 
@@ -31,9 +32,20 @@ const small = (session: number): Info => ({
   height: 2,
   logicalWidth: 2,
   logicalHeight: 1,
+  escapeShortcut: true,
 })
 // A 2x display of 1000 x 700 points.
-const info: Info = { session: 9, width: 2000, height: 1400, logicalWidth: 1000, logicalHeight: 700 }
+const info: Info = {
+  session: 9,
+  width: 2000,
+  height: 1400,
+  logicalWidth: 1000,
+  logicalHeight: 700,
+  escapeShortcut: true,
+}
+/** Esc from Rust, forwarded to this page. */
+const esc = (token = 1) => emit('overlay:escape', { session: 9, token })
+const answers = () => called('overlay_escaped').map((c) => c.args)
 
 const overlay = () => screen.getByTestId('overlay')
 const selection = () => screen.queryByTestId('selection')
@@ -155,6 +167,7 @@ describe('Overlay', () => {
     // Wrong size for the pixels: ImageData throws.
     await emit('overlay:show', { ...small(1), width: 5, height: 5 })
     await waitFor(() => expect(called('close_overlay')).toHaveLength(1))
+    expect(called('close_overlay')[0].args).toEqual({ session: 1 })
     expect(error).toHaveBeenCalled()
     expect(called('overlay_painted')).toHaveLength(0)
   })
@@ -173,13 +186,31 @@ describe('Overlay', () => {
     expect([canvas.width, canvas.height]).toEqual([0, 0])
   })
 
-  it('closes on Esc with nothing selected', async () => {
+  it('ignores a show for an older session', async () => {
     await mount()
-    await userEvent.keyboard('a')
-    expect(called('close_overlay')).toHaveLength(0)
+    await emit('overlay:show', small(3))
+    await waitFor(() => expect(called('overlay_painted')).toHaveLength(1))
+    await emit('overlay:show', small(2))
+    await tick()
+    expect(called('overlay_frame').map((c) => c.args)).toEqual([{ session: 3 }])
+  })
+
+  it('leaves its own Esc key to Rust when Rust owns Esc', async () => {
+    await mount()
+    await emit('overlay:show', small(1))
+    await waitFor(() => expect(called('overlay_painted')).toHaveLength(1))
     await userEvent.keyboard('{Escape}')
-    expect(called('close_overlay')).toHaveLength(1)
-    expect(called('overlay_escaped')).toHaveLength(0)
+    expect(called('overlay_escape')).toHaveLength(0)
+    expect(called('close_overlay')).toHaveLength(0)
+  })
+
+  it('forwards its own Esc key when Rust has no Esc shortcut', async () => {
+    await mount()
+    await emit('overlay:show', { ...small(1), escapeShortcut: false })
+    await waitFor(() => expect(called('overlay_painted')).toHaveLength(1))
+    await userEvent.keyboard('a{Escape}')
+    expect(called('overlay_escape')).toHaveLength(1)
+    expect(called('close_overlay')).toHaveLength(0)
   })
 
   it('stops listening when unmounted', async () => {
@@ -323,60 +354,59 @@ describe('Overlay', () => {
       expect(rect()).toEqual([5.5, 5.5, 100, 50])
     })
 
-    it('clears the selection on Esc and acks it, then closes', async () => {
+    it('clears the selection on Esc, then says it had nothing to undo', async () => {
       await shown()
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
-      await emit('overlay:escape')
+      await esc(1)
       await waitFor(() => expect(selection()).toBeNull())
-      expect(called('overlay_escaped')[0].args).toEqual({ session: 9 })
       expect(selected.at(-1)).toEqual({ label: 'overlay-1', active: false })
+      await esc(2)
+      await waitFor(() => expect(answers()).toHaveLength(2))
+      expect(answers()).toEqual([
+        { session: 9, token: 1, handled: true },
+        { session: 9, token: 2, handled: false },
+      ])
+      // Rust decides whether to close; the page never does on Esc.
       expect(called('close_overlay')).toHaveLength(0)
-      await emit('overlay:escape')
-      await waitFor(() => expect(called('close_overlay')).toHaveLength(1))
     })
 
     it('Esc during a drag stops it for good', async () => {
       await shown()
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       fireEvent.pointerDown(selection()!, point({ x: 50, y: 30 }))
-      await userEvent.keyboard('{Escape}')
+      await esc(1)
+      await waitFor(() => expect(selection()).toBeNull())
       fireEvent.pointerMove(overlay(), point({ x: 70, y: 40 }))
       expect(selection()).toBeNull()
       // A drag that has not drawn anything yet is undone too.
       fireEvent.pointerDown(overlay(), point({ x: 5, y: 5 }))
-      await userEvent.keyboard('{Escape}')
-      expect(called('overlay_escaped')).toHaveLength(2)
-      expect(called('close_overlay')).toHaveLength(0)
+      await esc(2)
+      await waitFor(() => expect(answers()).toHaveLength(2))
+      expect(answers().map((a) => (a as { handled: boolean }).handled)).toEqual([true, true])
     })
 
     it('Esc cancels a size edit before the selection', async () => {
       await shown()
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       await userEvent.click(screen.getByRole('button', { name: /200 × 100/ }))
-      await emit('overlay:escape')
+      await esc()
       await waitFor(() => expect(screen.queryByLabelText('Width')).toBeNull())
       expect(selection()).not.toBeNull()
-      expect(called('overlay_escaped')).toHaveLength(1)
+      expect(answers()).toEqual([{ session: 9, token: 1, handled: true }])
     })
 
     it('keeps one selection across displays', async () => {
       await shown()
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      // Another display losing a selection changes nothing here.
+      await emit('overlay:selected', { label: 'overlay-2', active: false })
+      await tick()
+      expect(selection()).not.toBeNull()
       await emit('overlay:selected', { label: 'overlay-2', active: true })
       await waitFor(() => expect(selection()).toBeNull())
-      // Display 2 has the selection: its page handles Esc, this one does nothing.
-      await emit('overlay:escape')
-      await tick()
-      expect(called('close_overlay')).toHaveLength(0)
-      expect(called('overlay_escaped')).toHaveLength(0)
-      // Another display losing a selection it never had changes nothing.
-      await emit('overlay:selected', { label: 'overlay-3', active: false })
-      await emit('overlay:escape')
-      await tick()
-      expect(called('close_overlay')).toHaveLength(0)
-      await emit('overlay:selected', { label: 'overlay-2', active: false })
-      await emit('overlay:escape')
-      await waitFor(() => expect(called('close_overlay')).toHaveLength(1))
+      // Display 2 has the selection: this page has nothing to undo and says so.
+      await esc()
+      await waitFor(() => expect(answers()).toEqual([{ session: 9, token: 1, handled: false }]))
     })
 
     it('confirms the pixel rect on Enter', async () => {
@@ -391,10 +421,12 @@ describe('Overlay', () => {
       })
     })
 
-    it('does not confirm a selection under one pixel', async () => {
+    it('treats a selection under one pixel as none', async () => {
       await shown()
       drag({ x: 10, y: 10 }, { x: 10.2, y: 60 })
-      expect(selection()).not.toBeNull()
+      expect(selection()).toBeNull()
+      expect(screen.queryByTestId('size-badge')).toBeNull()
+      expect(selected).toEqual([])
       await userEvent.keyboard('{Enter}')
       expect(called('overlay_confirm')).toHaveLength(0)
     })
@@ -408,6 +440,8 @@ describe('Overlay', () => {
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       await userEvent.keyboard('{Enter}')
       await waitFor(() => expect(called('close_overlay')).toHaveLength(1))
+      // Only the session it confirmed, never a newer one.
+      expect(called('close_overlay')[0].args).toEqual({ session: 9 })
       expect(error).toHaveBeenCalled()
     })
 
@@ -442,6 +476,18 @@ describe('Overlay', () => {
       fireEvent.pointerMove(overlay(), point({ x: 20, y: 30 }))
       expect(screen.getByTestId('magnifier')).toHaveTextContent('40, 60')
       expect(screen.getByTestId('magnifier')).toHaveTextContent('#FF8000')
+      // Hidden while a captured drag is past any edge of this display, back after.
+      for (const off of [
+        { x: -1, y: 30 },
+        { x: 20, y: -1 },
+        { x: 1000, y: 30 },
+        { x: 20, y: 700 },
+      ]) {
+        fireEvent.pointerMove(overlay(), point(off))
+        expect(screen.queryByTestId('magnifier')).toBeNull()
+      }
+      fireEvent.pointerMove(overlay(), point({ x: 999, y: 699 }))
+      expect(screen.getByTestId('magnifier')).toHaveTextContent('1998, 1398')
       fireEvent.pointerUp(overlay())
       expect(screen.queryByTestId('magnifier')).toBeNull()
       // Not while moving.

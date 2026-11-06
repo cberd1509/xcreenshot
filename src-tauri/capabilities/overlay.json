@@ -12,6 +12,7 @@
     "allow-overlay-frame",
     "allow-overlay-painted",
     "allow-overlay-escaped",
+    "allow-overlay-escape",
     "allow-overlay-confirm",
     "allow-close-overlay"
   ]

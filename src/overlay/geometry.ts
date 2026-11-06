@@ -115,6 +115,8 @@ function toLogical(p: Rect, scale: Scale): Rect {
 
 /** The other side for an aspect-locked edit, rounded to whole pixels (at least 1). */
 export function lockedSize(edited: keyof Size, value: number, ratio: number): Size {
+  // A ratio from an empty size (0, NaN, Infinity) keeps the sides equal instead.
+  if (!(Number.isFinite(ratio) && ratio > 0)) ratio = 1
   return edited === 'width'
     ? { width: value, height: Math.max(1, Math.round(value / ratio)) }
     : { width: Math.max(1, Math.round(value * ratio)), height: value }
