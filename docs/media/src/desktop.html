@@ -305,25 +305,6 @@
         color: #fdba74;
       }
 
-      /* Dock. */
-      .dock {
-        position: absolute;
-        bottom: 10px;
-        left: 50%;
-        transform: translateX(-50%);
-        display: flex;
-        gap: 10px;
-        padding: 9px;
-        border-radius: 20px;
-        background: rgb(255 255 255 / 0.22);
-        border: 1px solid rgb(255 255 255 / 0.25);
-        backdrop-filter: blur(20px);
-      }
-      .dock i {
-        width: 48px;
-        height: 48px;
-        border-radius: 12px;
-      }
     </style>
   </head>
   <body>
@@ -381,15 +362,6 @@
         <span class="tab">report.ts</span><span>utils.ts</span>
       </div>
       <pre><span class="l"><span class="k">import</span> { sum } <span class="k">from</span> <span class="s">'./utils'</span></span><span class="l"> </span><span class="l"><span class="k">export type</span> Entry = { day: <span class="f">string</span>; hours: <span class="f">number</span> }</span><span class="l"> </span><span class="l"><span class="c">// Totals per week, newest first.</span></span><span class="l"><span class="k">export function</span> <span class="f">weekly</span>(entries: Entry[]) {</span><span class="l">  <span class="k">const</span> weeks = <span class="k">new</span> Map&lt;<span class="f">string</span>, <span class="f">number</span>[]&gt;()</span><span class="l">  <span class="k">for</span> (<span class="k">const</span> e <span class="k">of</span> entries) {</span><span class="l">    <span class="k">const</span> key = e.day.<span class="f">slice</span>(<span class="n">0</span>, <span class="n">7</span>)</span><span class="l">    weeks.<span class="f">set</span>(key, [...(weeks.<span class="f">get</span>(key) ?? []), e.hours])</span><span class="l">  }</span><span class="l">  <span class="k">return</span> [...weeks]</span><span class="l">    .<span class="f">map</span>(([week, h]) =&gt; ({ week, total: <span class="f">sum</span>(h) }))</span><span class="l">    .<span class="f">sort</span>((a, b) =&gt; b.week.<span class="f">localeCompare</span>(a.week))</span><span class="l">}</span><span class="l"> </span><span class="l"><span class="k">export const</span> LIMIT = <span class="n">40</span></span></pre>
-    </div>
-
-    <div class="dock">
-      <i style="background: linear-gradient(135deg, #60a5fa, #2563eb)"></i>
-      <i style="background: linear-gradient(135deg, #fde68a, #f59e0b)"></i>
-      <i style="background: linear-gradient(135deg, #86efac, #16a34a)"></i>
-      <i style="background: linear-gradient(135deg, #f9a8d4, #db2777)"></i>
-      <i style="background: linear-gradient(135deg, #c4b5fd, #7c3aed)"></i>
-      <i style="background: linear-gradient(135deg, #e5e7eb, #9ca3af)"></i>
     </div>
   </body>
 </html>
