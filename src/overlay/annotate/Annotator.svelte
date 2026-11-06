@@ -1,182 +1,252 @@
 <script lang="ts">
-  import { untrack } from 'svelte'
-  import { settings } from '$lib/settings.svelte'
-  import { badgePosition, type Point, type Rect, type Size } from '../geometry'
+  import { onMount, untrack } from 'svelte'
+  import { nudge, type Point, type Rect, type Scale, type Size } from '../geometry'
   import { Board, exportShapes, loadKonva, type AnnotationExport } from './board'
-  import { clear, empty, redo, remove, run, undo, update } from './history'
+  import { commit, empty, redo, replace, undo, without, type History, type Shapes } from './history'
   import { toolbarPosition } from './placement'
-  import { DEFAULT_STYLE, READY, clampTo, draw, toolForKey, type Shape, type Tool } from './shapes'
-  import Toolbar, { type ToolbarActions } from './Toolbar.svelte'
+  import {
+    DEFAULT_STYLE,
+    READY,
+    bounds,
+    clampTo,
+    draw,
+    keepInside,
+    toolForKey,
+    translate,
+    type Shape,
+    type Tool,
+  } from './shapes'
+  import type ToolbarComponent from './Toolbar.svelte'
+  import type { Option, ToolbarActions } from './Toolbar.svelte'
 
   /**
-   * Annotations on the selection, and the toolbar next to it. `badge` is the size badge's size,
-   * so the toolbar keeps clear of it. Konva loads once there is a selection.
+   * Annotations on the selection, and the toolbar next to it. Konva and the toolbar load when
+   * the page is idle; the stage is built on the first selection. The overlay owns the keyboard
+   * and calls `key` and `escape`; it calls `reset` when the annotations should go.
    */
   let {
     selection,
     display,
-    badge,
+    scale,
+    options,
     actions: given = {},
+    annotated = $bindable(false),
   }: {
     selection: Rect | null
     display: Size
-    badge: Size
+    /** Physical px per logical px, so arrow keys nudge by whole pixels. */
+    scale: Scale
+    options: Record<Option, boolean>
     actions?: Partial<ToolbarActions>
+    /** Whether there are any shapes. */
+    annotated?: boolean
   } = $props()
 
+  const noop = () => {}
   const actions: ToolbarActions = $derived({
-    copy: () => {},
-    save: () => {},
-    share: () => {},
-    // Kept for this run only; saving settings comes in #20.
-    option: (key, on) => (settings[key] = on),
+    copy: noop,
+    save: noop,
+    share: noop,
+    option: noop,
     ...given,
   })
 
   let container: HTMLDivElement = $state()!
+  let Toolbar = $state<typeof ToolbarComponent | null>(null)
+  let toolbar = $state<ReturnType<typeof ToolbarComponent>>()
   let board = $state.raw<Board | null>(null)
   let loading = false
-  let history = $state.raw(empty)
+  /** Konva could not load: the tools show as unavailable until a later selection retries. */
+  let failed = $state(false)
+  let history = $state.raw<History>(empty)
   let tool = $state<Tool | null>(null)
   let style = $state(DEFAULT_STYLE)
   let selected = $state<string | null>(null)
-  let draft = $state.raw<Shape | null>(null)
   let start: Point | null = null
   let ids = 0
   let bar = $state<Size>({ width: 0, height: 0 })
 
-  // Lazy: Konva is fetched and the stage built on the first selection, not when the overlay
-  // shows, so the frozen frame paints as fast as before.
+  const drawing = $derived(tool !== null && READY.has(tool) && !failed)
+
+  function loadToolbar() {
+    if (Toolbar) return
+    import('./Toolbar.svelte').then(
+      (m) => (Toolbar = m.default),
+      (e: unknown) => console.error('could not load the toolbar', e),
+    )
+  }
+
+  // Fetched when the page is idle (long before any hotkey), so the first selection and the
+  // first click on the toolbar never wait. The overlay's own bundle stays small.
+  onMount(() => {
+    const idle = window.requestIdleCallback ?? ((f: () => void) => setTimeout(f, 200))
+    idle(() => {
+      loadToolbar()
+      loadKonva().catch(() => {})
+    })
+    return () => board?.destroy()
+  })
+
+  // The stage is built on the first selection. A failed load retries on the next change.
   $effect(() => {
     if (!selection || board || loading) return
     loading = true
+    untrack(loadToolbar)
     loadKonva()
       .then((K) => {
-        board = new Board(
-          K,
-          container,
-          untrack(() => display),
-          {
-            onchange: (shape) => (history = update(history, shape)),
-            onselect: (id) => (selected = id),
-          },
-        )
+        failed = false
+        board = new Board(K, container, {
+          onchange: (shape) => set(replace(history.present, keepInside(shape, selection!))),
+          onselect: (id) => (selected = id),
+        })
       })
-      .catch((e) => console.error('could not load the annotation layer', e))
+      .catch((e: unknown) => {
+        failed = true
+        console.error('could not load the annotation layer', e)
+      })
+      .finally(() => (loading = false))
   })
-  $effect(() => () => board?.destroy())
 
-  // A new selection (or session) starts with no annotations.
+  $effect(() => board?.place(selection))
+  $effect(() => board?.render(history.present, selected))
   $effect(() => {
-    if (selection) return
-    untrack(() => {
-      history = empty
-      selected = null
-      draft = null
-      tool = null
-      start = null
-    })
+    annotated = history.present.length > 0
   })
 
-  $effect(() => board?.resize(display))
-  $effect(() => {
-    if (selection) board?.place(selection)
-  })
-  $effect(() => board?.render(history.shapes, draft, selected))
+  /** Moves history, dropping the shape selection if that shape is gone. */
+  function move(next: History) {
+    history = next
+    if (selected && !next.present.some((s) => s.id === selected)) selected = null
+  }
+  const set = (shapes: Shapes) => move(commit(history, shapes))
 
-  const toolbarAt = $derived.by(() => {
-    if (!selection) return null
-    const b = badgePosition(selection, badge, display)
-    return toolbarPosition(selection, bar, display, { ...b, ...badge })
-  })
+  /** Drops every annotation, the tool and the shape being drawn. Not undoable. */
+  export function reset() {
+    history = empty
+    selected = null
+    tool = null
+    cancel()
+  }
 
-  /** The pointer in the selection's own space, clamped to it. */
-  const local = (e: PointerEvent): Point =>
-    clampTo({ x: e.clientX - selection!.x, y: e.clientY - selection!.y }, selection!)
+  function cancel() {
+    start = null
+    board?.preview(null)
+  }
+
+  const at = (e: PointerEvent): Point => ({ x: e.clientX, y: e.clientY })
 
   function onpointerdown(e: PointerEvent) {
     if (e.button !== 0 || !selection || !board) return
     // On a shape or its handles: Konva moves or resizes it.
-    if (board.hits({ x: e.clientX, y: e.clientY })) return e.stopPropagation()
+    if (board.hits(at(e))) return e.stopPropagation()
     selected = null
     // With no drawing tool, the press goes on to the overlay, which moves the selection.
-    if (!tool || !READY.has(tool)) return
+    if (!drawing) return
     e.stopPropagation()
-    start = local(e)
+    start = clampTo(at(e), selection)
     container.setPointerCapture?.(e.pointerId)
   }
 
   function onpointermove(e: PointerEvent) {
-    if (start && tool) draft = draw(tool, 'draft', start, local(e), style)
+    if (start && tool && selection) {
+      board?.preview(draw(tool, 'draft', start, clampTo(at(e), selection), style))
+    }
   }
 
   function onpointerup(e: PointerEvent) {
-    if (!start || !tool) return
-    const shape = draw(tool, `s${++ids}`, start, local(e), style)
-    start = null
-    draft = null
-    if (shape) history = run(history, { kind: 'add', shape })
+    if (!start || !tool || !selection) return
+    const shape = draw(tool, `s${++ids}`, start, clampTo(at(e), selection), style)
+    cancel()
+    if (shape) set([...history.present, shape])
   }
 
   const typing = (t: EventTarget | null) =>
     t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))
 
-  function onkeydown(e: KeyboardEvent) {
-    if (!selection || typing(e.target)) return
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+  /** Handles an annotation key. Returns whether it did, so the overlay skips it. */
+  export function key(e: KeyboardEvent): boolean {
+    if (!selection || typing(e.target)) return false
+    const mod = e.metaKey || e.ctrlKey
+    if (mod && !e.altKey && e.key.toLowerCase() === 'z') {
       e.preventDefault()
-      history = e.shiftKey ? redo(history) : undo(history)
-      return
+      move(e.shiftKey ? redo(history) : undo(history))
+      return true
     }
-    if (e.metaKey || e.ctrlKey || e.altKey) return
-    if ((e.key === 'Backspace' || e.key === 'Delete') && selected) {
+    if (mod || e.altKey) return false
+    const shape = selected ? history.present.find((s) => s.id === selected) : undefined
+    if (shape && (e.key === 'Backspace' || e.key === 'Delete')) {
       e.preventDefault()
-      history = remove(history, selected)
-      selected = null
-      return
+      set(without(history.present, shape.id))
+      return true
+    }
+    if (shape) {
+      const b = bounds(shape)
+      const moved = nudge(b, e.key, e.shiftKey ? 10 : 1, scale, display)
+      if (moved) {
+        e.preventDefault()
+        const next = keepInside(translate(shape, moved.x - b.x, moved.y - b.y), selection)
+        set(replace(history.present, next))
+        return true
+      }
     }
     const next = toolForKey(e.key)
-    if (next && READY.has(next)) {
+    if (next && READY.has(next) && !failed) {
       e.preventDefault()
       tool = next
+      return true
     }
+    return false
   }
 
   /**
-   * The annotations alone at the crop's native size, for Rust to composite. `crop` is the
-   * physical rect being captured; `scale` is physical px per logical px. See
-   * docs/annotations.md.
+   * Esc, one step at a time: the shape being drawn, an open menu, the selected shape, then the
+   * tool. Returns whether it undid anything; if not, the overlay handles Esc.
    */
-  export function exportAnnotations(crop: Rect, scale: number): Promise<AnnotationExport> {
-    return exportShapes(history.shapes, crop, scale)
+  export function escape(): boolean {
+    if (start) {
+      cancel()
+      return true
+    }
+    if (toolbar?.closeMenus()) return true
+    if (selected) {
+      selected = null
+      return true
+    }
+    if (tool) {
+      tool = null
+      return true
+    }
+    return false
   }
 
-  // Leaves the selection's edge free so its resize handles stay reachable.
-  const EDGE = 4
-  const clip = $derived(
-    selection &&
-      `inset(${selection.y + EDGE}px ${display.width - selection.x - selection.width + EDGE}px ` +
-        `${display.height - selection.y - selection.height + EDGE}px ${selection.x + EDGE}px)`,
-  )
-</script>
+  /**
+   * The annotations alone at native size, for Rust to composite. `crop` is the physical rect
+   * being captured; `pixelRatio` is physical px per logical px. See docs/annotations.md.
+   */
+  export function exportAnnotations(crop: Rect, pixelRatio: number): Promise<AnnotationExport> {
+    return exportShapes(history.present, crop, pixelRatio)
+  }
 
-<svelte:window {onkeydown} />
+  const toolbarAt = $derived(selection && toolbarPosition(selection, bar, display))
+</script>
 
 <div
   class="layer"
-  class:drawing={tool && READY.has(tool)}
-  style:clip-path={clip ?? 'inset(50%)'}
-  style:pointer-events={selection ? 'auto' : 'none'}
+  class:drawing
+  style:left="{selection?.x ?? 0}px"
+  style:top="{selection?.y ?? 0}px"
+  style:width="{selection?.width ?? 0}px"
+  style:height="{selection?.height ?? 0}px"
   bind:this={container}
   data-testid="annotations"
   role="presentation"
   {onpointerdown}
   {onpointermove}
   {onpointerup}
-  onpointercancel={onpointerup}
+  onpointercancel={cancel}
 ></div>
 
-{#if selection && toolbarAt}
+{#if Toolbar && toolbarAt}
   <div
     class="toolbar"
     style:left="{toolbarAt.x}px"
@@ -187,16 +257,18 @@
     role="presentation"
   >
     <Toolbar
+      bind:this={toolbar}
       {tool}
       ontool={(t) => (tool = t)}
       bind:style
-      canUndo={history.done.length > 0}
-      canRedo={history.undone.length > 0}
-      canClear={history.shapes.length > 0}
-      onundo={() => (history = undo(history))}
-      onredo={() => (history = redo(history))}
-      onclear={() => (history = clear(history))}
-      options={{ rememberRegion: settings.rememberRegion, magnifier: settings.magnifier }}
+      drawable={!failed}
+      canUndo={history.past.length > 0}
+      canRedo={history.future.length > 0}
+      canClear={history.present.length > 0}
+      onundo={() => move(undo(history))}
+      onredo={() => move(redo(history))}
+      onclear={() => set([])}
+      {options}
       {actions}
     />
   </div>
@@ -205,7 +277,7 @@
 <style>
   .layer {
     position: fixed;
-    inset: 0;
+    overflow: hidden;
     cursor: move;
   }
 
@@ -213,8 +285,10 @@
     cursor: crosshair;
   }
 
+  /* Above the selection outline and the size badge. */
   .toolbar {
     position: fixed;
+    z-index: 1;
     cursor: default;
   }
 </style>

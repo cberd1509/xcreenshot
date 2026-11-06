@@ -3,7 +3,7 @@
   import { emit, listen } from '@tauri-apps/api/event'
   import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
   import { onMount } from 'svelte'
-  import { isMac, settings } from '$lib/settings.svelte'
+  import { isMac, setSetting, settings } from '$lib/settings.svelte'
   import {
     CURSORS,
     badgePosition,
@@ -41,7 +41,8 @@
 
   /** Broadcast to every overlay page, so only one display has a selection. */
   const SELECTED = 'overlay:selected'
-  type Selected = { label: string; active: boolean }
+  /** `fresh`: the user started a new selection there, so this display drops its annotations. */
+  type Selected = { label: string; active: boolean; fresh: boolean }
 
   type Drag =
     | { kind: 'draw'; start: Point }
@@ -78,6 +79,8 @@
   /** A short error message, shown for a few seconds. */
   let notice = $state<string | null>(null)
   let noticeTimer: ReturnType<typeof setTimeout> | undefined
+  let annotator = $state<ReturnType<typeof Annotator>>()
+  let annotated = $state(false)
 
   const physical = $derived(selection && toPhysical(selection, scale, frame))
   const cursor = $derived(
@@ -96,6 +99,7 @@
     selection = null
     drag = null
     editing = false
+    annotator?.reset()
   }
 
   /** Gives up on `session` (never a newer one); Rust closes it. */
@@ -145,9 +149,12 @@
    */
   function select(next: Rect | null) {
     const rect = next && !isEmpty(toPhysical(next, scale, frame)) ? next : null
+    // Resizing an annotated selection to nothing keeps the last size, so nothing is lost.
+    if (!rect && annotated && drag?.kind === 'resize') return
     const active = rect !== null
     if (active !== (selection !== null)) {
-      void emit(SELECTED, { label: view.label, active } satisfies Selected)
+      const fresh = drag?.kind === 'draw'
+      void emit(SELECTED, { label: view.label, active, fresh } satisfies Selected)
     }
     selection = rect
   }
@@ -156,6 +163,7 @@
   function clear() {
     drag = null
     select(null)
+    annotator?.reset()
   }
 
   /**
@@ -164,7 +172,9 @@
    */
   function escape({ session, token }: EscapeEvent) {
     let handled = true
-    if (editing) editing = false
+    if (annotator?.escape()) {
+      // The annotations undid one step: the shape drawn, a menu, the shape selection, a tool.
+    } else if (editing) editing = false
     else if (selection || drag) clear()
     else handled = false
     void invoke('overlay_escaped', { session, token, handled })
@@ -229,6 +239,9 @@
       drag = { kind: 'resize', start, origin: selection, handle: handle as Handle }
     } else if (selection && contains(selection, start)) {
       drag = { kind: 'move', start, origin: selection }
+    } else if (annotated) {
+      // A new selection would drop the annotations: ignore the press instead.
+      return
     } else {
       select(null)
       drag = { kind: 'draw', start }
@@ -265,6 +278,7 @@
     }
     // Typing in the size badge: Enter applies the size there.
     if (e.target instanceof Element && e.target.closest('[data-size-badge]')) return
+    if (annotator?.key(e)) return
     if (!selection || !physical) return
     if (e.key === 'Enter' || shortcut(e, 'c')) {
       e.preventDefault()
@@ -292,11 +306,12 @@
       view.listen<FrameInfo>('overlay:show', (e) => void draw(e.payload)),
       view.listen<EscapeEvent>('overlay:escape', (e) => escape(e.payload)),
       view.listen('overlay:closed', free),
-      // A selection started on another display clears this one's.
+      // A selection started on another display clears this one's, annotations included.
       listen<Selected>(SELECTED, ({ payload }) => {
-        if (payload.label === view.label || !payload.active) return
+        if (payload.label === view.label || !payload.active || !payload.fresh) return
         drag = null
         selection = null
+        annotator?.reset()
       }),
     ])
     // Asked only once the listeners are registered, so a frame sent while this window was
@@ -322,6 +337,15 @@
   onpointercancel={onpointerup}
 >
   <canvas bind:this={canvas} width="0" height="0"></canvas>
+  <Annotator
+    bind:this={annotator}
+    bind:annotated
+    {selection}
+    {display}
+    {scale}
+    options={{ rememberRegion: settings.rememberRegion, magnifier: settings.magnifier }}
+    actions={{ option: setSetting }}
+  />
   {#if physical}
     <Selection rect={selection!} />
     {@const p = badgePosition(selection!, badge, display)}
@@ -339,7 +363,6 @@
   {:else}
     <div class="dim"></div>
   {/if}
-  <Annotator {selection} {display} {badge} />
   {#if loupeOn && drag && drag.kind !== 'move' && onDisplay}
     {@const p = loupePosition(pointer, loupe, display)}
     <div

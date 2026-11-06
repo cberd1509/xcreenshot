@@ -1,14 +1,20 @@
 import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_STYLE,
+  MIN_VISIBLE,
   READY,
   TOOLS,
   blurRects,
+  bounds,
   clampTo,
   draw,
+  keepInside,
   origin,
+  paintBounds,
+  physicalIn,
   toolForKey,
   transform,
+  translate,
   type Shape,
 } from './shapes'
 
@@ -96,9 +102,11 @@ describe('draw', () => {
 })
 
 describe('geometry', () => {
+  const sel = { x: 100, y: 50, width: 200, height: 100 }
+
   it('clamps a point to the selection', () => {
-    expect(clampTo({ x: -5, y: 500 }, { width: 100, height: 50 })).toEqual({ x: 0, y: 50 })
-    expect(clampTo({ x: 5, y: 6 }, { width: 100, height: 50 })).toEqual({ x: 5, y: 6 })
+    expect(clampTo({ x: 5, y: 500 }, sel)).toEqual({ x: 100, y: 150 })
+    expect(clampTo({ x: 150, y: 60 }, sel)).toEqual({ x: 150, y: 60 })
   })
 
   it('puts a rect node at its corner and an arrow node at its start', () => {
@@ -110,6 +118,8 @@ describe('geometry', () => {
     const t = { x: 15, y: 25, scaleX: 1, scaleY: 1 }
     expect(transform(rect, t)).toMatchObject({ x: 15, y: 25, width: 30, height: 40 })
     expect(transform(arrow, t)).toMatchObject({ points: [15, 25, 45, 65] })
+    expect(translate(rect, 5, 5)).toMatchObject({ x: 15, y: 25, width: 30 })
+    expect(translate(arrow, 5, 5)).toMatchObject({ points: [15, 25, 45, 65] })
   })
 
   it('resizes a rect and an arrow', () => {
@@ -128,27 +138,70 @@ describe('geometry', () => {
     expect(transform(rect, t)).toMatchObject({ id: 'r', style })
   })
 
+  it('boxes a shape, with and without its stroke', () => {
+    const backwards: Shape = { ...arrow, points: [40, 60, 10, 20] }
+    expect(bounds(backwards)).toEqual({ x: 10, y: 20, width: 30, height: 40 })
+    expect(bounds(rect)).toEqual({ x: 10, y: 20, width: 30, height: 40 })
+    expect(paintBounds(rect)).toEqual({ x: 6, y: 16, width: 38, height: 48 })
+    // Arrow heads stick out further.
+    expect(paintBounds(arrow)).toEqual({ x: -6, y: 4, width: 62, height: 72 })
+  })
+
   it('round-trips through JSON', () => {
     const shapes = [rect, arrow]
     expect(JSON.parse(JSON.stringify(shapes))).toEqual(shapes)
   })
 })
 
+describe('keepInside', () => {
+  const sel = { x: 100, y: 100, width: 200, height: 100 }
+
+  it('leaves a shape that is still in the selection', () => {
+    const s: Shape = { ...rect, x: 290, y: 90 }
+    expect(keepInside(s, sel)).toBe(s)
+  })
+
+  it('pulls back a shape dragged out, until a strip of it shows', () => {
+    expect(keepInside({ ...rect, x: 500, y: 500 }, sel)).toMatchObject({
+      x: 300 - MIN_VISIBLE,
+      y: 200 - MIN_VISIBLE,
+    })
+    expect(keepInside({ ...rect, x: -500, y: -500 }, sel)).toMatchObject({
+      x: 100 + MIN_VISIBLE - 30,
+      y: 100 + MIN_VISIBLE - 40,
+    })
+  })
+
+  it('keeps a flat arrow on the selection', () => {
+    const flat: Shape = { ...arrow, points: [0, 150, 50, 150] }
+    expect(keepInside(flat, sel)).toMatchObject({
+      points: [50 + MIN_VISIBLE, 150, 100 + MIN_VISIBLE, 150],
+    })
+  })
+})
+
 describe('blurRects', () => {
-  it('scales blur rects to physical px, rounding outwards', () => {
-    expect(blurRects([blur(1.2, 2.6, 10, 10)], { width: 100, height: 100 }, 2)).toEqual([
+  const crop = { x: 0, y: 0, width: 100, height: 100 }
+
+  it('scales blur rects to physical px of the crop, rounding outwards', () => {
+    expect(blurRects([blur(1.2, 2.6, 10, 10)], crop, 2)).toEqual([
       { x: 2, y: 5, width: 21, height: 21 },
+    ])
+    // Relative to the crop's corner.
+    expect(blurRects([blur(10, 10, 10, 10)], { ...crop, x: 5, y: 8 }, 1)).toEqual([
+      { x: 5, y: 2, width: 10, height: 10 },
     ])
   })
 
-  it('clips to the image and drops rects outside it', () => {
-    const size = { width: 50, height: 40 }
-    expect(blurRects([blur(20, 10, 100, 100), blur(60, 0, 5, 5)], size, 1)).toEqual([
+  it('clips to the crop and drops rects outside it', () => {
+    const small = { x: 0, y: 0, width: 50, height: 40 }
+    expect(blurRects([blur(20, 10, 100, 100), blur(60, 0, 5, 5)], small, 1)).toEqual([
       { x: 20, y: 10, width: 30, height: 30 },
     ])
+    expect(physicalIn({ x: 60, y: 0, width: 5, height: 5 }, small, 1)).toBeNull()
   })
 
   it('skips other shapes', () => {
-    expect(blurRects([rect, arrow], { width: 100, height: 100 }, 1)).toEqual([])
+    expect(blurRects([rect, arrow], crop, 1)).toEqual([])
   })
 })

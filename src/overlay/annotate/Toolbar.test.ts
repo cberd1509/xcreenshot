@@ -1,10 +1,12 @@
-import { render, screen } from '@testing-library/svelte'
+import { render, screen, waitFor } from '@testing-library/svelte'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { COLORS, DEFAULT_STYLE, type Style, type Tool } from './shapes'
 import Toolbar, { type ToolbarActions } from './Toolbar.svelte'
 
-function setup(props: Partial<{ tool: Tool | null; canUndo: boolean; mac: boolean }> = {}) {
+type Props = Partial<{ tool: Tool | null; canUndo: boolean; mac: boolean; drawable: boolean }>
+
+function setup(props: Props = {}) {
   const actions: ToolbarActions = {
     copy: vi.fn<() => void>(),
     save: vi.fn<() => void>(),
@@ -41,16 +43,19 @@ function setup(props: Partial<{ tool: Tool | null; canUndo: boolean; mac: boolea
 }
 
 const button = (name: string) => screen.getByRole('button', { name })
+/** A tool, color or size: one choice of a toggle group. */
+const choice = (name: string) => screen.getByLabelText(name)
 const item = async (name: string) =>
   (await screen.findByText(name)).closest('[role=menuitemcheckbox]')!
+const tooltip = (name: string) =>
+  screen.findByText(name, { selector: '[data-slot=tooltip-content]' })
 
 describe('Toolbar', () => {
   it('shows the tools in order', () => {
     setup()
-    const names = screen
-      .getAllByRole('button')
-      .slice(0, 8)
-      .map((b) => b.getAttribute('aria-label'))
+    const names = [...screen.getByLabelText('Tools').children].map((b) =>
+      b.getAttribute('aria-label'),
+    )
     expect(names).toEqual([
       'Pen',
       'Line',
@@ -63,36 +68,40 @@ describe('Toolbar', () => {
     ])
   })
 
-  it('enables the tools that draw and shows the current one pressed', () => {
+  it('enables the tools that draw and shows the current one on', () => {
     setup({ tool: 'rect' })
-    expect(button('Rectangle')).toHaveAttribute('aria-pressed', 'true')
-    expect(button('Arrow')).toHaveAttribute('aria-pressed', 'false')
-    expect(button('Arrow')).toBeEnabled()
-    expect(button('Pen')).toBeDisabled()
-    expect(button('Blur to hide info')).toBeDisabled()
+    expect(choice('Rectangle')).toHaveAttribute('data-state', 'on')
+    expect(choice('Arrow')).toHaveAttribute('data-state', 'off')
+    expect(choice('Arrow')).toBeEnabled()
+    expect(choice('Pen')).toBeDisabled()
+    expect(choice('Blur to hide info')).toBeDisabled()
+  })
+
+  it('shows every tool as unavailable when drawing could not load', () => {
+    setup({ drawable: false })
+    expect(choice('Rectangle')).toBeDisabled()
+    expect(choice('Arrow')).toBeDisabled()
   })
 
   it('picks a tool, and drops it when pressed again', async () => {
-    const { handlers, user } = setup({ tool: 'rect' })
-    await user.click(button('Arrow'))
+    const { handlers, user, view } = setup()
+    await user.click(choice('Arrow'))
     expect(handlers.ontool).toHaveBeenLastCalledWith('arrow')
-    await user.click(button('Rectangle'))
+    await view.rerender({ tool: 'arrow' })
+    await user.click(choice('Arrow'))
     expect(handlers.ontool).toHaveBeenLastCalledWith(null)
   })
 
   it('shows the shortcut in the tooltip', async () => {
     const { user } = setup()
-    await user.hover(button('Rectangle'))
-    const tip = await screen.findByText('Rectangle', { selector: '[data-slot=tooltip-content]' })
-    expect(tip).toHaveTextContent('R')
+    await user.hover(choice('Rectangle'))
+    expect(await tooltip('Rectangle')).toHaveTextContent('R')
   })
 
   it('uses Ctrl in shortcuts off the Mac', async () => {
     const { user } = setup({ mac: false, canUndo: true })
     await user.hover(button('Undo'))
-    expect(
-      await screen.findByText('Undo', { selector: '[data-slot=tooltip-content]' }),
-    ).toHaveTextContent('Ctrl+Z')
+    expect(await tooltip('Undo')).toHaveTextContent('Ctrl+Z')
   })
 
   it('runs undo, redo and clear, disabled when there is nothing to do', async () => {
@@ -105,12 +114,16 @@ describe('Toolbar', () => {
     expect(handlers.onundo).not.toHaveBeenCalled()
   })
 
-  it('picks a color and a size', async () => {
+  it('picks a color and a size, and keeps one of each', async () => {
     const { style, user } = setup()
     await user.click(button('Color and size'))
     await user.click(await screen.findByLabelText(`Color ${COLORS[4]}`))
     expect(style().color).toBe(COLORS[4])
-    await user.click(screen.getByLabelText('Thick'))
+    await user.click(choice('Thick'))
+    expect(style()).toEqual({ color: COLORS[4], size: 8 })
+    // Pressing the current one again does not leave none.
+    await user.click(choice('Thick'))
+    await user.click(choice(`Color ${COLORS[4]}`))
     expect(style()).toEqual({ color: COLORS[4], size: 8 })
     expect(screen.getByTestId('current-color').style.background).not.toBe('')
   })
@@ -134,6 +147,19 @@ describe('Toolbar', () => {
     expect(actions.option).toHaveBeenLastCalledWith('rememberRegion', false)
     await user.click(await item('Magnifier'))
     expect(actions.option).toHaveBeenLastCalledWith('magnifier', true)
+  })
+
+  it('closes an open menu for Esc, and says whether one was open', async () => {
+    const { user, view } = setup()
+    const bar = view.component as unknown as { closeMenus: () => boolean }
+    expect(bar.closeMenus()).toBe(false)
+    await user.click(button('More'))
+    await item('Magnifier')
+    expect(bar.closeMenus()).toBe(true)
+    await waitFor(() => expect(screen.queryByText('Magnifier')).not.toBeInTheDocument())
+    await user.click(button('Color and size'))
+    await screen.findByLabelText('Thick')
+    expect(bar.closeMenus()).toBe(true)
   })
 
   it('keeps Enter and arrow keys from reaching the overlay', () => {

@@ -3,30 +3,48 @@
 The annotation layer lives in `src/overlay/annotate/`. Konva draws it; the pure modules hold the
 logic.
 
-| File               | What it does                                                         |
-| ------------------ | -------------------------------------------------------------------- |
-| `shapes.ts`        | Shape model, tools and their shortcuts, drawing and transform math   |
-| `history.ts`       | Undo and redo as a command stack (`add`, `update`, `remove`, `clear`) |
-| `placement.ts`     | Where the toolbar goes                                               |
-| `board.ts`         | The Konva stage, and `exportShapes`                                  |
-| `Annotator.svelte` | Pointer and keyboard input, history, toolbar, export                 |
-| `Toolbar.svelte`   | The toolbar (presentational)                                         |
+| File               | What it does                                                        |
+| ------------------ | ------------------------------------------------------------------- |
+| `shapes.ts`        | Shape model, tools and their shortcuts, drawing and transform math  |
+| `history.ts`       | Undo and redo as snapshots of the shape list (last 200)             |
+| `placement.ts`     | Where the toolbar goes                                              |
+| `board.ts`         | The Konva stage, and `exportShapes`                                 |
+| `Annotator.svelte` | Pointer input, history, the toolbar, and the `key`/`escape` API     |
+| `Toolbar.svelte`   | The toolbar (presentational, loaded on demand)                      |
 
 ## Shape model
 
 A shape is plain JSON: `{ id, kind, style: { color, size }, ...geometry }`, in **logical px
-relative to the selection's top-left corner**. Moving or resizing the selection moves the Konva
-group, never the shapes, so they stay put on the selection.
+relative to the display**, the same space as the selection. Shapes stay on the same pixels of
+the frozen frame when the selection moves or resizes; the selection only clips what is shown and
+exported. A shape dragged out of the selection is pulled back until 8 px of it shows.
 
 - `rect` and `blur`: `x`, `y`, `width`, `height`
 - `arrow`: `points: [x1, y1, x2, y2]`, head at the end
 
 The other tools (#14–#16) add kinds here.
 
+## Layers and input
+
+Bottom to top: frozen frame, annotation stage (covers only the selection, so it clips), the
+selection outline and handles (only the handles take presses), then the size badge and toolbar.
+
+The overlay owns the keyboard and asks the annotator first:
+
+- `key(e)` handles ⌘Z / ⇧⌘Z, Delete/Backspace and arrow keys on the selected shape, and the tool
+  letters. It returns whether it handled the key.
+- `escape()` undoes one step: the shape being drawn, an open menu, the selected shape, then the
+  tool. Only when it returns `false` does Esc clear the selection or close the overlay.
+
+While there are annotations, a press outside the selection is ignored rather than starting a new
+selection. They go on Esc (with the selection), on the next capture, and when the user starts a
+new selection on another display.
+
 ## Speed
 
-Konva is a separate chunk. It is loaded and the stage built on the first selection, never when
-the overlay shows, so hotkey-to-paint does not change.
+Konva and the toolbar are separate chunks, fetched when the page is idle (the overlay windows
+load at startup, long before the hotkey). The stage is built on the first selection. If Konva
+fails to load, the tools show as unavailable and the next selection change tries again.
 
 ## Export contract
 
@@ -37,25 +55,25 @@ their own:
 annotator.exportAnnotations(crop: Rect, scale: number): Promise<AnnotationExport>
 
 type AnnotationExport = {
-  rgba: Uint8ClampedArray | null // null: nothing to draw
-  width: number // = crop.width
-  height: number // = crop.height
+  rgba: Uint8ClampedArray | null // null: nothing drawn inside the crop
+  x: number // where the RGBA goes, relative to the crop's top-left
+  y: number
+  width: number
+  height: number
   blurs: Rect[]
 }
 ```
 
 - `crop` is the physical rect being captured on the frame (`toPhysical(selection)`), and `scale`
   is physical px per logical px.
-- `rgba` is `width × height` pixels, row by row, **straight (not premultiplied) alpha**, on a
-  transparent background. It has every shape except blur.
-- `blurs` are rects in physical px of the crop (origin at the crop's top-left), rounded outwards
-  to whole pixels and clipped to the crop.
+- `rgba` covers only the box the shapes paint (strokes and arrow heads included), clipped to the
+  crop: `width × height` pixels, row by row, **straight (not premultiplied) alpha**, transparent
+  around the shapes. It has every shape except blur.
+- `blurs` are rects in physical px relative to the crop, rounded outwards to whole pixels and
+  clipped to it.
 
 Rust then, on the cropped frame:
 
 1. pixelates each rect in `blurs`;
-2. draws `rgba` over it with source-over blending;
+2. draws `rgba` at (`x`, `y`) with source-over blending;
 3. encodes the PNG and copies, saves or shares it.
-
-The crop's edges are rounded to whole pixels, so the shapes can sit up to half a physical pixel
-off from where they were drawn.

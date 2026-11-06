@@ -3,7 +3,9 @@ import userEvent from '@testing-library/user-event'
 import { emit, listen } from '@tauri-apps/api/event'
 import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { setSetting, settings } from '$lib/settings.svelte'
 import { box, fakeContext } from '../test/canvas'
+import { stages } from '../test/konva'
 import Overlay from './Overlay.svelte'
 
 /** The platform the overlay sees (`isMac`). */
@@ -30,7 +32,7 @@ let ready: Info | null
 let frame: (args: { session: number }) => unknown
 let finished: (cmd: string) => unknown
 let context: ReturnType<typeof fakeContext>
-let selected: { label: string; active: boolean }[]
+let selected: { label: string; active: boolean; fresh: boolean }[]
 
 const rgba = (width: number, height: number) => new Uint8Array(width * height * 4).fill(7).buffer
 const called = (cmd: string) => calls.filter((c) => c.cmd === cmd)
@@ -86,6 +88,22 @@ async function shown(props: { magnifier?: boolean } = {}) {
   return view
 }
 
+const layer = () => screen.getByTestId('annotations')
+/** The annotation shapes on the Konva stage. */
+const shapes = () => stages[0].children[0].children.filter((n) => n.className !== 'Transformer')
+
+/** Selects (10, 10) to (110, 60), then draws a rect in it with R. */
+async function annotated() {
+  await shown()
+  drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+  await waitFor(() => expect(stages).toHaveLength(1))
+  await userEvent.keyboard('r')
+  fireEvent.pointerDown(layer(), point({ x: 20, y: 20 }))
+  fireEvent.pointerMove(layer(), point({ x: 60, y: 50 }))
+  fireEvent.pointerUp(layer(), point({ x: 60, y: 50 }))
+  await waitFor(() => expect(shapes()).toHaveLength(1))
+}
+
 describe('Overlay', () => {
   beforeEach(async () => {
     platform.mac = false
@@ -105,7 +123,7 @@ describe('Overlay', () => {
       { shouldMockEvents: true },
     )
     context = fakeContext()
-    await listen<{ label: string; active: boolean }>('overlay:selected', (e) =>
+    await listen<{ label: string; active: boolean; fresh: boolean }>('overlay:selected', (e) =>
       selected.push(e.payload),
     )
   })
@@ -253,7 +271,7 @@ describe('Overlay', () => {
       drag({ x: 110, y: 70 }, { x: 10, y: 20 })
       expect(rect()).toEqual([10, 20, 100, 50])
       expect(screen.getByTestId('size-badge')).toHaveTextContent('200 × 100')
-      expect(selected).toEqual([{ label: 'overlay-1', active: true }])
+      expect(selected).toEqual([{ label: 'overlay-1', active: true, fresh: true }])
     })
 
     it('focuses its window on press, so keys reach it', async () => {
@@ -384,7 +402,7 @@ describe('Overlay', () => {
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       await esc(1)
       await waitFor(() => expect(selection()).toBeNull())
-      expect(selected.at(-1)).toEqual({ label: 'overlay-1', active: false })
+      expect(selected.at(-1)).toEqual({ label: 'overlay-1', active: false, fresh: false })
       await esc(2)
       await waitFor(() => expect(answers()).toHaveLength(2))
       expect(answers()).toEqual([
@@ -424,10 +442,14 @@ describe('Overlay', () => {
       await shown()
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       // Another display losing a selection changes nothing here.
-      await emit('overlay:selected', { label: 'overlay-2', active: false })
+      await emit('overlay:selected', { label: 'overlay-2', active: false, fresh: false })
       await tick()
       expect(selection()).not.toBeNull()
-      await emit('overlay:selected', { label: 'overlay-2', active: true })
+      // Nor does it gaining one it did not start (a resize back from nothing).
+      await emit('overlay:selected', { label: 'overlay-2', active: true, fresh: false })
+      await tick()
+      expect(selection()).not.toBeNull()
+      await emit('overlay:selected', { label: 'overlay-2', active: true, fresh: true })
       await waitFor(() => expect(selection()).toBeNull())
       // Display 2 has the selection: this page has nothing to undo and says so.
       await esc()
@@ -621,6 +643,89 @@ describe('Overlay', () => {
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       await emit('overlay:show', { ...info, session: 10 })
       await waitFor(() => expect(selection()).toBeNull())
+    })
+  })
+
+  describe('annotations', () => {
+    beforeEach(() => {
+      stages.length = 0
+    })
+
+    it('draws over the frame, under the selection outline', async () => {
+      await annotated()
+      const root = overlay()
+      const at = (e: Element | null) => [...root.children].indexOf(e!)
+      expect(at(root.querySelector('canvas'))).toBeLessThan(at(layer()))
+      expect(at(layer())).toBeLessThan(at(selection()))
+    })
+
+    it('ignores a press outside the selection while there are annotations', async () => {
+      await annotated()
+      drag({ x: 500, y: 500 }, { x: 520, y: 530 })
+      expect(rect()).toEqual([10, 10, 100, 50])
+      expect(shapes()).toHaveLength(1)
+    })
+
+    it('keeps an annotated selection from being resized to nothing', async () => {
+      await annotated()
+      const handle = selection()!.querySelector('[data-handle="e"]')!
+      drag({ x: 110, y: 30 }, { x: 10, y: 30 }, handle)
+      expect(selection()).not.toBeNull()
+      expect(shapes()).toHaveLength(1)
+    })
+
+    it('gives Esc to the annotations first, one step at a time', async () => {
+      await annotated()
+      // The tool goes first, then the selection with its annotations.
+      await esc(1)
+      await esc(2)
+      await waitFor(() =>
+        expect(answers()).toEqual([
+          { session: 9, token: 1, handled: true },
+          { session: 9, token: 2, handled: true },
+        ]),
+      )
+      expect(selection()).toBeNull()
+      expect(shapes()).toHaveLength(0)
+    })
+
+    it('gives keys to the annotations first', async () => {
+      await annotated()
+      shapes()[0].fire('pointerdown')
+      // With a shape selected, arrows move the shape, not the selection.
+      await userEvent.keyboard('{ArrowRight}')
+      expect(rect()).toEqual([10, 10, 100, 50])
+      await waitFor(() => expect(shapes()[0].attrs.x).toBe(20.5))
+      await userEvent.keyboard('{Backspace}')
+      await waitFor(() => expect(shapes()).toHaveLength(0))
+      await userEvent.keyboard('{Meta>}z{/Meta}')
+      await waitFor(() => expect(shapes()).toHaveLength(1))
+    })
+
+    it('drops them for a new selection on another display, not for anything else', async () => {
+      await annotated()
+      await emit('overlay:selected', { label: 'overlay-2', active: true, fresh: false })
+      await tick()
+      expect(shapes()).toHaveLength(1)
+      await emit('overlay:selected', { label: 'overlay-2', active: true, fresh: true })
+      await waitFor(() => expect(shapes()).toHaveLength(0))
+    })
+
+    it('drops them on the next capture', async () => {
+      await annotated()
+      await emit('overlay:show', { ...info, session: 10 })
+      await waitFor(() => expect(shapes()).toHaveLength(0))
+    })
+
+    it('turns options on and off in the settings', async () => {
+      await shown()
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      await userEvent.click(await screen.findByRole('button', { name: 'More' }, { timeout: 5000 }))
+      await userEvent.click(
+        (await screen.findByText('Magnifier')).closest('[role=menuitemcheckbox]')!,
+      )
+      expect(settings.magnifier).toBe(true)
+      setSetting('magnifier', false)
     })
   })
 })

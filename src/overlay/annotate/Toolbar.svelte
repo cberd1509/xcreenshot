@@ -35,7 +35,7 @@
   import { Kbd } from '$lib/components/ui/kbd'
   import * as Popover from '$lib/components/ui/popover'
   import { Separator } from '$lib/components/ui/separator'
-  import { Toggle } from '$lib/components/ui/toggle'
+  import * as ToggleGroup from '$lib/components/ui/toggle-group'
   import * as Tooltip from '$lib/components/ui/tooltip'
   import { isMac } from '$lib/settings.svelte'
   import { COLORS, READY, SIZES, TOOLS, type Style, type Tool } from './shapes'
@@ -44,6 +44,7 @@
     tool,
     ontool,
     style = $bindable(),
+    drawable = true,
     canUndo,
     canRedo,
     canClear,
@@ -57,6 +58,8 @@
     tool: Tool | null
     ontool: (tool: Tool | null) => void
     style: Style
+    /** False when the drawing layer could not load: the tools are shown as unavailable. */
+    drawable?: boolean
     canUndo: boolean
     canRedo: boolean
     canClear: boolean
@@ -81,6 +84,17 @@
   const SIZE_LABELS = ['Thin', 'Medium', 'Thick']
   const mod = $derived(mac ? '⌘' : 'Ctrl+')
   const shift = $derived(mac ? '⇧' : 'Shift+')
+
+  let colorsOpen = $state(false)
+  let moreOpen = $state(false)
+
+  /** Closes the color or ⋯ menu. Returns whether one was open (for Esc). */
+  export function closeMenus(): boolean {
+    const open = colorsOpen || moreOpen
+    colorsOpen = false
+    moreOpen = false
+    return open
+  }
 
   // Keys that would also act on the overlay (Enter copies, arrows nudge) stay in the toolbar.
   function onkeydown(e: KeyboardEvent) {
@@ -149,54 +163,66 @@
     tabindex="-1"
     {onkeydown}
   >
-    {#each TOOLS as t (t.tool)}
-      {@const Icon = ICONS[t.tool]}
-      {#snippet toggle(props: Record<string, unknown>)}
-        <Toggle
-          {...props}
-          size="sm"
-          aria-label={t.label}
-          disabled={!READY.has(t.tool)}
-          pressed={tool === t.tool}
-          onPressedChange={(on) => ontool(on ? t.tool : null)}
-        >
-          <Icon />
-        </Toggle>
-      {/snippet}
-      {@render tip(toggle, t.label, t.key)}
-    {/each}
+    <ToggleGroup.Root
+      type="single"
+      size="sm"
+      spacing={1}
+      aria-label="Tools"
+      value={tool ?? ''}
+      onValueChange={(v) => ontool((v || null) as Tool | null)}
+    >
+      {#each TOOLS as t (t.tool)}
+        {@const Icon = ICONS[t.tool]}
+        {#snippet item(props: Record<string, unknown>)}
+          <ToggleGroup.Item
+            {...props}
+            value={t.tool}
+            aria-label={t.label}
+            disabled={!drawable || !READY.has(t.tool)}
+          >
+            <Icon />
+          </ToggleGroup.Item>
+        {/snippet}
+        {@render tip(item, t.label, t.key)}
+      {/each}
+    </ToggleGroup.Root>
 
-    <Popover.Root>
+    <Popover.Root bind:open={colorsOpen}>
       {@render tip(colorButton, 'Color and size')}
-      <Popover.Content class="w-auto p-2" side="bottom" {onkeydown}>
-        <div class="flex gap-1">
+      <Popover.Content class="w-auto p-2" side="bottom" escapeKeydownBehavior="ignore" {onkeydown}>
+        <ToggleGroup.Root
+          type="single"
+          spacing={1}
+          aria-label="Color"
+          value={style.color}
+          onValueChange={(color) => color && (style = { ...style, color })}
+        >
           {#each COLORS as color (color)}
-            <button
-              type="button"
-              class="size-6 rounded-full border border-black/20 aria-pressed:ring-2 aria-pressed:ring-ring"
-              style:background={color}
-              aria-label="Color {color}"
-              aria-pressed={style.color === color}
-              onclick={() => (style = { ...style, color })}
-            ></button>
+            <ToggleGroup.Item value={color} aria-label="Color {color}" class="size-7 min-w-7 p-0">
+              <span class="size-5 rounded-full border border-black/20" style:background={color}
+              ></span>
+            </ToggleGroup.Item>
           {/each}
-        </div>
-        <div class="mt-2 flex gap-1">
+        </ToggleGroup.Root>
+        <ToggleGroup.Root
+          type="single"
+          size="sm"
+          spacing={1}
+          class="mt-2"
+          aria-label="Size"
+          value={String(style.size)}
+          onValueChange={(size) => size && (style = { ...style, size: Number(size) })}
+        >
           {#each SIZES as size, i (size)}
-            <Toggle
-              size="sm"
-              aria-label={SIZE_LABELS[i]}
-              pressed={style.size === size}
-              onPressedChange={() => (style = { ...style, size })}
-            >
+            <ToggleGroup.Item value={String(size)} aria-label={SIZE_LABELS[i]}>
               <span
                 class="rounded-full bg-current"
                 style:width="{size + 2}px"
                 style:height="{size + 2}px"
               ></span>
-            </Toggle>
+            </ToggleGroup.Item>
           {/each}
-        </div>
+        </ToggleGroup.Root>
       </Popover.Content>
     </Popover.Root>
 
@@ -206,9 +232,9 @@
     {@render action('Redo', `${shift}${mod}Z`, RedoIcon, onredo, !canRedo)}
     {@render action('Clear all', undefined, ClearIcon, onclear, !canClear)}
 
-    <DropdownMenu.Root>
+    <DropdownMenu.Root bind:open={moreOpen}>
       {@render tip(moreButton, 'More')}
-      <DropdownMenu.Content side="bottom" align="end" {onkeydown}>
+      <DropdownMenu.Content side="bottom" align="end" escapeKeydownBehavior="ignore" {onkeydown}>
         <DropdownMenu.CheckboxItem
           checked={options.rememberRegion}
           onCheckedChange={(on) => actions.option('rememberRegion', on)}

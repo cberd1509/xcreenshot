@@ -1,7 +1,8 @@
-// The annotation model, pure and serializable. Shapes are in logical px relative to the
-// selection's top-left corner, so moving or resizing the selection keeps them in place on it.
+// The annotation model, pure and serializable. Shapes are in logical px relative to the display,
+// like the selection, so they stay on the same pixels when the selection moves or resizes. The
+// selection only clips what is shown and exported.
 
-import type { Point, Rect, Size } from '../geometry'
+import { clamp, fromPoints, type Point, type Rect, type Size } from '../geometry'
 
 export type Tool = 'pen' | 'line' | 'arrow' | 'rect' | 'ellipse' | 'highlighter' | 'text' | 'blur'
 
@@ -42,12 +43,14 @@ export type Shape = RectShape | BlurShape | ArrowShape
 
 /** Shapes smaller than this on both axes are a click, not a drag, and are dropped. */
 export const MIN_SIZE = 3
+/** How much of a shape stays inside the selection when it is dragged out. */
+export const MIN_VISIBLE = 8
 
-const clamp = (v: number, min: number, max: number) => Math.min(Math.max(v, min), max)
+const UNBOUNDED: Size = { width: Infinity, height: Infinity }
 
-/** A point clamped to a box of `size` at the origin (the selection, in its own space). */
-export function clampTo(p: Point, size: Size): Point {
-  return { x: clamp(p.x, 0, size.width), y: clamp(p.y, 0, size.height) }
+/** A point clamped to a rect. */
+export function clampTo(p: Point, r: Rect): Point {
+  return { x: clamp(p.x, r.x, r.x + r.width), y: clamp(p.y, r.y, r.y + r.height) }
 }
 
 /**
@@ -57,11 +60,8 @@ export function clampTo(p: Point, size: Size): Point {
 export function draw(tool: Tool, id: string, a: Point, b: Point, style: Style): Shape | null {
   if (Math.abs(b.x - a.x) < MIN_SIZE && Math.abs(b.y - a.y) < MIN_SIZE) return null
   if (tool === 'arrow') return { id, kind: 'arrow', style, points: [a.x, a.y, b.x, b.y] }
-  if (tool === 'rect' || tool === 'blur') {
-    const x = Math.min(a.x, b.x)
-    const y = Math.min(a.y, b.y)
-    return { id, kind: tool, style, x, y, width: Math.abs(b.x - a.x), height: Math.abs(b.y - a.y) }
-  }
+  if (tool === 'rect' || tool === 'blur')
+    return { id, kind: tool, style, ...fromPoints(a, b, UNBOUNDED) }
   return null
 }
 
@@ -85,30 +85,64 @@ export function transform(shape: Shape, t: Transform): Shape {
       points: [t.x, t.y, t.x + (x2 - x1) * t.scaleX, t.y + (y2 - y1) * t.scaleY],
     }
   }
-  const width = shape.width * t.scaleX
-  const height = shape.height * t.scaleY
-  return {
-    ...shape,
-    x: Math.min(t.x, t.x + width),
-    y: Math.min(t.y, t.y + height),
-    width: Math.abs(width),
-    height: Math.abs(height),
-  }
+  const far = { x: t.x + shape.width * t.scaleX, y: t.y + shape.height * t.scaleY }
+  return { ...shape, ...fromPoints(t, far, UNBOUNDED) }
+}
+
+export function translate(shape: Shape, dx: number, dy: number): Shape {
+  if (shape.kind !== 'arrow') return { ...shape, x: shape.x + dx, y: shape.y + dy }
+  const [x1, y1, x2, y2] = shape.points
+  return { ...shape, points: [x1 + dx, y1 + dy, x2 + dx, y2 + dy] }
+}
+
+/** The shape's geometry as a box, strokes left out. */
+export function bounds(shape: Shape): Rect {
+  if (shape.kind !== 'arrow')
+    return { x: shape.x, y: shape.y, width: shape.width, height: shape.height }
+  const [x1, y1, x2, y2] = shape.points
+  return fromPoints({ x: x1, y: y1 }, { x: x2, y: y2 }, UNBOUNDED)
+}
+
+/** The box a shape paints, strokes and arrow heads included. */
+export function paintBounds(shape: Shape): Rect {
+  const b = bounds(shape)
+  const pad = shape.kind === 'arrow' ? shape.style.size * 4 : shape.style.size
+  return { x: b.x - pad, y: b.y - pad, width: b.width + 2 * pad, height: b.height + 2 * pad }
+}
+
+/** How far to move a span at `pos` of `size` to keep `MIN_VISIBLE` of it in another span. */
+function pullBack(pos: number, size: number, start: number, length: number) {
+  const m = Math.min(MIN_VISIBLE, size, length)
+  return clamp(pos, start + m - size, start + length - m) - pos
+}
+
+/** Moves the shape back so at least `MIN_VISIBLE` px of it (or all, if smaller) is in `r`. */
+export function keepInside(shape: Shape, r: Rect): Shape {
+  const b = bounds(shape)
+  const dx = pullBack(b.x, b.width, r.x, r.width)
+  const dy = pullBack(b.y, b.height, r.y, r.height)
+  return dx === 0 && dy === 0 ? shape : translate(shape, dx, dy)
 }
 
 /**
- * Blur rects in physical px of an image of `size` (the crop), rounded out to whole pixels and
- * clipped to the image. `scale` is physical px per logical px.
+ * Blur rects in physical px of the crop: `crop` is the physical rect being captured and
+ * `scale` is physical px per logical px. Rounded out to whole pixels and clipped to the crop.
  */
-export function blurRects(shapes: readonly Shape[], size: Size, scale: number): Rect[] {
+export function blurRects(shapes: readonly Shape[], crop: Rect, scale: number): Rect[] {
   const out: Rect[] = []
   for (const s of shapes) {
     if (s.kind !== 'blur') continue
-    const x0 = clamp(Math.floor(s.x * scale), 0, size.width)
-    const y0 = clamp(Math.floor(s.y * scale), 0, size.height)
-    const x1 = clamp(Math.ceil((s.x + s.width) * scale), 0, size.width)
-    const y1 = clamp(Math.ceil((s.y + s.height) * scale), 0, size.height)
-    if (x1 > x0 && y1 > y0) out.push({ x: x0, y: y0, width: x1 - x0, height: y1 - y0 })
+    const r = physicalIn(s, crop, scale)
+    if (r) out.push(r)
   }
   return out
+}
+
+/** A logical rect in whole physical px relative to the crop, clipped to it, or `null`. */
+export function physicalIn(r: Rect, crop: Rect, scale: number): Rect | null {
+  const x0 = clamp(Math.floor(r.x * scale) - crop.x, 0, crop.width)
+  const y0 = clamp(Math.floor(r.y * scale) - crop.y, 0, crop.height)
+  const x1 = clamp(Math.ceil((r.x + r.width) * scale) - crop.x, 0, crop.width)
+  const y1 = clamp(Math.ceil((r.y + r.height) * scale) - crop.y, 0, crop.height)
+  return x1 > x0 && y1 > y0 ? { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } : null
 }

@@ -2,15 +2,24 @@
 // into shapes. Konva is loaded on first use, so opening the overlay never waits for it.
 
 import type Konva from 'konva'
-import type { Point, Rect, Size } from '../geometry'
-import { blurRects, origin, transform, type Shape } from './shapes'
+import type { Point, Rect } from '../geometry'
+import { blurRects, origin, paintBounds, physicalIn, transform, type Shape } from './shapes'
 
 type K = typeof Konva
 type Node = Konva.Shape
 
-/** Loads Konva once. Kept separate so tests can swap it. */
-let loading: Promise<K> | undefined
-export const loadKonva = () => (loading ??= import('konva').then((m) => m.default))
+/** `load`, run once and shared. A failed load is forgotten, so the next call tries again. */
+export function once<T>(load: () => Promise<T>): () => Promise<T> {
+  let loading: Promise<T> | undefined
+  return () =>
+    (loading ??= load().catch((e: unknown) => {
+      loading = undefined
+      throw e
+    }))
+}
+
+/** Loads Konva on first use. */
+export const loadKonva = once(() => import('konva').then((m) => m.default))
 
 /** Hit area around thin lines, in logical px. */
 const HIT = 12
@@ -35,12 +44,21 @@ export function attrs(shape: Shape): Konva.ShapeConfig {
       hitStrokeWidth: HIT,
       lineCap: 'round',
       lineJoin: 'round',
+      scaleX: 1,
+      scaleY: 1,
     }
   }
-  const common = { x, y, width: shape.width, height: shape.height, strokeScaleEnabled: false }
-  if (shape.kind === 'blur')
-    return { ...common, fill: BLUR_FILL, stroke: 'white', dash: [4, 4], strokeWidth: 1 }
-  return { ...common, stroke: color, strokeWidth: size, hitStrokeWidth: HIT }
+  const box = { x, y, width: shape.width, height: shape.height, scaleX: 1, scaleY: 1 }
+  if (shape.kind === 'blur') {
+    return { ...box, fill: BLUR_FILL, stroke: 'white', dash: [4, 4], strokeWidth: 1 }
+  }
+  return {
+    ...box,
+    stroke: color,
+    strokeWidth: size,
+    hitStrokeWidth: HIT,
+    strokeScaleEnabled: false,
+  }
 }
 
 function create(K: K, shape: Shape): Node {
@@ -52,28 +70,29 @@ function create(K: K, shape: Shape): Node {
 export type BoardEvents = {
   /** A shape was moved or resized on the board. */
   onchange: (shape: Shape) => void
-  /** A shape was clicked. */
+  /** A shape was pressed. */
   onselect: (id: string) => void
 }
 
-/** One stage per overlay window, sized to the display. Shapes sit in a group at the selection. */
+/**
+ * One stage per overlay window, covering only the selection (so it clips to it). The layer is
+ * offset by the selection, so shapes keep their display coordinates.
+ */
 export class Board {
   private readonly stage: Konva.Stage
   private readonly layer: Konva.Layer
-  private readonly group: Konva.Group
   private readonly transformer: Konva.Transformer
   private readonly nodes = new Map<string, { node: Node; shape: Shape }>()
-  private draft: Node | null = null
+  private draft: { node: Node; kind: Shape['kind'] } | null = null
+  private at: Point = { x: 0, y: 0 }
 
   constructor(
     private readonly K: K,
     container: HTMLDivElement,
-    size: Size,
     private readonly events: BoardEvents,
   ) {
-    this.stage = new K.Stage({ container, ...size })
+    this.stage = new K.Stage({ container, width: 0, height: 0 })
     this.layer = new K.Layer()
-    this.group = new K.Group()
     this.transformer = new K.Transformer({
       rotateEnabled: false,
       ignoreStroke: true,
@@ -82,32 +101,26 @@ export class Board {
       borderStroke: 'white',
       anchorStroke: 'black',
     })
-    this.layer.add(this.group)
     this.layer.add(this.transformer)
     this.stage.add(this.layer)
   }
 
-  resize(size: Size) {
-    this.stage.size(size)
+  /** Covers the selection, or nothing when there is none. */
+  place(selection: Rect | null) {
+    const r = selection ?? { x: 0, y: 0, width: 0, height: 0 }
+    this.at = { x: r.x, y: r.y }
+    this.stage.size({ width: r.width, height: r.height })
+    this.layer.position({ x: -r.x, y: -r.y })
   }
 
-  /** Puts the shapes at the selection and clips them to it. */
-  place(selection: Rect) {
-    this.group.setAttrs({
-      x: selection.x,
-      y: selection.y,
-      clip: { x: 0, y: 0, width: selection.width, height: selection.height },
-    })
-  }
-
-  /** Makes the board show `shapes`, the shape being drawn and the selected shape. */
-  render(shapes: readonly Shape[], draft: Shape | null, selected: string | null) {
+  /** Makes the board show `shapes`, with handles on the selected one. */
+  render(shapes: readonly Shape[], selected: string | null) {
     const seen = new Set<string>()
     for (const shape of shapes) {
       seen.add(shape.id)
       const entry = this.nodes.get(shape.id)
       if (entry) {
-        if (entry.shape !== shape) entry.node.setAttrs({ ...attrs(shape), scaleX: 1, scaleY: 1 })
+        if (entry.shape !== shape) entry.node.setAttrs(attrs(shape))
         entry.shape = shape
         continue
       }
@@ -115,7 +128,7 @@ export class Board {
       node.draggable(true)
       node.on('pointerdown', () => this.events.onselect(shape.id))
       node.on('dragend transformend', () => this.changed(shape.id))
-      this.group.add(node)
+      this.layer.add(node)
       this.nodes.set(shape.id, { node, shape })
     }
     for (const [id, { node }] of this.nodes) {
@@ -123,20 +136,31 @@ export class Board {
       node.destroy()
       this.nodes.delete(id)
     }
-    this.draft?.destroy()
-    this.draft = draft && create(this.K, draft)
-    if (this.draft) {
-      this.draft.listening(false)
-      this.group.add(this.draft)
-    }
     const node = selected ? this.nodes.get(selected)?.node : undefined
     this.transformer.nodes(node ? [node] : [])
+    this.transformer.moveToTop()
+    this.layer.batchDraw()
+  }
+
+  /** Shows the shape being drawn, reusing one node; `null` hides it. */
+  preview(shape: Shape | null) {
+    if (this.draft && (!shape || this.draft.kind !== shape.kind)) {
+      this.draft.node.destroy()
+      this.draft = null
+    }
+    if (shape && this.draft) this.draft.node.setAttrs(attrs(shape))
+    else if (shape) {
+      const node = create(this.K, shape)
+      node.listening(false)
+      this.layer.add(node)
+      this.draft = { node, kind: shape.kind }
+    }
     this.layer.batchDraw()
   }
 
   /** Whether `p` (window px) is on a shape or a resize handle. */
   hits(p: Point): boolean {
-    return this.stage.getIntersection(p) !== null
+    return this.stage.getIntersection({ x: p.x - this.at.x, y: p.y - this.at.y }) !== null
   }
 
   private changed(id: string) {
@@ -149,7 +173,8 @@ export class Board {
       scaleX: node.scaleX(),
       scaleY: node.scaleY(),
     })
-    node.setAttrs({ scaleX: 1, scaleY: 1 })
+    // Back to the model: the change comes back through `render` once it is kept.
+    node.setAttrs(attrs(shape))
     this.events.onchange(next)
   }
 
@@ -162,41 +187,59 @@ export class Board {
 /** What `exportShapes` returns. See docs/annotations.md. */
 export type AnnotationExport = {
   /**
-   * The shapes (blur excluded) as straight-alpha RGBA, row by row, on a transparent background
-   * the size of the crop. `null` when there is nothing to draw.
+   * The shapes (blur excluded) as straight-alpha RGBA, row by row, `width × height` px. `null`
+   * when nothing is drawn inside the crop.
    */
   rgba: Uint8ClampedArray | null
+  /** Where the RGBA goes, in physical px relative to the crop's top-left corner. */
+  x: number
+  y: number
   width: number
   height: number
-  /** Blur rects in physical px of the crop. Rust pixelates these. */
+  /** Blur rects in physical px relative to the crop. Rust pixelates these. */
   blurs: Rect[]
 }
 
 /**
- * Renders `shapes` (logical px, relative to the selection) on their own at the crop's physical
- * size. `crop` is the physical rect being captured; `scale` is physical px per logical px.
+ * Renders `shapes` (logical px on the display) on their own at native size. Only the box the
+ * shapes paint is rendered, clipped to `crop` (the physical rect being captured); `scale` is
+ * physical px per logical px.
  */
 export async function exportShapes(
   shapes: readonly Shape[],
   crop: Rect,
   scale: number,
 ): Promise<AnnotationExport> {
-  const { width, height } = crop
   const blurs = blurRects(shapes, crop, scale)
   const drawn = shapes.filter((s) => s.kind !== 'blur')
-  if (drawn.length === 0 || width <= 0 || height <= 0) return { rgba: null, width, height, blurs }
+  const nothing = { rgba: null, x: 0, y: 0, width: 0, height: 0, blurs }
+  const box = drawn.length ? physicalIn(union(drawn.map(paintBounds)), crop, scale) : null
+  if (!box) return nothing
   const K = await loadKonva()
-  const size = { width: width / scale, height: height / scale }
-  const stage = new K.Stage({ container: document.createElement('div'), ...size })
+  const stage = new K.Stage({ container: document.createElement('div'), width: 0, height: 0 })
   try {
     const layer = new K.Layer()
     stage.add(layer)
     for (const shape of drawn) layer.add(create(K, shape))
-    const canvas = layer.toCanvas({ ...size, x: 0, y: 0, pixelRatio: scale })
-    // Read exactly the crop's size: rounding can leave the canvas a pixel short.
-    const rgba = canvas.getContext('2d')!.getImageData(0, 0, width, height).data
-    return { rgba, width, height, blurs }
+    const canvas = layer.toCanvas({
+      x: (crop.x + box.x) / scale,
+      y: (crop.y + box.y) / scale,
+      width: box.width / scale,
+      height: box.height / scale,
+      pixelRatio: scale,
+    })
+    // Read exactly the box's size: rounding can leave the canvas a pixel short.
+    const rgba = canvas.getContext('2d')!.getImageData(0, 0, box.width, box.height).data
+    return { rgba, ...box, blurs }
   } finally {
     stage.destroy()
   }
+}
+
+function union(rects: Rect[]): Rect {
+  const x = Math.min(...rects.map((r) => r.x))
+  const y = Math.min(...rects.map((r) => r.y))
+  const right = Math.max(...rects.map((r) => r.x + r.width))
+  const bottom = Math.max(...rects.map((r) => r.y + r.height))
+  return { x, y, width: right - x, height: bottom - y }
 }

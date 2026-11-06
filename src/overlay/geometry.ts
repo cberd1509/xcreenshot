@@ -30,7 +30,7 @@ const ARROWS: Record<string, Point> = {
   ArrowDown: { x: 0, y: 1 },
 }
 
-const clamp = (v: number, min: number, max: number) => Math.min(Math.max(v, min), max)
+export const clamp = (v: number, min: number, max: number) => Math.min(Math.max(v, min), max)
 /** A logical edge in whole physical pixels, on the frame. */
 const pixelEdge = (v: number, s: number, max: number) => clamp(Math.round(v * s), 0, max)
 

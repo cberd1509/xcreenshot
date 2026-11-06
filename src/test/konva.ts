@@ -1,5 +1,6 @@
 // A small stand-in for Konva in jsdom, which has no canvas. It keeps attributes, children and
 // event handlers so tests can check what the board drew and fire Konva events on nodes.
+// Exports render to a jsdom canvas, so `fakeContext` controls the pixels they read.
 
 type Attrs = Record<string, unknown>
 type Handler = (e: unknown) => void
@@ -43,9 +44,17 @@ export class FakeNode {
   size(size: Attrs) {
     Object.assign(this.attrs, size)
   }
+  position(p: Attrs) {
+    Object.assign(this.attrs, p)
+  }
+  moveToTop() {
+    if (!this.parent) return
+    this.parent.children = [...this.parent.children.filter((c) => c !== this), this]
+  }
   on(events: string, handler: Handler) {
-    for (const e of events.split(' '))
+    for (const e of events.split(' ')) {
       this.handlers.set(e, [...(this.handlers.get(e) ?? []), handler])
+    }
   }
   /** Calls the node's handlers for `event`, as Konva would. */
   fire(event: string) {
@@ -65,11 +74,14 @@ class Stage extends FakeNode {
   static all: Stage[] = []
   /** What `getIntersection` returns. */
   hit: FakeNode | null = null
+  /** The last point hit-tested, in stage px. */
+  asked: unknown = null
   constructor(attrs: Attrs) {
     super('Stage', attrs)
     Stage.all.push(this)
   }
-  getIntersection() {
+  getIntersection(p: unknown) {
+    this.asked = p
     return this.hit
   }
 }
@@ -82,16 +94,9 @@ class Layer extends FakeNode {
   batchDraw() {
     this.draws++
   }
-  /** A canvas whose pixels are all `7`, so tests can tell it apart from empty. */
   toCanvas(config: Attrs) {
     this.attrs.exported = config
-    return {
-      getContext: () => ({
-        getImageData: (_x: number, _y: number, w: number, h: number) => ({
-          data: new Uint8ClampedArray(w * h * 4).fill(7),
-        }),
-      }),
-    }
+    return document.createElement('canvas')
   }
 }
 
@@ -116,7 +121,6 @@ export const FakeKonva = {
   Stage,
   Layer,
   Transformer,
-  Group: shape('Group'),
   Rect: shape('Rect'),
   Arrow: shape('Arrow'),
 }
