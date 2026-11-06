@@ -48,7 +48,20 @@ export function parseRelease(text: string | undefined): unknown {
   }
 }
 
-/** Replaces the page's `%VERSION%` and `%DOWNLOAD_URL%` placeholders. */
+const ESCAPES: Record<string, string> = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+}
+
+/** Escapes text for HTML content and quoted attributes: a release tag is not markup. */
+export const escapeHtml = (text: string) => text.replace(/[&<>"']/g, (c) => ESCAPES[c])
+
+/** Replaces the page's `%VERSION%` and `%DOWNLOAD_URL%` placeholders, escaped. */
 export function fillPlaceholders(html: string, download: Download): string {
-  return html.replaceAll('%VERSION%', download.version).replaceAll('%DOWNLOAD_URL%', download.url)
+  return html
+    .replaceAll('%VERSION%', escapeHtml(download.version))
+    .replaceAll('%DOWNLOAD_URL%', escapeHtml(download.url))
 }

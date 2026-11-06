@@ -7,14 +7,17 @@ setUpOs(document, navigator, () => localStorage)
 
 const video = document.querySelector('video')
 
-if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
-  // No movement at all: the demo waits for the visitor to press play.
+// The demo has no autoplay attribute, so with reduced motion it never moves until the visitor
+// presses play. Otherwise it plays on its own, without controls.
+if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
   if (video) {
-    video.pause()
-    video.removeAttribute('autoplay')
-    video.controls = true
+    video.controls = false
+    // Browsers may still refuse; the poster and controls stay usable then.
+    video.play().catch(() => {
+      video.controls = true
+    })
   }
-} else {
+
   // The hero enters in CSS. Sections below the fold rise in as they scroll into view; any already
   // on screen stay as they are, so nothing blinks out.
   for (const section of document.querySelectorAll<HTMLElement>('[data-reveal]')) {

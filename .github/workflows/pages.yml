@@ -18,8 +18,6 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
@@ -44,8 +42,14 @@ jobs:
     name: Build site
     if: github.event_name != 'release'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # configure-pages reads the site's settings.
+      pages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - name: Read the latest release
@@ -71,6 +75,10 @@ jobs:
     name: Deploy
     needs: build
     runs-on: ubuntu-latest
+    # Only this job can publish; the build (and its dependencies) can't.
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

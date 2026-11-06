@@ -35,8 +35,9 @@ describe('pickDownload', () => {
 
   it('ignores malformed assets', () => {
     const odd = { ...release, assets: [null, { name: 1 }, 'x'] }
-    expect(pickDownload(odd, '0.3.0').url).toBe(LATEST_RELEASE_URL)
-    expect(pickDownload({ ...release, assets: 'nope' }, '0.3.0').url).toBe(LATEST_RELEASE_URL)
+    const kept = { version: '0.4.0', url: LATEST_RELEASE_URL }
+    expect(pickDownload(odd, '0.3.0')).toEqual(kept)
+    expect(pickDownload({ ...release, assets: 'nope' }, '0.3.0')).toEqual(kept)
   })
 
   it.each([
@@ -63,6 +64,13 @@ describe('parseRelease', () => {
 })
 
 describe('fillPlaceholders', () => {
+  it('escapes a tag or link that contains markup', () => {
+    const html = '<p>Version %VERSION%</p><a href="%DOWNLOAD_URL%">x</a>'
+    expect(fillPlaceholders(html, { version: '1<b>"&\'', url: 'https://a/?q="x"' })).toBe(
+      '<p>Version 1&lt;b&gt;&quot;&amp;&#39;</p><a href="https://a/?q=&quot;x&quot;">x</a>',
+    )
+  })
+
   it('replaces every placeholder', () => {
     const html = '<a href="%DOWNLOAD_URL%">x</a> %VERSION% <a href="%DOWNLOAD_URL%">y</a>'
     expect(fillPlaceholders(html, { version: '1.2.3', url: dmgUrl })).toBe(

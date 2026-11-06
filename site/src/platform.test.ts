@@ -180,8 +180,11 @@ describe('setUpOs', () => {
 
     press(macTab, 'ArrowLeft')
     expect(document.activeElement).toBe(oddTab)
+    winTab.click()
     press(winTab, 'Home')
     expect(document.activeElement).toBe(macTab)
+    expect(readChoice(local)).toBe('mac')
+    expect(macTab.getAttribute('aria-selected')).toBe('true')
     press(macTab, 'End')
     expect(document.activeElement).toBe(oddTab)
 
@@ -189,9 +192,12 @@ describe('setUpOs', () => {
   })
 
   it('ignores a tab with an unknown value', () => {
-    const { oddTab } = page()
+    const { oddTab, mac, other } = page()
     setUpOs(document, { platform: 'MacIntel' }, local)
     oddTab.click()
     expect(readChoice(local)).toBeNull()
+    expect(localStorage.length).toBe(0)
+    expect(mac.hidden).toBe(false)
+    expect(other.hidden).toBe(true)
   })
 })
