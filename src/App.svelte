@@ -14,26 +14,11 @@
 
   const loginStarts = isWindows ? 'sign in' : isMac ? 'turn on your Mac' : 'log in'
 
-  /** Sections in page order; `nav` is their place in the sidebar. */
-  const sections: { id: string; label: string; nav: number; toggles: Toggle[] }[] = [
-    { id: 'shortcuts', label: 'Shortcuts', nav: 1, toggles: [] },
-    {
-      id: 'capture',
-      label: 'Capture',
-      nav: 2,
-      toggles: [
-        {
-          key: 'rememberRegion',
-          title: 'Remember region',
-          description: 'Start with your last selection.',
-        },
-        { key: 'magnifier', title: 'Magnifier', description: 'Zoom in to select exact pixels.' },
-      ],
-    },
+  /** Sections in page and sidebar order. */
+  const sections: { id: string; label: string; toggles: Toggle[] }[] = [
     {
       id: 'general',
       label: 'General',
-      nav: 0,
       toggles: [
         {
           key: 'openAtLogin',
@@ -47,9 +32,21 @@
         },
       ],
     },
-    { id: 'about', label: 'About', nav: 3, toggles: [] },
+    { id: 'shortcuts', label: 'Shortcuts', toggles: [] },
+    {
+      id: 'capture',
+      label: 'Capture',
+      toggles: [
+        {
+          key: 'rememberRegion',
+          title: 'Remember region',
+          description: 'Start with your last selection.',
+        },
+        { key: 'magnifier', title: 'Magnifier', description: 'Zoom in to select exact pixels.' },
+      ],
+    },
+    { id: 'about', label: 'About', toggles: [] },
   ]
-  const nav = sections.toSorted((a, b) => a.nav - b.nav)
 
   /** Why the last switch change failed, shown under that switch. */
   let failed = $state<{ key: ToggleKey; message: string }>()
@@ -141,7 +138,7 @@
     aria-label="Settings sections"
     class="flex w-[200px] shrink-0 flex-col gap-0.5 border-r bg-sidebar px-3 py-4 text-[13px]"
   >
-    {#each nav as s (s.id)}
+    {#each sections as s (s.id)}
       <a
         href={`#${s.id}`}
         aria-current={active === s.id ? 'page' : undefined}
