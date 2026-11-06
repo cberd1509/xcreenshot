@@ -2,9 +2,18 @@ import { render, screen, waitFor } from '@testing-library/svelte'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { COLORS, DEFAULT_STYLE, type Style, type Tool } from './shapes'
+import type { ShownTextOptions, TextOptions } from './text'
 import Toolbar, { type ToolbarActions } from './Toolbar.svelte'
 
-type Props = Partial<{ tool: Tool | null; canUndo: boolean; mac: boolean; drawable: boolean }>
+type Props = Partial<{
+  tool: Tool | null
+  canUndo: boolean
+  mac: boolean
+  drawable: boolean
+  text: ShownTextOptions | null
+  ontext: (t: Partial<TextOptions>) => void
+  keepFocus: boolean
+}>
 
 function setup(props: Props = {}) {
   const actions: ToolbarActions = {
@@ -48,6 +57,13 @@ const item = async (name: string) =>
   (await screen.findByText(name)).closest('[role=menuitemcheckbox]')!
 const tooltip = (name: string) =>
   screen.findByText(name, { selector: '[data-slot=tooltip-content]' })
+
+/** Presses `target`; returns whether the press's default (focusing) was prevented. */
+function mousedown(target: Element) {
+  const e = new MouseEvent('mousedown', { bubbles: true, cancelable: true })
+  target.dispatchEvent(e)
+  return e.defaultPrevented
+}
 
 describe('Toolbar', () => {
   it('shows the tools in order', () => {
@@ -164,5 +180,56 @@ describe('Toolbar', () => {
     await user.click(button('Color and size'))
     await screen.findByLabelText('Thick')
     expect(bar.closeMenus()).toBe(true)
+  })
+
+  it('shows text options only while asked to, and changes them', async () => {
+    const ontext = vi.fn<(t: Partial<TextOptions>) => void>()
+    const { user, view } = setup()
+    expect(screen.queryByLabelText('Text size')).not.toBeInTheDocument()
+    await view.rerender({ text: { size: 'M', background: false }, ontext })
+    expect(choice('Medium text')).toHaveAttribute('data-state', 'on')
+    // Pressing the current size again keeps it.
+    await user.click(choice('Medium text'))
+    expect(ontext).not.toHaveBeenCalled()
+    await user.click(choice('Large text'))
+    expect(ontext).toHaveBeenLastCalledWith({ size: 'L' })
+    await user.click(button('Background'))
+    expect(ontext).toHaveBeenLastCalledWith({ background: true })
+  })
+
+  it('shows no size for resized text', () => {
+    setup({ text: { size: null, background: false } })
+    expect(choice('Medium text')).toHaveAttribute('data-state', 'off')
+    expect(choice('Large text')).toHaveAttribute('data-state', 'off')
+  })
+
+  it('keeps focus where it was while asked to, also in the color menu', async () => {
+    const field = document.createElement('textarea')
+    document.body.append(field)
+    const { user, view } = setup({ text: { size: 'M', background: false } })
+    expect(mousedown(button('Background'))).toBe(false)
+    await view.rerender({ keepFocus: true })
+    expect(mousedown(button('Background'))).toBe(true)
+    expect(mousedown(button('Undo'))).toBe(true)
+    field.focus()
+    await user.click(button('Color and size'))
+    const swatch = await screen.findByLabelText(`Color ${COLORS[4]}`)
+    expect(field).toHaveFocus()
+    expect(mousedown(swatch)).toBe(true)
+    const bar = view.component as unknown as { closeMenus: () => boolean }
+    bar.closeMenus()
+    await waitFor(() => expect(screen.queryByLabelText(`Color ${COLORS[4]}`)).toBeNull())
+    expect(field).toHaveFocus()
+    // The ⋯ menu too.
+    await user.click(button('More'))
+    expect(mousedown(await item('Magnifier'))).toBe(true)
+    expect(field).toHaveFocus()
+    field.remove()
+  })
+
+  it('has default text handlers', async () => {
+    const { user } = setup({ text: { size: 'S', background: true } })
+    await user.click(choice('Large text'))
+    expect(button('Background')).toHaveAttribute('aria-pressed', 'true')
   })
 })

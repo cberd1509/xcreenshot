@@ -56,8 +56,8 @@ describe('tools', () => {
     expect(toolForKey('Enter')).toBeNull()
   })
 
-  it('draws with rect and arrow for now', () => {
-    expect([...READY].toSorted()).toEqual(['arrow', 'rect'])
+  it('draws with rect, arrow and text for now', () => {
+    expect([...READY].toSorted()).toEqual(['arrow', 'rect', 'text'])
   })
 })
 
@@ -238,5 +238,59 @@ describe('blurRects', () => {
 
   it('skips other shapes', () => {
     expect(blurRects([rect, arrow], crop, one)).toEqual([])
+  })
+})
+
+describe('text', () => {
+  const text: Shape = {
+    id: 't',
+    kind: 'text',
+    style: DEFAULT_STYLE,
+    x: 100,
+    y: 50,
+    width: 80,
+    height: 40,
+    text: 'Hi',
+    fontSize: 20,
+    background: false,
+  }
+
+  it('moves, boxes and sits at its corner', () => {
+    expect(origin(text)).toMatchObject({ x: 100, y: 50 })
+    expect(translate(text, 5, -5)).toMatchObject({ x: 105, y: 45, text: 'Hi' })
+    expect(bounds(text)).toEqual({ x: 100, y: 50, width: 80, height: 40 })
+    // Text paints inside its box, plus a pixel for antialiasing.
+    expect(paintBounds(text)).toEqual({ x: 99, y: 49, width: 82, height: 42 })
+  })
+
+  it('scales its font when resized, never stretching', () => {
+    expect(transform(text, { x: 90, y: 40, scaleX: 3, scaleY: 2 })).toMatchObject({
+      x: 90,
+      y: 40,
+      width: 160,
+      height: 80,
+      fontSize: 40,
+    })
+  })
+
+  it('stays the right way round when flipped', () => {
+    expect(transform(text, { x: 180, y: 90, scaleX: -1, scaleY: -1 })).toMatchObject({
+      x: 100,
+      y: 50,
+      width: 80,
+      height: 40,
+      fontSize: 20,
+    })
+    // A zero scale counts as unflipped.
+    expect(transform(text, { x: 0, y: 0, scaleX: 0, scaleY: 1 })).toMatchObject({ x: 0, y: 0 })
+    expect(transform(text, { x: 0, y: 0, scaleX: 1, scaleY: 0 })).toMatchObject({ x: 0, y: 0 })
+  })
+
+  it('keeps the font between its smallest and largest size', () => {
+    const small = transform(text, { x: 0, y: 0, scaleX: 0.01, scaleY: 0.01 })
+    expect(small).toMatchObject({ fontSize: 8, height: 16 })
+    expect(transform(text, { x: 0, y: 0, scaleX: 100, scaleY: 100 })).toMatchObject({
+      fontSize: 400,
+    })
   })
 })

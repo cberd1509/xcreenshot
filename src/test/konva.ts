@@ -60,6 +60,9 @@ export class FakeNode {
   fire(event: string) {
     for (const h of this.handlers.get(event) ?? []) h({ target: this })
   }
+  getChildren() {
+    return this.children
+  }
   add(child: FakeNode) {
     child.parent = this
     this.children.push(child)
@@ -120,12 +123,39 @@ const shape = (className: string) =>
     }
   }
 
+/**
+ * Konva's text measures with a canvas, which jsdom lacks: here every character is half the font
+ * size wide, and lines are `lineHeight` font sizes tall.
+ */
+class Text extends FakeNode {
+  constructor(attrs: Attrs = {}) {
+    super('Text', attrs)
+  }
+  private get num() {
+    const { fontSize = 12, padding = 0, lineHeight = 1 } = this.attrs as Record<string, number>
+    return { fontSize, padding, lineHeight }
+  }
+  private get lines() {
+    return String(this.attrs.text ?? '').split('\n')
+  }
+  width() {
+    const { fontSize, padding } = this.num
+    return Math.max(...this.lines.map((l) => l.length)) * (fontSize / 2) + 2 * padding
+  }
+  height() {
+    const { fontSize, padding, lineHeight } = this.num
+    return this.lines.length * fontSize * lineHeight + 2 * padding
+  }
+}
+
 export const FakeKonva = {
   Stage,
   Layer,
   Transformer,
   Rect: shape('Rect'),
   Arrow: shape('Arrow'),
+  Group: shape('Group'),
+  Text,
 }
 
 /** Every stage made so far, newest last. */

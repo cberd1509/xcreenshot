@@ -6,11 +6,14 @@ logic.
 | File               | What it does                                                        |
 | ------------------ | ------------------------------------------------------------------- |
 | `shapes.ts`        | Shape model, tools and their shortcuts, drawing and transform math  |
+| `text.ts`          | Text sizes, font, padding and colors                                |
 | `history.ts`       | Undo and redo as snapshots of the shape list (last 200)             |
 | `placement.ts`     | Where the toolbar goes                                              |
 | `board.ts`         | The Konva stage, and `exportShapes`                                 |
 | `Annotator.svelte` | Pointer input, history, the toolbar, and the API the overlay calls |
 | `Toolbar.svelte`   | The toolbar (presentational, loaded on demand)                      |
+| `TextOptions.svelte` | The text tool's size and background, in the toolbar               |
+| `TextEditor.svelte`  | The textarea that edits a text in place                           |
 
 ## Shape model
 
@@ -21,6 +24,9 @@ exported. A shape dragged out of the selection is pulled back until 8 px of it s
 
 - `rect` and `blur`: `x`, `y`, `width`, `height`
 - `arrow`: `points: [x1, y1, x2, y2]`, head at the end
+- `text`: `x`, `y`, `width`, `height` (its box, measured by Konva), `text`, `fontSize` and
+  `background`. Font sizes are logical px (S 16, M 24, L 36), so they look the same on any
+  display. Resizing scales the font; the box is measured again.
 
 The other tools (#14–#16) add kinds here.
 
@@ -41,12 +47,37 @@ the overlay asks the annotator first:
 - `key(e)` handles undo and redo (⌘Z / ⇧⌘Z on macOS, Ctrl elsewhere), Delete/Backspace and arrow
   keys on the selected shape, and the tool letters. It returns whether it handled the key.
 - Esc undoes one thing per press: the size edit, then `escape()` (the shape being drawn, an open
-  menu, the selected shape, the tool), then the selection, then the overlay closes.
+  menu, the text being edited, the selected shape, the tool), then the selection, then the
+  overlay closes.
 
 While there are annotations (`annotated()`), a press outside the selection is ignored rather than
 starting a new selection, and a resize cannot shrink the selection past what the shapes paint
 inside it (`painted()`). Annotations go on Esc (with the selection), on the next capture, and when
 a selection starts on another display.
+
+## Text
+
+With the Text tool, a click in the selection opens a textarea there, laid out like the Konva text
+it becomes (system UI font, same padding and line height). Double-click a text, or press Enter
+with it selected, to edit it again; it leaves the board meanwhile. Esc, a press elsewhere, or the
+textarea losing focus commits it as one undo step (none if nothing changed), as typed (line
+breaks and trailing spaces kept) and where the editor was: it is not moved back into the
+selection, which clips it like any shape. Text that is all whitespace is dropped (an emptied text
+is deleted). A text keeps at most 2,000 characters (`maxlength`, so a long paste is cut), and only
+what is kept is measured. Copy and Save commit it first. A press on the board while editing only commits: it is
+stopped in the capture phase, so Konva never sees it. Text resizes from its corners and keeps its
+proportions (Shift does not stretch it); the font scales and the box is measured again.
+
+While a text is edited, `key(e)` returns true for every key without `preventDefault`, so the
+overlay runs no shortcut, copy, save or nudge and the textarea gets the key. Esc comes from Rust
+as usual and `escape()` closes an open menu first, then commits the text. While text is typed,
+presses on the toolbar and its color menu leave focus in the textarea (`keepFocus`), so the text
+stays the active edit and follows the size, Background and color. A tool or Clear all commits it
+first; Undo drops it, and Redo waits until it is committed (committing would drop what can be
+redone). With a text selected, the toolbar shows its options and they apply to it, one undo step
+each, leaving the tool's own options as they were; a text that grows is moved to sit wholly in
+the selection, if it fits. With Background, the box is filled with the color and the text is
+black or white, whichever has the higher WCAG contrast ratio.
 
 ## Speed
 

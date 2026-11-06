@@ -3,10 +3,20 @@
 
 import type Konva from 'konva'
 import type { Point, Rect, Scale, Size } from '../geometry'
-import { blurRects, origin, paintedBounds, physicalIn, transform, type Shape } from './shapes'
+import {
+  blurRects,
+  origin,
+  paintedBounds,
+  physicalIn,
+  transform,
+  type Shape,
+  type TextShape,
+} from './shapes'
+import { radius, textColors, textFont } from './text'
 
 type K = typeof Konva
-type Node = Konva.Shape
+/** A shape's node: one Konva shape, or a group for text (its background and the text). */
+type Node = Konva.Shape | Konva.Group
 
 /** `load`, run once and shared. A failed load is forgotten, so the next call tries again. */
 export function once<T>(load: () => Promise<T>): () => Promise<T> {
@@ -48,6 +58,7 @@ export function attrs(shape: Shape): Konva.ShapeConfig {
       scaleY: 1,
     }
   }
+  if (shape.kind === 'text') return { x, y, scaleX: 1, scaleY: 1 }
   const box = { x, y, width: shape.width, height: shape.height, scaleX: 1, scaleY: 1 }
   if (shape.kind === 'blur') {
     return { ...box, fill: BLUR_FILL, stroke: 'white', dash: [4, 4], strokeWidth: 1 }
@@ -61,17 +72,57 @@ export function attrs(shape: Shape): Konva.ShapeConfig {
   }
 }
 
+/** The attributes of a text group's children: the background box and the text. */
+export function textAttrs(shape: TextShape): { box: Konva.RectConfig; label: Konva.TextConfig } {
+  const { fill, box } = textColors(shape.style.color, shape.background)
+  return {
+    box: {
+      width: shape.width,
+      height: shape.height,
+      fill: box,
+      cornerRadius: radius(shape.fontSize),
+    },
+    label: {
+      text: shape.text,
+      ...textFont(shape.fontSize),
+      fill,
+    },
+  }
+}
+
 function create(K: K, shape: Shape): Node {
+  if (shape.kind === 'text') {
+    const { box, label } = textAttrs(shape)
+    const group = new K.Group(attrs(shape))
+    group.add(new K.Rect(box))
+    group.add(new K.Text(label))
+    return group
+  }
   return shape.kind === 'arrow'
     ? new K.Arrow(attrs(shape) as Konva.ArrowConfig)
     : new K.Rect(attrs(shape))
 }
+
+/** Sets a node's attributes to match its shape. */
+function update(node: Node, shape: Shape) {
+  node.setAttrs(attrs(shape))
+  if (shape.kind !== 'text') return
+  const { box, label } = textAttrs(shape)
+  const [background, text] = (node as Konva.Group).getChildren()
+  background.setAttrs(box)
+  text.setAttrs(label)
+}
+
+const CORNERS = ['top-left', 'top-right', 'bottom-left', 'bottom-right']
+const ANCHORS = [...CORNERS, 'top-center', 'middle-right', 'middle-left', 'bottom-center']
 
 export type BoardEvents = {
   /** A shape was moved or resized on the board. */
   onchange: (shape: Shape) => void
   /** A shape was pressed. */
   onselect: (id: string) => void
+  /** A text was double-clicked, to edit it. */
+  onedit: (id: string) => void
 }
 
 /**
@@ -87,6 +138,10 @@ export class Board {
   private readonly transformer: Konva.Transformer
   private readonly nodes = new Map<string, { node: Node; shape: Shape }>()
   private draft: { node: Node; kind: Shape['kind'] } | null = null
+  /** Whether the handles are set up for text. */
+  private textHandles = false
+  /** Lays out text off the stage, to measure it. Reused for every keystroke. */
+  private measurer: Konva.Text | null = null
 
   constructor(
     private readonly K: K,
@@ -122,14 +177,17 @@ export class Board {
       seen.add(shape.id)
       const entry = this.nodes.get(shape.id)
       if (entry) {
-        if (entry.shape !== shape) entry.node.setAttrs(attrs(shape))
+        if (entry.shape !== shape) update(entry.node, shape)
         entry.shape = shape
         continue
       }
       const node = create(this.K, shape)
       node.draggable(true)
-      node.on('pointerdown', () => this.events.onselect(shape.id))
-      node.on('dragend transformend', () => this.changed(shape.id))
+      // Konva's `on` overloads differ between Shape and Group; Node's are shared.
+      const events: Konva.Node = node
+      events.on('pointerdown', () => this.events.onselect(shape.id))
+      events.on('dragend transformend', () => this.changed(shape.id))
+      if (shape.kind === 'text') events.on('dblclick dbltap', () => this.events.onedit(shape.id))
       this.shapes.add(node)
       this.nodes.set(shape.id, { node, shape })
     }
@@ -140,8 +198,19 @@ export class Board {
     }
     // Stacked in model order, so undo and redo restore what was on top.
     for (const shape of shapes) this.nodes.get(shape.id)!.node.moveToTop()
-    const node = selected ? this.nodes.get(selected)?.node : undefined
-    this.transformer.nodes(node ? [node] : [])
+    const entry = selected ? this.nodes.get(selected) : undefined
+    // Text resizes from its corners and keeps its proportions: only the font size changes.
+    const text = entry?.shape.kind === 'text'
+    if (text !== this.textHandles) {
+      this.textHandles = text
+      this.transformer.setAttrs({
+        keepRatio: text,
+        // Shift would let text stretch; it only scales.
+        shiftBehavior: text ? 'none' : 'default',
+        enabledAnchors: text ? CORNERS : ANCHORS,
+      })
+    }
+    this.transformer.nodes(entry ? [entry.node] : [])
     this.shapes.batchDraw()
     this.top.batchDraw()
   }
@@ -152,7 +221,7 @@ export class Board {
       this.draft.node.destroy()
       this.draft = null
     }
-    if (shape && this.draft) this.draft.node.setAttrs(attrs(shape))
+    if (shape && this.draft) update(this.draft.node, shape)
     else if (shape) {
       const node = create(this.K, shape)
       node.listening(false)
@@ -160,6 +229,13 @@ export class Board {
       this.draft = { node, kind: shape.kind }
     }
     this.top.batchDraw()
+  }
+
+  /** The box `text` takes at `fontSize`, padding included, as Konva lays it out. */
+  measure = (text: string, fontSize: number): Size => {
+    this.measurer ??= new this.K.Text()
+    this.measurer.setAttrs({ text, ...textFont(fontSize) })
+    return { width: this.measurer.width(), height: this.measurer.height() }
   }
 
   /** Whether `p` (window px) is on a shape or a resize handle. */
@@ -171,18 +247,27 @@ export class Board {
     const entry = this.nodes.get(id)
     if (!entry) return
     const { node, shape } = entry
-    const next = transform(shape, {
+    let next = transform(shape, {
       x: node.x(),
       y: node.y(),
       scaleX: node.scaleX(),
       scaleY: node.scaleY(),
     })
+    // Resized text is measured again at its new font size.
+    // A flipped resize keeps the node's origin, now the box's far corner, in place.
+    if (next.kind === 'text' && shape.kind === 'text' && next.fontSize !== shape.fontSize) {
+      const m = this.measure(next.text, next.fontSize)
+      const x = node.scaleX() < 0 ? next.x + next.width - m.width : next.x
+      const y = node.scaleY() < 0 ? next.y + next.height - m.height : next.y
+      next = { ...next, x, y, ...m }
+    }
     // Back to the model: the change comes back through `render` once it is kept.
     node.setAttrs(attrs(shape))
     this.events.onchange(next)
   }
 
   destroy() {
+    this.measurer?.destroy()
     this.stage.destroy()
     this.nodes.clear()
   }

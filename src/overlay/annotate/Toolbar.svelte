@@ -38,12 +38,17 @@
   import * as Tooltip from '$lib/components/ui/tooltip'
   import { isMac } from '$lib/settings.svelte'
   import { COLORS, READY, SIZES, TOOLS, type Style, type Tool } from './shapes'
+  import type { ShownTextOptions, TextOptions } from './text'
+  import TextOptionsBar from './TextOptions.svelte'
 
   let {
     tool,
     ontool,
     style = $bindable(),
+    text = null,
+    ontext = () => {},
     drawable = true,
+    keepFocus = false,
     canUndo,
     canRedo,
     canClear,
@@ -57,6 +62,14 @@
     tool: Tool | null
     ontool: (tool: Tool | null) => void
     style: Style
+    /** The text tool's options, shown while it is in use; `null` hides them. */
+    text?: ShownTextOptions | null
+    ontext?: (change: Partial<TextOptions>) => void
+    /**
+     * While text is typed, presses on the toolbar and its color menu leave focus in the
+     * text's editor, so it stays the active edit and follows the change.
+     */
+    keepFocus?: boolean
     /** False when the drawing layer could not load: the tools are shown as unavailable. */
     drawable?: boolean
     canUndo: boolean
@@ -86,6 +99,9 @@
 
   let colorsOpen = $state(false)
   let moreOpen = $state(false)
+
+  /** Keeps focus where it is, while `keepFocus`. */
+  const keep = (e: Event) => keepFocus && e.preventDefault()
 
   /** Closes the color or ⋯ menu. Returns whether one was open (for Esc). */
   export function closeMenus(): boolean {
@@ -160,6 +176,7 @@
     role="toolbar"
     aria-label="Annotate"
     tabindex="-1"
+    onmousedown={keep}
   >
     <ToggleGroup.Root
       type="single"
@@ -185,9 +202,20 @@
       {/each}
     </ToggleGroup.Root>
 
+    {#if text}
+      <TextOptionsBar options={text} onchange={ontext} />
+    {/if}
+
     <Popover.Root bind:open={colorsOpen}>
       {@render tip(colorButton, 'Color and size')}
-      <Popover.Content class="w-auto p-2" side="bottom" escapeKeydownBehavior="ignore">
+      <Popover.Content
+        class="w-auto p-2"
+        side="bottom"
+        escapeKeydownBehavior="ignore"
+        onmousedown={keep}
+        onOpenAutoFocus={keep}
+        onCloseAutoFocus={keep}
+      >
         <ToggleGroup.Root
           type="single"
           spacing={1}
@@ -232,7 +260,14 @@
 
     <DropdownMenu.Root bind:open={moreOpen}>
       {@render tip(moreButton, 'More')}
-      <DropdownMenu.Content side="bottom" align="end" escapeKeydownBehavior="ignore">
+      <DropdownMenu.Content
+        side="bottom"
+        align="end"
+        escapeKeydownBehavior="ignore"
+        onmousedown={keep}
+        onOpenAutoFocus={keep}
+        onCloseAutoFocus={keep}
+      >
         <DropdownMenu.CheckboxItem
           checked={options.rememberRegion}
           onCheckedChange={(on) => actions.option('rememberRegion', on)}

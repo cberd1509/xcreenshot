@@ -73,11 +73,24 @@ const press = (key: string, init: KeyboardEventInit = {}) =>
 /** ⌘ on macOS, Ctrl elsewhere. */
 const mod = isMac ? { metaKey: true } : { ctrlKey: true }
 
+/** The text editor, if open. */
+const editor = () => screen.queryByRole<HTMLTextAreaElement>('textbox', { name: 'Text' })
+/** The text drawn by each text node on the board. */
+const texts = () => nodes().map((n) => n.children[1]?.attrs.text)
+
 /** Drags on the annotation layer, in window px. */
 async function drag(x1: number, y1: number, x2: number, y2: number) {
   await fireEvent.pointerDown(element(), at(x1, y1))
   await fireEvent.pointerMove(element(), at(x2, y2))
   await fireEvent.pointerUp(element(), at(x2, y2))
+}
+
+/** Picks the text tool and clicks at (x, y): the editor opens there. */
+async function place(api: Api, x = 150, y = 150) {
+  api.key(press('t'))
+  await drag(x, y, x, y)
+  await waitFor(() => expect(editor()).toHaveFocus())
+  return editor()!
 }
 
 describe('Annotator', () => {
@@ -421,5 +434,407 @@ describe('Annotator', () => {
     const { view } = await setup()
     view.unmount()
     expect(stage().destroyed).toBe(true)
+  })
+
+  describe('text', () => {
+    it('places a caret with a click, and commits the typed text on Esc', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      const field = await place(api)
+      // Medium (24 px) with 7 px padding: the first line is centered on the click.
+      expect(field.style).toMatchObject({ left: '143px', top: '128px', fontSize: '24px' })
+      expect(kinds()).toEqual([])
+      await user.type(field, 'Hello')
+      expect(api.escape()).toBe(true)
+      await waitFor(() => expect(editor()).not.toBeInTheDocument())
+      expect(kinds()).toEqual(['Group'])
+      expect(texts()).toEqual(['Hello'])
+      // Measured as Konva lays it out (the fake: 12 px a character), padding included.
+      expect(nodes()[0].attrs).toMatchObject({ x: 143, y: 128 })
+      expect(nodes()[0].children[0].attrs).toMatchObject({ width: 74, height: 44 })
+      expect(passed).not.toHaveBeenCalled()
+      // One undo step.
+      api.key(press('z', mod))
+      await waitFor(() => expect(kinds()).toEqual([]))
+    })
+
+    it('commits on blur and on a press elsewhere, and drops empty text', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      await user.type(await place(api), 'A')
+      await fireEvent.blur(editor()!)
+      await waitFor(() => expect(texts()).toEqual(['A']))
+
+      await user.type(await place(api, 300, 300), 'B')
+      // A press on the board only commits: it starts nothing and the overlay never sees it.
+      await fireEvent.pointerDown(element(), at(400, 200))
+      await waitFor(() => expect(editor()).not.toBeInTheDocument())
+      expect(texts()).toEqual(['A', 'B'])
+      expect(passed).not.toHaveBeenCalled()
+
+      await user.type(await place(api, 300, 200), '  \n ')
+      api.escape()
+      await place(api, 300, 250)
+      api.escape()
+      await waitFor(() => expect(editor()).not.toBeInTheDocument())
+      expect(texts()).toEqual(['A', 'B'])
+      // The empty ones left no undo step.
+      api.key(press('z', mod))
+      await waitFor(() => expect(texts()).toEqual(['A']))
+    })
+
+    it('only commits on a press on the layer itself, opening no other text', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      await user.type(await place(api), 'A')
+      // The whole click lands on the layer: it commits, and the text tool starts nothing.
+      await fireEvent.pointerDown(element(), at(300, 300))
+      await fireEvent.pointerUp(element(), at(300, 300))
+      await waitFor(() => expect(texts()).toEqual(['A']))
+      expect(editor()).not.toBeInTheDocument()
+      // The next click places a caret as usual.
+      await drag(300, 300, 300, 300)
+      await waitFor(() => expect(editor()).toBeInTheDocument())
+    })
+
+    it('keeps text as typed and where the editor was, clipped by the selection', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      // Near the selection's right edge (500): the text runs past it.
+      await user.type(await place(api, 480, 200), 'Hello world{Enter}  ')
+      expect(editor()!.style).toMatchObject({ left: '473px', top: '178px' })
+      api.escape()
+      await waitFor(() => expect(texts()).toEqual(['Hello world\n  ']))
+      // Not moved: it is clipped like any shape. Both lines are measured, the last one too.
+      expect(nodes()[0].attrs).toMatchObject({ x: 473, y: 178 })
+      expect(nodes()[0].children[0].attrs).toMatchObject({ width: 146, height: 74 })
+    })
+
+    it('caps a long paste, and measures only what is kept', async () => {
+      const { api } = await setup()
+      const field = await place(api)
+      expect(field.maxLength).toBe(2000)
+      // jsdom does not apply maxlength to a set value: the measure and the commit still cut it.
+      field.value = 'x'.repeat(5000)
+      await fireEvent.input(field)
+      // 2000 characters at 12 px, plus padding.
+      await waitFor(() => expect(field.style.width).toBe(`${2000 * 12 + 14 + 2}px`))
+      api.escape()
+      await waitFor(() => expect(texts()).toEqual(['x'.repeat(2000)]))
+    })
+
+    it('adds no undo step for a text committed unchanged', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      api.key(press('r'))
+      await drag(300, 300, 350, 350)
+      await user.type(await place(api), 'Hi')
+      api.escape()
+      await waitFor(() => expect(texts()).toEqual([undefined, 'Hi']))
+      nodes()[1].fire('dblclick')
+      await waitFor(() => expect(editor()).toHaveValue('Hi'))
+      api.escape()
+      await waitFor(() => expect(editor()).not.toBeInTheDocument())
+      // One undo takes the text away: the unchanged commit left no step.
+      api.key(press('z', mod))
+      await waitFor(() => expect(texts()).toEqual([undefined]))
+    })
+
+    it('keeps presses on the editor from the overlay', async () => {
+      const { api } = await setup()
+      await fireEvent.pointerDown(await place(api), at(150, 150))
+      expect(passed).not.toHaveBeenCalled()
+      expect(editor()).toBeInTheDocument()
+    })
+
+    it('edits a text again on double-click or Enter, as one undo step', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      await user.type(await place(api), 'Hi')
+      api.escape()
+      await waitFor(() => expect(texts()).toEqual(['Hi']))
+
+      // Double-click: the text leaves the board while it is in the editor.
+      nodes()[0].fire('dblclick')
+      await waitFor(() => expect(editor()).toHaveValue('Hi'))
+      expect(editor()!.style).toMatchObject({ left: '143px', top: '128px' })
+      expect(kinds()).toEqual([])
+      await user.type(editor()!, '!')
+      api.escape()
+      await waitFor(() => expect(texts()).toEqual(['Hi!']))
+      api.key(press('z', mod))
+      await waitFor(() => expect(texts()).toEqual(['Hi']))
+
+      // Opened and closed with no change: no undo step.
+      nodes()[0].fire('dblclick')
+      await waitFor(() => expect(editor()).toBeInTheDocument())
+      api.escape()
+      await waitFor(() => expect(texts()).toEqual(['Hi']))
+
+      // Enter on the selected text; emptying it deletes it.
+      nodes()[0].fire('pointerdown')
+      await waitFor(() => expect(transformer().attached).toHaveLength(1))
+      const enter = press('Enter')
+      expect(api.key(enter)).toBe(true)
+      expect(enter.defaultPrevented).toBe(true)
+      await waitFor(() => expect(editor()).toHaveValue('Hi'))
+      expect(transformer().attached).toEqual([])
+      await user.clear(editor()!)
+      api.escape()
+      await waitFor(() => expect(kinds()).toEqual([]))
+      api.key(press('z', mod))
+      await waitFor(() => expect(texts()).toEqual(['Hi']))
+      api.key(press('z', mod))
+      await waitFor(() => expect(kinds()).toEqual([]))
+    })
+
+    it('owns every key while text is edited, leaving it to the textarea', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      await user.type(await place(api), 'A')
+      await fireEvent.blur(editor()!)
+      await place(api, 300, 300)
+      for (const e of [
+        press('r'),
+        press('c', mod),
+        press('s', mod),
+        press('z', mod),
+        press('Enter'),
+        press('ArrowLeft'),
+        press('Backspace'),
+      ]) {
+        expect(api.key(e)).toBe(true)
+        expect(e.defaultPrevented).toBe(false)
+      }
+      // Nothing was undone, and the tool is still Text.
+      expect(texts()).toEqual(['A'])
+      expect(screen.getByLabelText('Text', { selector: 'button' })).toHaveAttribute(
+        'data-state',
+        'on',
+      )
+    })
+
+    it('shows a text cursor over the selection', async () => {
+      const { api } = await setup()
+      api.key(press('t'))
+      await fireEvent.pointerMove(element(), at(150, 150))
+      expect(element().style.cursor).toBe('text')
+    })
+
+    it('applies the text options, also to the text being typed', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      expect(screen.queryByLabelText('Text size')).not.toBeInTheDocument()
+      const field = await place(api)
+      await user.type(field, 'Hi')
+      await user.click(screen.getByLabelText('Large text'))
+      await user.click(screen.getByRole('button', { name: 'Background' }))
+      expect(field.style.fontSize).toBe('36px')
+      expect(field.style.background).not.toBe('transparent')
+      api.escape()
+      await waitFor(() => expect(texts()).toEqual(['Hi']))
+      const [box, label] = nodes()[0].children
+      expect(label.attrs).toMatchObject({ fontSize: 36, fill: '#000000' })
+      expect(box.attrs.fill).toBe('#FF3B30')
+      // The next text uses them too.
+      await place(api, 300, 300)
+      expect(editor()!.style.fontSize).toBe('36px')
+    })
+
+    it('shows the options of a text edited with another tool, keeping a resized size', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      await user.type(await place(api), 'Hi')
+      api.escape()
+      api.key(press('r'))
+      await waitFor(() => expect(screen.queryByLabelText('Text size')).not.toBeInTheDocument())
+      const node = nodes()[0]
+      node.setAttrs({ scaleX: 1.25, scaleY: 1.25 })
+      node.fire('transformend')
+      await waitFor(() => expect(nodes()[0].children[1].attrs.fontSize).toBe(30))
+      nodes()[0].fire('dblclick')
+      await waitFor(() => expect(editor()!.style.fontSize).toBe('30px'))
+      // No size option matches, and Background keeps the size.
+      expect(screen.getByLabelText('Medium text')).toHaveAttribute('data-state', 'off')
+      await user.click(screen.getByRole('button', { name: 'Background' }))
+      expect(editor()!.style.fontSize).toBe('30px')
+      await user.click(screen.getByLabelText('Small text'))
+      expect(editor()!.style.fontSize).toBe('16px')
+    })
+
+    it('keeps a press on another shape from Konva while text is edited', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      api.key(press('r'))
+      await drag(300, 300, 350, 350)
+      await user.type(await place(api), 'Hi')
+      // Konva listens on its own element in the layer.
+      const content = document.createElement('div')
+      element().append(content)
+      const pressed = vi.fn<(e: Event) => void>()
+      content.addEventListener('pointerdown', pressed)
+      // The press commits the text, and neither Konva nor the overlay sees it.
+      await fireEvent.pointerDown(content, at(310, 310))
+      await waitFor(() => expect(editor()).not.toBeInTheDocument())
+      expect(texts()).toEqual([undefined, 'Hi'])
+      expect(pressed).not.toHaveBeenCalled()
+      expect(passed).not.toHaveBeenCalled()
+      // A right press does nothing.
+      await user.type(await place(api, 200, 200), 'Yo')
+      await fireEvent.pointerDown(element(), { ...at(310, 310), button: 2 })
+      expect(editor()).toBeInTheDocument()
+    })
+
+    it('changes the color of the text being typed from the color menu', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      const field = await place(api)
+      await user.type(field, 'Hi')
+      await user.click(screen.getByRole('button', { name: 'Color and size' }))
+      await user.click(await screen.findByLabelText('Color #007AFF'))
+      // Still the active edit, in the new color.
+      expect(field).toHaveFocus()
+      expect(editor()!.style.color).toBe('rgb(0, 122, 255)')
+      await user.type(field, '!')
+      // Esc closes the menu first, then commits.
+      expect(api.escape()).toBe(true)
+      await waitFor(() => expect(screen.queryByLabelText('Color #007AFF')).toBeNull())
+      expect(editor()).toHaveFocus()
+      expect(api.escape()).toBe(true)
+      await waitFor(() => expect(texts()).toEqual(['Hi!']))
+      expect(nodes()[0].children[1].attrs.fill).toBe('#007AFF')
+    })
+
+    it('drops the text being typed on Undo, and commits it before a tool or clear', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      // Undo, then type: Redo waits, since committing would drop what can be redone.
+      api.key(press('r'))
+      await drag(300, 300, 350, 350)
+      api.key(press('z', mod))
+      await waitFor(() => expect(kinds()).toEqual([]))
+      await user.type(await place(api), 'A')
+      expect(screen.getByRole('button', { name: 'Redo' })).toBeDisabled()
+      // Undo drops the text being typed, and only that.
+      await user.click(screen.getByRole('button', { name: 'Undo' }))
+      await waitFor(() => expect(editor()).not.toBeInTheDocument())
+      expect(kinds()).toEqual([])
+      await user.click(screen.getByRole('button', { name: 'Redo' }))
+      await waitFor(() => expect(kinds()).toEqual(['Rect']))
+
+      await user.type(await place(api, 200, 200), 'C')
+      await user.click(screen.getByLabelText('Rectangle'))
+      await waitFor(() => expect(texts()).toEqual([undefined, 'C']))
+      expect(editor()).not.toBeInTheDocument()
+      await user.type(await place(api, 200, 250), 'D')
+      await user.click(screen.getByRole('button', { name: 'Clear all' }))
+      expect(kinds()).toEqual([])
+      expect(editor()).not.toBeInTheDocument()
+      // Clear is one step: undo brings the text back with the rest.
+      await user.click(screen.getByRole('button', { name: 'Undo' }))
+      await waitFor(() => expect(texts()).toEqual([undefined, 'C', 'D']))
+    })
+
+    it('applies size, Background and color to the selected text, one undo step each', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      await user.type(await place(api), 'Hi')
+      api.escape()
+      api.key(press('r'))
+      await waitFor(() => expect(texts()).toEqual(['Hi']))
+      expect(screen.queryByLabelText('Text size')).not.toBeInTheDocument()
+      nodes()[0].fire('pointerdown')
+      // Its options show, even with another tool.
+      await waitFor(() =>
+        expect(screen.getByLabelText('Medium text')).toHaveAttribute('data-state', 'on'),
+      )
+      const label = () => nodes()[0].children[1].attrs
+      const box = () => nodes()[0].children[0].attrs
+      await user.click(screen.getByLabelText('Large text'))
+      // Measured again: 2 x 18 + 2 x 11 padding wide in the fake.
+      await waitFor(() => expect(label().fontSize).toBe(36))
+      expect(box()).toMatchObject({ width: 58, fill: 'transparent' })
+      await user.click(screen.getByRole('button', { name: 'Background' }))
+      await waitFor(() => expect(box().fill).toBe('#FF3B30'))
+      expect(label().fontSize).toBe(36)
+      await user.click(screen.getByRole('button', { name: 'Color and size' }))
+      await user.click(await screen.findByLabelText('Color #FFCC00'))
+      await waitFor(() => expect(box().fill).toBe('#FFCC00'))
+      expect(label().fill).toBe('#000000')
+      // The stroke size does not show on text: no undo step.
+      await user.click(screen.getByLabelText('Thick'))
+      api.escape()
+      api.key(press('z', mod))
+      await waitFor(() => expect(box().fill).toBe('#FF3B30'))
+      api.key(press('z', mod))
+      await waitFor(() => expect(box().fill).toBe('transparent'))
+      expect(label().fontSize).toBe(36)
+      api.key(press('z', mod))
+      await waitFor(() => expect(label().fontSize).toBe(24))
+      // The tool's own options did not change.
+      expect(screen.getByTestId('current-color').style.background).toBe('rgb(255, 59, 48)')
+      // A rect selected: the text options are the tool's again.
+      await drag(300, 300, 350, 350)
+      nodes()[1].fire('pointerdown')
+      await waitFor(() => expect(screen.queryByLabelText('Text size')).not.toBeInTheDocument())
+    })
+
+    it('shows the selected text’s color, and keeps it in the selection when it grows', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      // Small text near the selection's bottom-right corner (500, 400).
+      await user.click(screen.getByLabelText('Text'))
+      await user.click(screen.getByLabelText('Small text'))
+      await user.click(screen.getByRole('button', { name: 'Color and size' }))
+      await user.click(await screen.findByLabelText('Color #007AFF'))
+      api.escape()
+      await user.type(await place(api, 470, 385), 'Hello')
+      api.escape()
+      await waitFor(() => expect(texts()).toEqual(['Hello']))
+      // Back to red for the tool; the text stays blue.
+      await user.click(screen.getByRole('button', { name: 'Color and size' }))
+      await user.click(await screen.findByLabelText('Color #FF3B30'))
+      api.escape()
+      nodes()[0].fire('pointerdown')
+      await waitFor(() =>
+        expect(screen.getByTestId('current-color').style.background).toBe('rgb(0, 122, 255)'),
+      )
+      // Red, the tool's color, can be picked for it.
+      await user.click(screen.getByRole('button', { name: 'Color and size' }))
+      await user.click(await screen.findByLabelText('Color #FF3B30'))
+      await waitFor(() => expect(nodes()[0].children[1].attrs.fill).toBe('#FF3B30'))
+      api.escape()
+      await user.click(screen.getByLabelText('Large text'))
+      // 5 x 18 + 2 x 11 = 112 wide, 45 + 22 = 67 tall: moved into the corner at (500, 400).
+      await waitFor(() => expect(nodes()[0].children[1].attrs.fontSize).toBe(36))
+      const { x, y } = nodes()[0].attrs as { x: number; y: number }
+      const { width, height } = nodes()[0].children[0].attrs as { width: number; height: number }
+      expect([x, y, width, height]).toEqual([388, 333, 112, 67])
+      expect(x).toBeGreaterThanOrEqual(sel.x)
+      expect(y).toBeGreaterThanOrEqual(sel.y)
+      expect(x + width).toBeLessThanOrEqual(sel.x + sel.width)
+      expect(y + height).toBeLessThanOrEqual(sel.y + sel.height)
+    })
+
+    it('commits the text being typed before exporting', async () => {
+      fakeContext()
+      const user = userEvent.setup()
+      const { api } = await setup()
+      await user.type(await place(api), 'Hi')
+      const out = await api.exportAnnotations({ x: 200, y: 200, width: 800, height: 600 }, scale)
+      // The 38 x 44 box at (143, 128), plus a pixel, at 2x, less the crop.
+      expect(out.layer).toMatchObject({ x: 84, y: 54, width: 80, height: 92 })
+      expect(editor()).not.toBeInTheDocument()
+    })
+
+    it('drops the text being typed on reset', async () => {
+      const user = userEvent.setup()
+      const { api } = await setup()
+      await user.type(await place(api), 'Hi')
+      api.reset()
+      await waitFor(() => expect(editor()).not.toBeInTheDocument())
+      expect(kinds()).toEqual([])
+      expect(api.annotated()).toBe(false)
+    })
   })
 })

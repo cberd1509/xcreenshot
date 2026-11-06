@@ -15,8 +15,21 @@
     paintedBounds,
     toolForKey,
     translate,
+    type Style,
+    type TextShape,
     type Tool,
   } from './shapes'
+  import {
+    DEFAULT_TEXT,
+    MAX_TEXT,
+    TEXT_SIZES,
+    within,
+    boxAt,
+    sizeOf,
+    type ShownTextOptions,
+    type TextOptions,
+  } from './text'
+  import TextEditor from './TextEditor.svelte'
   import type ToolbarComponent from './Toolbar.svelte'
   import type { Option, ToolbarActions } from './Toolbar.svelte'
 
@@ -59,6 +72,16 @@
   let ids = 0
   let bar = $state<Size>({ width: 0, height: 0 })
   let cursor = $state('')
+  let textOptions = $state<TextOptions>(DEFAULT_TEXT)
+
+  /** The text being typed: a new one, or one taken off the board to edit again. */
+  type Editing = Pick<TextShape, 'id' | 'text' | 'fontSize' | 'style'> & {
+    at: Point
+    existing: boolean
+  }
+  let editing = $state<Editing | null>(null)
+  /** The text hidden from the board while it is edited. */
+  const hidden = $derived(editing?.id)
 
   const drawing = $derived(tool !== null && READY.has(tool) && !failed)
 
@@ -97,6 +120,10 @@
         board = new Board(K, container, {
           onchange: (shape) => set(replace(history.present, keepInside(shape, selection!))),
           onselect: (id) => (selected = id),
+          onedit: (id) => {
+            const shape = history.present.find((s) => s.id === id)
+            if (shape?.kind === 'text') edit(shape)
+          },
         })
       })
       .catch((e: unknown) => {
@@ -106,7 +133,9 @@
   })
 
   $effect(() => board?.place(selection, display))
-  $effect(() => board?.render(history.present, selected))
+  $effect(() =>
+    board?.render(hidden ? without(history.present, hidden) : history.present, selected),
+  )
 
   /** Moves history, dropping the shape selection if that shape is gone. */
   function move(next: History) {
@@ -129,7 +158,122 @@
     history = empty
     selected = null
     tool = null
+    editing = null
     cancel()
+  }
+
+  /** Opens the editor for a new text with its caret at `p`. */
+  function place(p: Point) {
+    const fontSize = TEXT_SIZES[textOptions.size]
+    editing = {
+      id: `s${++ids}`,
+      at: boxAt(p, fontSize),
+      text: '',
+      fontSize,
+      style,
+      existing: false,
+    }
+  }
+
+  /** Opens the editor on a text already on the board. Its background becomes the tool's. */
+  function edit(shape: TextShape) {
+    const { id, x, y, text, fontSize, background } = shape
+    selected = null
+    editing = { id, at: { x, y }, text, fontSize, style: shape.style, existing: true }
+    textOptions = { ...textOptions, background }
+  }
+
+  /**
+   * Commits the text being edited, as typed and where the editor was, as one undo step (none if
+   * nothing changed). Text that is all whitespace is dropped (an edited text emptied is deleted).
+   */
+  function finish() {
+    const e = editing
+    if (!e || !board) return
+    editing = null
+    const text = e.text.slice(0, MAX_TEXT)
+    if (!text.trim()) {
+      if (e.existing) set(without(history.present, e.id))
+      return
+    }
+    const { id, fontSize, style: textStyle } = e
+    const { background } = textOptions
+    const before = history.present.find((s) => s.id === id)
+    const same =
+      before?.kind === 'text' &&
+      before.text === text &&
+      before.fontSize === fontSize &&
+      before.background === background &&
+      before.style.color === textStyle.color
+    if (same) return
+    const shape: TextShape = {
+      id,
+      kind: 'text',
+      style: textStyle,
+      ...e.at,
+      ...board.measure(text, fontSize),
+      text,
+      fontSize,
+      background,
+    }
+    set(e.existing ? replace(history.present, shape) : [...history.present, shape])
+  }
+
+  const selectedShape = $derived(history.present.find((s) => s.id === selected))
+  /** The selected shape, if it is a text: the toolbar's options apply to it, not the tool's. */
+  const selectedText = $derived(selectedShape?.kind === 'text' ? selectedShape : undefined)
+
+  /** The color and size the toolbar shows: the edited or selected text's color, or the tool's. */
+  const shownStyle = $derived(
+    editing ? editing.style : selectedText ? { ...style, color: selectedText.style.color } : style,
+  )
+
+  /** The text options the toolbar shows: the edited or selected text's, or the tool's. */
+  const shownText = $derived.by((): ShownTextOptions | null => {
+    if (editing) return { size: sizeOf(editing.fontSize), background: textOptions.background }
+    if (selectedText)
+      return { size: sizeOf(selectedText.fontSize), background: selectedText.background }
+    return tool === 'text' ? textOptions : null
+  })
+
+  /**
+   * A changed text option. A selected text takes it, as one undo step; otherwise the tool does,
+   * and the text being typed follows it.
+   */
+  function setText(change: Partial<TextOptions>) {
+    const fontSize = change.size && TEXT_SIZES[change.size]
+    if (selectedText && !editing) {
+      const { fontSize: size, background, text } = selectedText
+      const next = { fontSize: fontSize || size, background: change.background ?? background }
+      const box = { ...selectedText, ...next, ...board!.measure(text, next.fontSize) }
+      // A text that grows stays wholly in the selection, if it fits.
+      const kept = selection ? { ...box, ...within(box, selection) } : box
+      return set(replace(history.present, kept))
+    }
+    textOptions = { ...textOptions, ...change }
+    if (editing && fontSize) editing.fontSize = fontSize
+  }
+
+  /** A new color or size: for a selected text, its color as one undo step; else the tool's. */
+  function setStyle(next: Style) {
+    if (selectedText && !editing) {
+      // Only the color shows on text, so a size change leaves no undo step.
+      const color = { ...selectedText.style, color: next.color }
+      return set(replace(history.present, { ...selectedText, style: color }))
+    }
+    style = next
+    if (editing) editing.style = next
+  }
+
+  /** The press that committed the text being edited: it does nothing more. */
+  let committing: Event | null = null
+
+  /** A press while text is edited commits it and does nothing more; Konva never sees it. */
+  function onpointerdowncapture(e: PointerEvent) {
+    if (!editing || e.button !== 0) return
+    e.stopPropagation()
+    committing = e
+    finish()
   }
 
   function cancel() {
@@ -140,6 +284,8 @@
   const at = (e: PointerEvent): Point => ({ x: e.clientX, y: e.clientY })
 
   function onpointerdown(e: PointerEvent) {
+    // On the layer itself, the press that committed text reaches this handler too.
+    if (e === committing) return e.stopPropagation()
     if (e.button !== 0 || !selection || !board) return
     // On a shape or its handles: Konva moves or resizes it.
     if (board.hits(at(e))) return e.stopPropagation()
@@ -157,11 +303,22 @@
       board?.preview(draw(tool, 'draft', start, clampTo(at(e), selection), style))
     }
     // Over the selection: crosshair to draw, else move it. Elsewhere, the overlay's cursor.
-    cursor = !contains(selection, at(e)) ? '' : drawing ? 'crosshair' : 'move'
+    cursor = !contains(selection, at(e))
+      ? ''
+      : !drawing
+        ? 'move'
+        : tool === 'text'
+          ? 'text'
+          : 'crosshair'
   }
 
   function onpointerup(e: PointerEvent) {
     if (!start || !tool || !selection) return
+    if (tool === 'text') {
+      const p = start
+      cancel()
+      return place(p)
+    }
     const shape = draw(tool, `s${++ids}`, start, clampTo(at(e), selection), style)
     cancel()
     if (shape) set([...history.present, shape])
@@ -172,6 +329,8 @@
 
   /** Handles an annotation key. Returns whether it did, so the overlay skips it. */
   export function key(e: KeyboardEvent): boolean {
+    // While text is edited, every key is the textarea's: no shortcuts, copy or nudges.
+    if (editing) return true
     if (!selection || menuOpen() || typing(e.target)) return false
     const redoing = shortcut(e, 'z', true)
     if (redoing || shortcut(e, 'z')) {
@@ -180,10 +339,15 @@
       return true
     }
     if (e.metaKey || e.ctrlKey || e.altKey) return false
-    const shape = history.present.find((s) => s.id === selected)
+    const shape = selectedShape
     if (shape && (e.key === 'Backspace' || e.key === 'Delete')) {
       e.preventDefault()
       set(without(history.present, shape.id))
+      return true
+    }
+    if (shape?.kind === 'text' && e.key === 'Enter') {
+      e.preventDefault()
+      edit(shape)
       return true
     }
     const b = shape && bounds(shape)
@@ -202,12 +366,14 @@
   }
 
   /**
-   * Esc, one step at a time: the shape being drawn, an open menu, the selected shape, then the
-   * tool. Returns whether it undid anything; if not, the overlay handles Esc.
+   * Esc, one step at a time: the shape being drawn, an open menu, the text being edited (it is
+   * kept), the selected shape, then the tool. Returns whether it undid anything; if not, the
+   * overlay handles Esc.
    */
   export function escape(): boolean {
     if (start) cancel()
     else if (toolbar?.closeMenus()) return true
+    else if (editing) finish()
     else if (selected) selected = null
     else if (tool) tool = null
     else return false
@@ -220,6 +386,7 @@
    * docs/annotations.md.
    */
   export function exportAnnotations(crop: Rect, ratio: Scale): Promise<AnnotationExport> {
+    finish()
     return exportShapes(history.present, crop, ratio)
   }
 
@@ -234,11 +401,24 @@
   bind:this={container}
   data-testid="annotations"
   role="presentation"
+  {onpointerdowncapture}
   {onpointerdown}
   {onpointermove}
   {onpointerup}
   onpointercancel={cancel}
 ></div>
+
+{#if editing && board}
+  <TextEditor
+    bind:text={editing.text}
+    at={editing.at}
+    fontSize={editing.fontSize}
+    background={textOptions.background}
+    color={editing.style.color}
+    measure={board.measure}
+    oncommit={finish}
+  />
+{/if}
 
 {#if Toolbar && toolbarAt}
   <div
@@ -253,15 +433,24 @@
     <Toolbar
       bind:this={toolbar}
       {tool}
-      ontool={(t) => (tool = t)}
-      bind:style
+      ontool={(t) => {
+        finish()
+        tool = t
+      }}
+      bind:style={() => shownStyle, setStyle}
+      text={shownText}
+      ontext={setText}
+      keepFocus={editing !== null}
       drawable={!failed}
-      canUndo={history.past.length > 0}
-      canRedo={history.future.length > 0}
+      canUndo={history.past.length > 0 || editing !== null}
+      canRedo={history.future.length > 0 && !editing}
       canClear={history.present.length > 0}
-      onundo={() => move(undo(history))}
+      onundo={() => (editing ? (editing = null) : move(undo(history)))}
       onredo={() => move(redo(history))}
-      onclear={() => set([])}
+      onclear={() => {
+        finish()
+        set([])
+      }}
       {options}
       {actions}
     />
