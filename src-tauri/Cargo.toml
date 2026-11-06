@@ -20,6 +20,7 @@ tauri-build = { version = "2.7.4", features = [] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 log = "0.4"
+open = "5.4.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2.12.5", features = ["tray-icon"] }
@@ -38,11 +39,10 @@ tauri-plugin-autostart = "2"
 tauri-plugin-clipboard-manager = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-open = "5.4.5"
 objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSBitmapImageRep", "NSImageRep", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSSharingService", "NSView", "NSWindow"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGDirectDisplay", "CGDisplayConfiguration", "CGWindow"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSError", "NSGeometry", "NSString", "NSURL"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSError", "NSGeometry", "NSProcessInfo", "NSString", "NSURL"] }
 objc2-service-management = { version = "0.3.2", default-features = false, features = ["std", "objc2", "objc2-foundation", "SMAppService"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]

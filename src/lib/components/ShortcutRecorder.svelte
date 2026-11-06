@@ -1,16 +1,20 @@
 <script lang="ts">
   import { Button } from '$lib/components/ui/button'
-  import { Kbd } from '$lib/components/ui/kbd'
+  import SettingRow from '$lib/components/SettingRow.svelte'
   import ShortcutKbd from '$lib/components/ShortcutKbd.svelte'
   import { onDestroy } from 'svelte'
-  import { comboFromEvent, comboProblem, toAccelerator, type Combo } from '$lib/keys'
+  import { comboFromEvent, comboProblem, spokenKeys, toAccelerator, type Combo } from '$lib/keys'
   import { pauseShortcut, resumeShortcut } from '$lib/settings.svelte'
 
   let {
+    title,
+    description,
     accelerator,
     onchange,
     onreset,
   }: {
+    title: string
+    description: string
     accelerator: string
     /** Saves the new shortcut; rejects with the message to show. */
     onchange: (accelerator: string) => Promise<void>
@@ -115,30 +119,38 @@
 
 <svelte:window {onkeydown} {onkeyup} onblur={() => void stop()} />
 
-<div class="flex flex-col items-end gap-1.5">
-  <div class="flex items-center gap-2">
-    {#if recording}
-      <span aria-live="polite" class="text-[13px] text-muted-foreground">
-        {#if held}<ShortcutKbd accelerator={held} />{:else}<Kbd>Type a shortcut</Kbd>{/if}
-      </span>
-      <Button size="sm" variant="outline" onclick={() => void stop()}>Cancel</Button>
-    {:else}
-      <ShortcutKbd {accelerator} />
-      <Button size="sm" variant="outline" disabled={busy} onclick={start}>Change</Button>
+{#snippet below()}
+  <div class="flex flex-col gap-1 text-[13px]">
+    <Button
+      variant="link"
+      class="h-auto self-start p-0 text-[13px] font-normal text-muted-foreground"
+      disabled={busy}
+      onclick={() => (recording ? void stop() : save(onreset))}
+    >
+      {recording ? 'Cancel' : 'Reset to default'}
+    </Button>
+    {#if error}
+      <p role="alert" class="text-destructive">{error}</p>
     {/if}
   </div>
-  {#if !recording}
-    <Button
-      size="sm"
-      variant="link"
-      class="h-auto px-0"
-      disabled={busy}
-      onclick={() => save(onreset)}
-    >
-      Reset to default
-    </Button>
-  {/if}
-  {#if error}
-    <p role="alert" class="text-[13px] text-destructive">{error}</p>
-  {/if}
-</div>
+{/snippet}
+
+<SettingRow {title} {description} {below}>
+  <Button
+    variant="outline"
+    aria-label={recording
+      ? 'Recording a shortcut, press to cancel'
+      : `Change shortcut, currently ${spokenKeys(accelerator)}`}
+    disabled={busy}
+    onclick={() => (recording ? void stop() : start())}
+    class="h-9 min-w-24 gap-1 rounded-md px-2.5"
+  >
+    <span aria-live="polite" class="contents">
+      {#if recording && !held}
+        <span class="text-[13px] text-muted-foreground">Type a shortcut</span>
+      {:else}
+        <ShortcutKbd accelerator={recording ? held : accelerator} />
+      {/if}
+    </span>
+  </Button>
+</SettingRow>

@@ -8,7 +8,7 @@ describe('ShortcutKbd', () => {
     const accelerator = 'Control+Shift+S'
     const { container } = render(ShortcutKbd, { accelerator })
     const keys = shortcutKeys(accelerator)
-    expect(container.querySelectorAll('[data-slot="kbd"]')).toHaveLength(keys.length)
+    expect(container.querySelectorAll('kbd')).toHaveLength(keys.length)
     for (const key of keys) expect(screen.getByText(key)).toBeInTheDocument()
   })
 })

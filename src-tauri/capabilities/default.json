@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Settings window: core defaults (including event listen), read and change settings, pause the capture shortcut while recording, check and open Login Items",
+  "description": "Settings window: core defaults (including event listen), read and change settings, pause the capture shortcut while recording, check and open Login Items, open the repo from About",
   "windows": [
     "settings"
   ],
@@ -13,6 +13,7 @@
     "allow-pause-capture-shortcut",
     "allow-resume-capture-shortcut",
     "allow-login-item-needs-approval",
-    "allow-open-login-items"
+    "allow-open-login-items",
+    "allow-open-repo"
   ]
 }
