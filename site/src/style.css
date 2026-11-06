@@ -338,6 +338,42 @@ h2 strong {
   color: var(--secondary);
 }
 
+.install-intro {
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.tabs {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 9px;
+  border: 1px solid var(--outline);
+}
+
+.tab {
+  height: 32px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.tab[aria-selected='true'] {
+  background: var(--fg);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.install b {
+  font-weight: 600;
+}
+
 .install {
   flex: 999 1 480px;
   padding: 0;

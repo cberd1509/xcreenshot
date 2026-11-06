@@ -49,7 +49,7 @@ export default defineConfig({
   root: fileURLToPath(new URL('.', import.meta.url)),
   base: './',
   plugins: [release, contentSecurityPolicy],
-  server: { port: 5180 },
+  server: { port: 5181 },
   build: {
     outDir: 'dist',
     emptyOutDir: true,

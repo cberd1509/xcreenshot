@@ -54,6 +54,12 @@ describe('readChoice and saveChoice', () => {
   })
 })
 
+const press = (el: HTMLElement, key: string) => {
+  const event = new KeyboardEvent('keydown', { key, cancelable: true })
+  el.dispatchEvent(event)
+  return event
+}
+
 const get = (selector: string) => document.querySelector<HTMLElement>(selector)!
 
 const page = () => {
@@ -62,12 +68,20 @@ const page = () => {
     <a data-os="other" hidden>Get notified for Windows</a>
     <button data-os="mac" data-os-toggle>Not on a Mac?</button>
     <button data-os="other" data-os-toggle hidden>On a Mac?</button>
+    <div role="tablist">
+      <button role="tab" data-os-tab="mac" aria-selected="true">macOS</button>
+      <button role="tab" data-os-tab="other" aria-selected="false" tabindex="-1">Windows</button>
+      <button role="tab" data-os-tab="linux">Not a choice</button>
+    </div>
     <p>Always shown</p>`
   return {
     mac: get('a[data-os="mac"]'),
     other: get('a[data-os="other"]'),
     notMac: get('button[data-os="mac"]'),
     onMac: get('button[data-os="other"]'),
+    macTab: get('[data-os-tab="mac"]'),
+    winTab: get('[data-os-tab="other"]'),
+    oddTab: get('[data-os-tab="linux"]'),
     always: get('p'),
   }
 }
@@ -122,5 +136,54 @@ describe('setUpOs', () => {
     setUpOs(document, {}, blocked)
     notMac.click()
     expect(other.hidden).toBe(false)
+  })
+
+  it('selects the tab for the shown version', () => {
+    const { macTab, winTab } = page()
+    setUpOs(document, { platform: 'Win32' }, local)
+    expect(winTab.getAttribute('aria-selected')).toBe('true')
+    expect(winTab.tabIndex).toBe(0)
+    expect(macTab.getAttribute('aria-selected')).toBe('false')
+    expect(macTab.tabIndex).toBe(-1)
+  })
+
+  it('switches the whole page when a tab is clicked', () => {
+    const { mac, other, macTab, winTab } = page()
+    setUpOs(document, { platform: 'MacIntel' }, local)
+    winTab.click()
+    expect(other.hidden).toBe(false)
+    expect(readChoice(local)).toBe('other')
+    macTab.click()
+    expect(mac.hidden).toBe(false)
+    expect(readChoice(local)).toBe('mac')
+  })
+
+  it('moves between tabs with the arrow keys, Home and End', () => {
+    const { macTab, winTab, oddTab } = page()
+    setUpOs(document, { platform: 'MacIntel' }, local)
+
+    expect(press(macTab, 'ArrowRight').defaultPrevented).toBe(true)
+    expect(document.activeElement).toBe(winTab)
+    expect(readChoice(local)).toBe('other')
+
+    press(winTab, 'ArrowLeft')
+    expect(document.activeElement).toBe(macTab)
+    expect(readChoice(local)).toBe('mac')
+
+    press(macTab, 'ArrowLeft')
+    expect(document.activeElement).toBe(oddTab)
+    press(winTab, 'Home')
+    expect(document.activeElement).toBe(macTab)
+    press(macTab, 'End')
+    expect(document.activeElement).toBe(oddTab)
+
+    expect(press(macTab, 'a').defaultPrevented).toBe(false)
+  })
+
+  it('ignores a tab with an unknown value', () => {
+    const { oddTab } = page()
+    setUpOs(document, { platform: 'MacIntel' }, local)
+    oddTab.click()
+    expect(readChoice(local)).toBeNull()
   })
 })

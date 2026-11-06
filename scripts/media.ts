@@ -100,3 +100,76 @@ export function size(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
+
+export type Video = {
+  /** An ffconcat list (see `concat`). */
+  input: string
+  output: string
+  width: number
+  fps: number
+  /** x264 quality: lower is better and bigger. */
+  crf: number
+}
+
+/**
+ * ffmpeg arguments for the site's demo video: H.264 in yuv420p so every browser plays it, no
+ * audio, and the index up front so it starts before it has fully downloaded.
+ */
+export function mp4Args({ input, output, width, fps, crf }: Video): string[] {
+  return [
+    '-y',
+    '-loglevel',
+    'error',
+    '-f',
+    'concat',
+    '-safe',
+    '0',
+    '-i',
+    input,
+    '-vf',
+    `fps=${fps},scale=${width}:-2:flags=lanczos:out_range=tv,format=yuv420p`,
+    '-c:v',
+    'libx264',
+    '-preset',
+    'veryslow',
+    '-crf',
+    String(crf),
+    '-pix_fmt',
+    'yuv420p',
+    '-an',
+    '-movflags',
+    '+faststart',
+    output,
+  ]
+}
+
+export type Still = {
+  input: string
+  output: string
+  /** Seconds into the video. */
+  at: number
+  width: number
+  /** Crops the scaled frame to this height, around its middle. */
+  height?: number
+}
+
+/** ffmpeg arguments that save one frame of a video as a JPEG, e.g. its poster or the OG image. */
+export function stillArgs({ input, output, at, width, height }: Still): string[] {
+  const scale = `scale=${width}:-2:flags=lanczos`
+  return [
+    '-y',
+    '-loglevel',
+    'error',
+    '-ss',
+    at.toFixed(3),
+    '-i',
+    input,
+    '-frames:v',
+    '1',
+    '-vf',
+    height ? `${scale},crop=${width}:${height}` : scale,
+    '-q:v',
+    '2',
+    output,
+  ]
+}

@@ -2,8 +2,9 @@
 // the screen. The overlay shows a made-up desktop (docs/media/src/desktop.html) as its frame.
 // Usage: pnpm readme-media
 // Needs ffmpeg on PATH and Playwright's Chromium (`pnpm exec playwright install chromium`).
-// Writes docs/media/overlay.png, docs/media/settings.png and docs/media/demo.gif, all at once
-// when every step worked. One run at a time.
+// Writes docs/media/overlay.png, docs/media/settings.png and docs/media/demo.gif, plus the
+// landing page's site/public/demo.mp4, demo-poster.jpg and og.jpg, all at once when every step
+// worked. One run at a time.
 /// <reference lib="dom" />
 import { execFileSync } from 'node:child_process'
 import {
@@ -21,11 +22,20 @@ import { fileURLToPath } from 'node:url'
 import { chromium, type Browser, type BrowserContextOptions, type Page } from 'playwright'
 import { createServer } from 'vite'
 import type { Point, Rect } from '../src/overlay/geometry.ts'
-import { concat, gifArgs, path, size, steps, type Shot } from './media.ts'
+import { concat, gifArgs, mp4Args, path, size, steps, stillArgs, type Shot } from './media.ts'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const out = join(root, 'docs/media')
-const MEDIA = ['overlay.png', 'settings.png', 'demo.gif']
+const site = join(root, 'site/public')
+/** Each file the run writes, and the folder it goes to. */
+const MEDIA = [
+  ['overlay.png', out],
+  ['settings.png', out],
+  ['demo.gif', out],
+  ['demo.mp4', site],
+  ['demo-poster.jpg', site],
+  ['og.jpg', site],
+] as const
 /** Scratch space on the repo's disk, so finished files move into docs/media in one rename. */
 const cache = join(root, 'node_modules/.cache/readme-media')
 const viewport = { width: 1440, height: 900 }
@@ -35,6 +45,10 @@ const mac: BrowserContextOptions = {
   userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/158',
 }
 const GIF = { width: 1280, fps: 15 }
+/** The landing page's hero video, at the recording's full size. */
+const MP4 = { width: viewport.width, fps: 30, crf: 20 }
+/** The Open Graph image's size. */
+const OG = { width: 1200, height: 630 }
 /** Chromium sends at most this many screencast frames a second. */
 const CAPTURE_FPS = 60
 /** Pointer moves per second while recording. */
@@ -250,6 +264,8 @@ async function recording(browser: Browser, base: string, frame: Buffer, spots: S
   await hand.drag(p.region.from, p.region.to)
   await sleep(300)
   await annotate(hand, p)
+  // Every mark is drawn: the frame for the OG image, in seconds from the first frame.
+  const marked = performance.now() / 1000 - (shots[0]?.time ?? 0)
   await sleep(250)
   await demo(page, 'keys', 'Super+C')
   await sleep(200)
@@ -264,10 +280,11 @@ async function recording(browser: Browser, base: string, frame: Buffer, spots: S
   await context.close()
   const list = join(dir, 'frames.txt')
   writeFileSync(list, concat(shots, end / 1000, 1 / CAPTURE_FPS))
-  return { list, duration: (end - start) / 1000 }
+  return { list, duration: (end - start) / 1000, marked }
 }
 
 mkdirSync(cache, { recursive: true })
+mkdirSync(site, { recursive: true })
 const lock = join(cache, 'lock')
 try {
   closeSync(openSync(lock, 'wx'))
@@ -289,9 +306,15 @@ try {
       const { frame, spots } = await desktop(browser, base)
       await still(browser, base, frame, spots, dir)
       await settings(browser, base, dir)
-      const { list, duration } = await recording(browser, base, frame, spots, dir)
+      const { list, duration, marked } = await recording(browser, base, frame, spots, dir)
       execFileSync('ffmpeg', gifArgs({ input: list, output: join(dir, 'demo.gif'), ...GIF }))
       console.log(`demo.gif: ${duration.toFixed(1)} s at ${GIF.fps} fps`)
+      const video = join(dir, 'demo.mp4')
+      execFileSync('ffmpeg', mp4Args({ input: list, output: video, ...MP4 }))
+      const poster = join(dir, 'demo-poster.jpg')
+      execFileSync('ffmpeg', stillArgs({ input: video, output: poster, at: 0, ...MP4 }))
+      const og = join(dir, 'og.jpg')
+      execFileSync('ffmpeg', stillArgs({ input: video, output: og, at: marked, ...OG }))
     } finally {
       await browser.close()
     }
@@ -299,8 +322,8 @@ try {
     await server.close()
   }
   // Every file is ready: replace the old set.
-  for (const name of MEDIA) renameSync(join(dir, name), join(out, name))
-  for (const name of MEDIA) console.log(`${name}: ${size(statSync(join(out, name)).size)}`)
+  for (const [name, to] of MEDIA) renameSync(join(dir, name), join(to, name))
+  for (const [name, to] of MEDIA) console.log(`${name}: ${size(statSync(join(to, name)).size)}`)
 } finally {
   rmSync(dir, { recursive: true, force: true })
   rmSync(lock, { force: true })
