@@ -182,8 +182,14 @@
   /** The box all the shapes paint, or `null` without shapes. */
   export const painted = () => paintedBounds(history.present)
 
-  /** Whether a toolbar menu is open: it owns the keyboard meanwhile. */
+  /** Whether a toolbar menu is open: it owns the plain keys meanwhile. */
   export const menuOpen = () => toolbar?.menuOpen() ?? false
+
+  /** Closes an open toolbar menu, as a click outside it would. */
+  export const closeMenus = () => void toolbar?.closeMenus()
+
+  /** Whether text is being typed: every key is the text box's meanwhile, ⌘C and ⌘S included. */
+  export const typingText = () => editing !== null
 
   /**
    * Drops every annotation and the shape being drawn, and goes back to the last tool, color
@@ -349,6 +355,9 @@
   function onpointerdown(e: PointerEvent) {
     // On the layer itself, the press that committed text reaches this handler too.
     if (e === committing) return e.stopPropagation()
+    // A press on the board dismisses an open menu, as a click outside it would: drawing,
+    // moving a shape and pressing the overlay all stop it reaching the menu's own listener.
+    closeMenus()
     if (e.button !== 0 || !selection || !board) return
     // On a shape or its handles: Konva moves or resizes it.
     if (board.hits(at(e))) return e.stopPropagation()

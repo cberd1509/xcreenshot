@@ -127,6 +127,12 @@ async function annotated() {
   await waitFor(() => expect(shapes()).toHaveLength(1))
 }
 
+/** Opens the color popover, as when picking a color. */
+async function colors() {
+  await userEvent.click(screen.getByRole('button', { name: 'Color and size' }))
+  await screen.findByLabelText('Thick')
+}
+
 describe('Overlay', () => {
   beforeEach(async () => {
     platform.mac = false
@@ -870,6 +876,33 @@ describe('Overlay', () => {
       fireEvent.keyDown(window, { key: 'Enter' })
       await tick()
       expect(called('overlay_copy')).toHaveLength(0)
+    })
+
+    it('closes an open toolbar menu when drawing starts', async () => {
+      await annotated()
+      await colors()
+      fireEvent.pointerDown(layer(), point({ x: 70, y: 20 }))
+      fireEvent.pointerMove(layer(), point({ x: 90, y: 40 }))
+      fireEvent.pointerUp(layer(), point({ x: 90, y: 40 }))
+      await waitFor(() => expect(screen.queryByLabelText('Thick')).toBeNull())
+      expect(shapes()).toHaveLength(2)
+    })
+
+    it('copies and saves with an open toolbar menu, closing it first', async () => {
+      await annotated()
+      await colors()
+      await userEvent.keyboard(ctrl('c'))
+      await waitFor(() => expect(sent).toHaveLength(1))
+      expect(sent[0]).toMatchObject({
+        cmd: 'overlay_copy',
+        header: { session: 9, rect: rect200, layer: { x: 12, y: 12, width: 96, height: 76 } },
+      })
+      await waitFor(() => expect(screen.queryByLabelText('Thick')).toBeNull())
+      await colors()
+      await userEvent.keyboard(ctrl('s'))
+      await waitFor(() => expect(sent).toHaveLength(2))
+      expect(sent[1]).toMatchObject({ cmd: 'overlay_save', header: { rect: rect200 } })
+      await waitFor(() => expect(screen.queryByLabelText('Thick')).toBeNull())
     })
 
     it('drops them for a new selection on another display', async () => {

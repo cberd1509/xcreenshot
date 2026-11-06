@@ -308,17 +308,22 @@
     }
     // Typing in the size badge: Enter applies the size there.
     if (e.target instanceof Element && e.target.closest('[data-size-badge]')) return
-    // An open toolbar menu owns the keyboard.
-    if (annotator?.menuOpen() || annotator?.key(e)) return
-    if (!selection || !physical) return
-    if (e.key === 'Enter' || shortcut(e, 'c')) {
+    // Copy and Save always work, closing an open toolbar menu first, unless text is being
+    // typed: then they are the text box's.
+    const output = shortcut(e, 'c') ? 'overlay_copy' : shortcut(e, 's') ? 'overlay_save' : null
+    if (output && !annotator?.typingText()) {
+      annotator?.closeMenus()
+      if (!selection || !physical) return
       e.preventDefault()
-      void finish('overlay_copy', physical)
+      void finish(output, physical)
       return
     }
-    if (shortcut(e, 's')) {
+    // An open toolbar menu owns the other keys.
+    if (annotator?.menuOpen() || annotator?.key(e)) return
+    if (!selection || !physical) return
+    if (e.key === 'Enter') {
       e.preventDefault()
-      void finish('overlay_save', physical)
+      void finish('overlay_copy', physical)
       return
     }
     const moved = nudge(selection, e.key, e.shiftKey ? 10 : 1, scale, display)
