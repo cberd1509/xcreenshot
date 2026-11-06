@@ -7,7 +7,9 @@ use super::{Rect, ShareError};
 use crate::macos::ns_window;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
+use objc2::{
+    ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel,
+};
 use objc2_app_kit::{
     NSSharingService, NSSharingServiceDelegate, NSSharingServicePicker,
     NSSharingServicePickerDelegate, NSWindow,
@@ -224,8 +226,23 @@ impl Delegate {
     fn handle(&self, event: Event) {
         self.ivars().session.handle(event);
         if self.ivars().session.is_over() {
+            self.cancel_timeout();
             self.prune_after(0.0);
         }
+    }
+
+    /// Cancels the timeout prune, which would otherwise keep `self`, its picker and window
+    /// alive for 10 minutes.
+    fn cancel_timeout(&self) {
+        // SAFETY: a documented NSObject class method; nil object matches the scheduled call.
+        let _: () = unsafe {
+            msg_send![
+                NSObject::class(),
+                cancelPreviousPerformRequestsWithTarget: self,
+                selector: sel!(xcreenshotPrune),
+                object: std::ptr::null::<AnyObject>()
+            ]
+        };
     }
 
     /// Schedules a prune on the main run loop, which keeps `self` alive until it has run.
@@ -248,6 +265,7 @@ impl Entry for Retained<Delegate> {
     }
 
     fn expire(&self) {
+        self.cancel_timeout();
         self.ivars().session.handle(Event::Finished);
     }
 }

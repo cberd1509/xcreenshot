@@ -51,9 +51,11 @@ impl TempFiles {
             live.insert(path.clone(), None);
             path
         };
-        let written = std::fs::create_dir_all(&self.dir).and_then(|()| std::fs::write(&path, png));
-        if let Err(e) = written {
-            self.live().remove(&path);
+        if let Err(e) = write_private(&self.dir, &path, png) {
+            // A partial file goes too, before the name is freed.
+            let mut live = self.live();
+            remove(&path);
+            live.remove(&path);
             return Err(e);
         }
         Ok(path)
@@ -115,8 +117,14 @@ impl TempFiles {
     /// Deletes our files that are not being shared, e.g. left behind by a crash or by a
     /// service that never reported back. Returns how many were deleted.
     pub fn sweep(&self) -> usize {
-        let Ok(entries) = std::fs::read_dir(&self.dir) else {
-            return 0;
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(e) => {
+                if e.kind() != io::ErrorKind::NotFound {
+                    log::warn!("could not sweep {}: {e}", self.dir.display());
+                }
+                return 0;
+            }
         };
         // Held throughout, so a file reserved by `create` meanwhile is never deleted.
         let live = self.live();
@@ -128,6 +136,31 @@ impl TempFiles {
             .filter(|p| remove(p))
             .count()
     }
+}
+
+/// Writes `png` to `path` (truncating), readable by this user only on Unix: the directory is
+/// 0700 and the file 0600, whatever the umask or the modes of leftovers.
+fn write_private(dir: &Path, path: &Path, png: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        builder.mode(0o700);
+        options.mode(0o600);
+    }
+    builder.create(dir)?;
+    let mut file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(png)
 }
 
 fn remove(path: &Path) -> bool {
@@ -282,10 +315,15 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_file_that_cannot_be_deleted_is_logged_and_kept() {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let dir = scratch("readonly");
         let files = TempFiles::new(dir.clone());
         let path = files.create(b"png", at(13, 22, 5)).unwrap();
+        // Root ignores directory permissions, so the file can't be kept from it.
+        if std::fs::metadata(&path).unwrap().uid() == 0 {
+            std::fs::remove_dir_all(dir).unwrap();
+            return;
+        }
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
         files.release(&path);
         let kept = path.exists();
@@ -358,5 +396,49 @@ mod tests {
         assert!(files.live().is_empty());
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_this_user_can_read_the_files() {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = scratch("private");
+        // A leftover directory and file that anyone could read.
+        std::fs::DirBuilder::new().mode(0o755).create(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let leftover = dir.join(file_name(at(13, 22, 5), 1));
+        std::fs::write(&leftover, b"old").unwrap();
+        std::fs::set_permissions(&leftover, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let files = TempFiles::new(dir.clone());
+        let reused = files.create(b"png", at(13, 22, 5)).unwrap();
+        assert_eq!(reused, leftover);
+        let fresh = files.create(b"png", at(13, 22, 5)).unwrap();
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&reused), 0o600);
+        assert_eq!(mode(&fresh), 0o600);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_write_leaves_no_partial_file() {
+        let dir = scratch("partial");
+        std::fs::create_dir_all(&dir).unwrap();
+        // A directory where the file should go: opening it for writing fails.
+        let blocked = dir.join(file_name(at(13, 22, 5), 1));
+        std::fs::create_dir(&blocked).unwrap();
+        let files = TempFiles::new(dir.clone());
+        assert!(files.create(b"png", at(13, 22, 5)).is_err());
+        assert!(files.live().is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_unreadable_directory_sweeps_nothing() {
+        let dir = scratch("unreadable");
+        std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
+        std::fs::write(&dir, b"a file, not a directory").unwrap();
+        assert_eq!(TempFiles::new(dir.clone()).sweep(), 0);
+        std::fs::remove_file(dir).unwrap();
     }
 }

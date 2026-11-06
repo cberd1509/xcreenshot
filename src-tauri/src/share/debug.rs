@@ -6,7 +6,7 @@
 //! - `cancel`: like `overlay`, then dismisses the sheet after 2 s, which deletes the temp file
 //!   and puts Settings back at the screen saver level.
 
-use super::Rect;
+use super::{Rect, ShareError, ShareOutcome};
 use std::thread::JoinHandle;
 use std::time::Duration;
 use tauri::{AppHandle, Runtime, WebviewWindow};
@@ -37,17 +37,34 @@ fn mode(value: Option<String>) -> Option<Mode> {
 }
 
 type Open<R> = fn(&AppHandle<R>) -> tauri::Result<WebviewWindow<R>>;
+/// [`super::share_png`], replaced in tests.
+type SharePng<R> = fn(
+    &WebviewWindow<R>,
+    &[u8],
+    Rect,
+    Box<dyn FnOnce(ShareOutcome) + Send>,
+) -> Result<(), ShareError>;
 
 pub fn schedule<R: Runtime>(app: &AppHandle<R>, open: Open<R>) {
     if let Some(mode) = mode(std::env::var("XCREENSHOT_DEBUG_SHARE").ok()) {
-        later(app, DELAY, open, mode);
+        later(app, DELAY, open, share_png, mode);
     }
+}
+
+fn share_png<R: Runtime>(
+    window: &WebviewWindow<R>,
+    png: &[u8],
+    anchor: Rect,
+    on_done: Box<dyn FnOnce(ShareOutcome) + Send>,
+) -> Result<(), ShareError> {
+    super::share_png(window, png, anchor, on_done)
 }
 
 fn later<R: Runtime>(
     app: &AppHandle<R>,
     delay: Duration,
     open: Open<R>,
+    share_png: SharePng<R>,
     mode: Mode,
 ) -> JoinHandle<()> {
     let app = app.clone();
@@ -55,7 +72,7 @@ fn later<R: Runtime>(
         std::thread::sleep(delay);
         let handle = app.clone();
         let _ = app.run_on_main_thread(move || match open(&handle) {
-            Ok(window) => share(&window, mode),
+            Ok(window) => share(&window, mode, share_png),
             Err(e) => log::error!("debug share: could not open settings: {e}"),
         });
         if mode == Mode::Cancel {
@@ -66,7 +83,7 @@ fn later<R: Runtime>(
     })
 }
 
-fn share<R: Runtime>(window: &WebviewWindow<R>, mode: Mode) {
+fn share<R: Runtime>(window: &WebviewWindow<R>, mode: Mode, share_png: SharePng<R>) {
     #[cfg(all(target_os = "macos", not(test)))]
     if mode != Mode::Normal {
         match crate::macos::ns_window(window) {
@@ -75,9 +92,12 @@ fn share<R: Runtime>(window: &WebviewWindow<R>, mode: Mode) {
         }
     }
     let started = std::time::Instant::now();
-    let result = super::share_png(window, &test_png(), ANCHOR, |outcome| {
-        log::info!("debug share: {outcome:?}");
-    });
+    let result = share_png(
+        window,
+        &test_png(),
+        ANCHOR,
+        Box::new(|outcome| log::info!("debug share: {outcome:?}")),
+    );
     log::info!(
         "debug share ({mode:?}): {result:?}, returned after {:?}",
         started.elapsed()
@@ -135,19 +155,41 @@ mod tests {
         Err(tauri::Error::WindowNotFound)
     }
 
+    static SHARED: std::sync::Mutex<Vec<(String, usize)>> = std::sync::Mutex::new(Vec::new());
+
+    /// Records the window and the PNG's size, then fails like the real call does in tests.
+    fn record(
+        window: &WebviewWindow<MockRuntime>,
+        png: &[u8],
+        anchor: Rect,
+        on_done: Box<dyn FnOnce(ShareOutcome) + Send>,
+    ) -> Result<(), ShareError> {
+        assert_eq!(anchor, ANCHOR);
+        SHARED
+            .lock()
+            .unwrap()
+            .push((window.label().into(), png.len()));
+        share_png(window, png, anchor, on_done)
+    }
+
     #[test]
     fn opens_settings_and_shares_in_every_mode() {
         let app = mock_builder().build(mock_context(noop_assets())).unwrap();
         // Without XCREENSHOT_DEBUG_SHARE, nothing is scheduled.
         schedule(app.handle(), open);
-        for mode in [Mode::Normal, Mode::Overlay, Mode::Cancel] {
-            later(app.handle(), Duration::ZERO, open, mode)
+        let modes = [Mode::Normal, Mode::Overlay, Mode::Cancel];
+        for mode in modes {
+            later(app.handle(), Duration::ZERO, open, record, mode)
                 .join()
                 .unwrap();
         }
-        later(app.handle(), Duration::ZERO, fail, Mode::Normal)
+        // Settings could not be opened: nothing is shared.
+        later(app.handle(), Duration::ZERO, fail, record, Mode::Normal)
             .join()
             .unwrap();
-        assert!(app.get_webview_window("settings").is_some());
+        let shared = SHARED.lock().unwrap().clone();
+        assert_eq!(shared.len(), modes.len(), "one share per mode");
+        let png = test_png().len();
+        assert!(shared.iter().all(|s| *s == ("settings".to_string(), png)));
     }
 }
