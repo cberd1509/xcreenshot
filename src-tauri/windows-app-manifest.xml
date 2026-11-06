@@ -11,4 +11,13 @@
       />
     </dependentAssembly>
   </dependency>
+  <!-- Per-Monitor v2 DPI awareness from process start, before any window or capture call.
+       tao also sets it at runtime when the event loop starts; the manifest covers test
+       binaries and anything that runs earlier. Older Windows falls back to per-monitor v1. -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2, PerMonitor</dpiAwareness>
+    </windowsSettings>
+  </application>
 </assembly>

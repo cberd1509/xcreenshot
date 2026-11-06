@@ -193,9 +193,74 @@ Both keep 60 fps with no dropped frames, and the update costs about 2 ms either 
 - Only one display was available here, so multi-monitor (mixed 1x/2x, negative origins,
   mirroring) is covered by unit tests only.
 
+## Windows (#28)
+
+Not run on a real Windows PC yet. The `windows-latest` CI job builds the app and runs clippy and
+`cargo test`, including a check that the process is Per-Monitor v2 DPI aware.
+
+### DPI awareness
+
+- **What Tauri does:** tao (Tauri's windowing crate) calls
+  `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` when the event loop is created, falling
+  back to per-monitor v1 on older Windows. Tauri's own manifest only adds Common Controls v6,
+  with no DPI entry.
+- **What we add:** `src-tauri/windows-app-manifest.xml` also declares `dpiAwareness`
+  `PerMonitorV2` (with `dpiAware` `true/pm` for older Windows). `build.rs` embeds it into every
+  binary, so the process is PMv2 from its first instruction, test binaries included. tao's later
+  call then fails harmlessly: awareness can only be set once.
+- With PMv2, every value we use is in physical pixels of one virtual desktop: xcap's monitor
+  bounds (`EnumDisplaySettings` positions and modes), the captured image (GDI), the cursor
+  (`GetCursorPos`) and `PhysicalPosition`. xcap's scale factor is the monitor's effective DPI
+  (`GetDpiForMonitor`) divided by 96.
+
+### Overlay placement
+
+- Windows are placed with `PhysicalPosition` and `PhysicalSize` from the pixel bounds, moved
+  first and then sized, because moving to a monitor with another DPI rescales the window
+  (`WM_DPICHANGED`). The cursor is matched against the same pixel bounds. Reviewed for #28: no
+  logical and physical values are mixed on Windows.
+- Each page gets its display's logical size (pixels divided by that monitor's scale) and maps CSS
+  px to frame pixels with that ratio.
+
+### Mixed DPI, negative origins, hot-plug
+
+- **Mixed DPI:** each monitor's logical bounds divide by its own scale, so logical origins of
+  different monitors do not form one consistent space. Nothing places windows with them.
+- **Fractional scales:** at 125% or 175% the logical size is rounded (2560 px at 175% is 1462.86,
+  sent as 1463), so the page's mapping can drift by under one pixel towards the far edge.
+- **Negative origins:** monitors left of or above the primary have negative pixel origins.
+  `Bounds` uses `i32`, and the overlay tests cover a display at a negative origin.
+- **Hot-plug:** displays are listed again on every hotkey press, and overlay windows are created
+  or destroyed to match, so a monitor plugged in, removed, rescaled or moved since the last
+  capture is picked up on the next one. A display that disappears during a capture is skipped.
+  Changes while the overlay is open are not tracked: it keeps the old layout until it closes.
+
+### Limits
+
+- GDI capture: protected (DRM) video comes out black, the secure desktop (UAC prompts) cannot be
+  captured, and HDR displays may look washed out.
+- Only a real PC can confirm placement on mixed-DPI setups, especially that the size set after
+  the move survives `WM_DPICHANGED`.
+
+### PrintScreen and Snipping Tool (#29)
+
+Windows 11 can give PrintScreen to Snipping Tool (Settings › Accessibility › Keyboard, "Use the
+Print screen key to open screen capture"). The setting is the DWORD
+`HKCU\Control Panel\Keyboard\PrintScreenKeyForSnippingEnabled` (1 on, 0 off). Windows 11 treats
+a missing value as on (from 22H2 build 22621.1928, KB5027303). Microsoft does not document the
+value; this comes from community guides and the KB5027303 notes.
+
+The Windows default shortcut is bare PrintScreen, or Ctrl+Shift+PrintScreen when PrintScreen
+won't reach the app: Snipping Tool has it (the setting is on, or missing on Windows 11, build
+22000 and later), or it fails to register. At startup a saved PrintScreen that won't work is
+replaced and saved, so Settings shows the shortcut that works, and a dialog says why once
+("Open Settings" or OK). "Reset to default" picks the same, and the recorder refuses PrintScreen
+while Snipping Tool has it. The decisions are in `src-tauri/src/print_screen.rs`, unit-tested on
+every platform; only the registry reads are Windows-only.
+
 ## Open risks
 
 - `CGWindowListCreateImage` is deprecated (obsoleted in the macOS 15 SDK). It still works on
   macOS 27, but Apple could remove it or prompt more often for it (#49).
 - Re-prompt behavior on macOS 26/27 needs checking on a signed build over a few weeks.
-- Windows mixed-DPI: logical origins are approximate; use the physical bounds.
+- Windows mixed-DPI: logical origins are approximate; use the physical bounds (see Windows).

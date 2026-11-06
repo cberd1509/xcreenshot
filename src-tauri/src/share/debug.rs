@@ -7,6 +7,7 @@
 //!   and puts Settings back at the screen saver level.
 
 use super::{Rect, ShareError, ShareOutcome};
+use crate::windows::Open;
 use std::thread::JoinHandle;
 use std::time::Duration;
 use tauri::{AppHandle, Runtime, WebviewWindow};
@@ -36,7 +37,6 @@ fn mode(value: Option<String>) -> Option<Mode> {
     }
 }
 
-type Open<R> = fn(&AppHandle<R>) -> tauri::Result<WebviewWindow<R>>;
 /// [`super::share_png`], replaced in tests.
 type SharePng<R> = fn(
     &WebviewWindow<R>,

@@ -225,6 +225,33 @@ mod tests {
         assert_eq!(logical, bounds(-67, 33, 1707, 960));
     }
 
+    /// Windows, mixed DPI: a 4K monitor at 150% with a 1080p one at 100% on its right, and a
+    /// 1440p one at 175% on its left. Pixel bounds stay adjacent; logical ones leave gaps or
+    /// overlap, which is why windows are placed with the pixel bounds.
+    #[test]
+    fn mixed_dpi_pixel_bounds_stay_adjacent() {
+        let main = from_pixels(bounds(0, 0, 3840, 2160), 1.5, &RgbaImage::new(3840, 2160));
+        let right = from_pixels(
+            bounds(3840, 0, 1920, 1080),
+            1.0,
+            &RgbaImage::new(1920, 1080),
+        );
+        let left = from_pixels(
+            bounds(-2560, 0, 2560, 1440),
+            1.75,
+            &RgbaImage::new(2560, 1440),
+        );
+        let right_edge = |b: Bounds| b.x + b.width as i32;
+
+        assert_eq!(right_edge(main.1), right.1.x);
+        assert_eq!(right_edge(left.1), main.1.x);
+        // Logical: main ends at 2560 but right starts at 3840. Left's size is rounded
+        // (2560 / 1.75 = 1462.86), so it touches main only because x rounds the same way.
+        assert_eq!(right_edge(main.0), 2560);
+        assert_eq!(right.0.x, 3840);
+        assert_eq!(left.0, bounds(-1463, 0, 1463, 823));
+    }
+
     #[test]
     fn bad_scale_factor_is_treated_as_one() {
         let img = RgbaImage::new(10, 10);

@@ -30,7 +30,8 @@ fn main() {
 
 /// Tauri embeds its Windows manifest (Common Controls v6) into the app binary only, so test
 /// binaries that create windows fail to start (STATUS_ENTRYPOINT_NOT_FOUND). Embedding the same
-/// manifest through the linker covers every binary, tests included.
+/// manifest through the linker covers every binary, tests included. It also declares Per-Monitor
+/// v2 DPI awareness, so every binary is DPI aware from process start.
 fn embed_windows_manifest() -> bool {
     let msvc = std::env::var("CARGO_CFG_TARGET_ENV").is_ok_and(|env| env == "msvc");
     if !msvc {

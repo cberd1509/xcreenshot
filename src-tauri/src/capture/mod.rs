@@ -529,6 +529,25 @@ mod tests {
         );
     }
 
+    /// Pixel bounds and the cursor only line up if the process is Per-Monitor v2 DPI aware.
+    /// The manifest (`windows-app-manifest.xml`) sets it, in test binaries too.
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn process_is_per_monitor_v2_dpi_aware() {
+        use windows::Win32::UI::HiDpi::{
+            AreDpiAwarenessContextsEqual, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            GetThreadDpiAwarenessContext,
+        };
+        // SAFETY: plain queries with no pointers.
+        let v2 = unsafe {
+            AreDpiAwarenessContextsEqual(
+                GetThreadDpiAwarenessContext(),
+                DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            )
+        };
+        assert!(v2.as_bool());
+    }
+
     #[test]
     #[cfg(not(target_os = "macos"))]
     fn other_platforms_need_no_permission() {
