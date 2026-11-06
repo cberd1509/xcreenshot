@@ -1,0 +1,32 @@
+name: Release
+
+# On every push to main, Changesets keeps a "chore(release): version packages" PR up to date
+# with the pending changes. Merging it bumps package.json (the only version source;
+# tauri.conf.json reads it) and writes CHANGELOG.md.
+# Tagging and the signed app build come with M4 (#24, #26). That release step will use a
+# GitHub App token, since tags and PRs created with GITHUB_TOKEN don't trigger other workflows.
+
+on:
+  push:
+    branches: [main]
+
+concurrency: release-${{ github.ref }}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  version:
+    name: Version PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: ./.github/actions/setup
+      - uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
+        with:
+          version: pnpm changeset version
+          commit: 'chore(release): version packages'
+          title: 'chore(release): version packages'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

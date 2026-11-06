@@ -8,15 +8,20 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
-    "lint": "prettier --check .",
-    "format": "prettier --write .",
+    "lint": "oxlint --deny-warnings && prettier --check .",
+    "format": "oxlint --fix && prettier --write .",
     "tauri": "tauri",
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
-    "icons": "tauri icon assets/icon.svg && rm -rf src-tauri/icons/android src-tauri/icons/ios && rsvg-convert -w 22 -h 22 assets/tray.svg -o src-tauri/icons/tray-template.png && rsvg-convert -w 44 -h 44 assets/tray.svg -o src-tauri/icons/tray-template@2x.png"
+    "icons": "tauri icon assets/icon.svg && rm -rf src-tauri/icons/android src-tauri/icons/ios && rsvg-convert -w 22 -h 22 assets/tray.svg -o src-tauri/icons/tray-template.png && rsvg-convert -w 44 -h 44 assets/tray.svg -o src-tauri/icons/tray-template@2x.png",
+    "prepare": "husky"
   },
   "devDependencies": {
+    "@changesets/changelog-github": "^1.0.1",
+    "@changesets/cli": "^3.0.3",
+    "@commitlint/cli": "^21.2.4",
+    "@commitlint/config-conventional": "^21.2.4",
     "@internationalized/date": "^3.12.4",
     "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "@tailwindcss/vite": "^4.3.4",
@@ -29,7 +34,10 @@
     "@vitest/coverage-v8": "^5.1.0",
     "bits-ui": "^2.20.6",
     "cn": "^0.5.2",
+    "husky": "^9.1.7",
     "jsdom": "^31.0.0",
+    "lint-staged": "^17.6.0",
+    "oxlint": "^1.91.0",
     "prettier": "^3.9.10",
     "prettier-plugin-svelte": "^4.1.1",
     "prettier-plugin-tailwindcss": "^0.8.1",
@@ -48,6 +56,6 @@
   },
   "packageManager": "pnpm@11.7.0",
   "engines": {
-    "node": ">=24"
+    "node": ">=26"
   }
 }

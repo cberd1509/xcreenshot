@@ -1,0 +1,13 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@3/schema.json",
+  "changelog": [
+    "@changesets/changelog-github",
+    {
+      "repo": "cberd1509/xcreenshot"
+    }
+  ],
+  "privatePackages": {
+    "version": true,
+    "tag": true
+  }
+}

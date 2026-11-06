@@ -4,3 +4,4 @@ src-tauri
 pnpm-lock.yaml
 docs
 coverage
+.claude

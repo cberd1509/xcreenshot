@@ -1,0 +1,36 @@
+name: PR checks
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  pr:
+    name: PR title and changeset
+    runs-on: ubuntu-latest
+    env:
+      TITLE: ${{ github.event.pull_request.title }}
+      BASE: ${{ github.base_ref }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+      # Squash merges use the PR title as the commit message, so it follows the same rules.
+      - name: Conventional PR title
+        run: echo "$TITLE" | pnpm exec commitlint
+      # Changes users notice (feat, fix, perf, or breaking "!") need a changelog entry.
+      - name: Changeset for user-facing changes
+        if: ${{ !startsWith(github.head_ref, 'changeset-release/') && github.event.pull_request.user.login != 'dependabot[bot]' }}
+        run: |
+          if ! echo "$TITLE" | grep -qE '^(feat|fix|perf)(\(.+\))?!?:|^[a-z]+(\(.+\))?!:'; then
+            echo "Internal change, no changeset needed."; exit 0
+          fi
+          if git diff --name-only "origin/$BASE...HEAD" -- '.changeset/*.md' | grep -q .; then
+            echo "Changeset found."
+          else
+            echo "::error::Add a changeset with 'pnpm changeset' (user-facing change: $TITLE)"; exit 1
+          fi
