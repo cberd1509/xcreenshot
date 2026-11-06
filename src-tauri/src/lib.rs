@@ -103,8 +103,11 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            let capture_shortcut = settings::init(app.handle(), open_settings);
+            let (capture_shortcut, print_screen_moved) = settings::init(app.handle());
             build_tray(app.handle(), &capture_shortcut)?;
+            if print_screen_moved {
+                print_screen::tell(app.handle(), open_settings);
+            }
             overlay::prewarm(app.handle());
             permission::on_startup(app.handle());
             updates::start(app.handle(), offer_update);

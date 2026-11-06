@@ -5,6 +5,9 @@ use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WebviewWindow, WebviewWindo
 
 type Builder<'a, R> = WebviewWindowBuilder<'a, R, AppHandle<R>>;
 
+/// Opens a window, like `open_settings` in `lib.rs`; passed to modules that offer to open it.
+pub type Open<R> = fn(&AppHandle<R>) -> tauri::Result<WebviewWindow<R>>;
+
 /// Shows the window `label`, building it from `url` and `configure` if it isn't open yet.
 pub fn show_window<'a, R: Runtime>(
     app: &'a AppHandle<R>,

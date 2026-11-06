@@ -8,7 +8,8 @@
 
 use crate::prefs::Prefs;
 use crate::shortcut::{self, Registered, Registrar};
-use tauri::{AppHandle, Runtime, WebviewWindow};
+use crate::windows::Open;
+use tauri::{AppHandle, Runtime};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogResult};
 use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut};
 
@@ -18,9 +19,6 @@ const NOTICE: &str = "PrintScreen opens Snipping Tool, so xcreenshot uses \
                       Ctrl+Shift+PrintScreen. You can change this in Settings.";
 const OK: &str = "OK";
 const OPEN_SETTINGS: &str = "Open Settings";
-
-/// Opens the Settings window.
-pub type Open<R> = fn(&AppHandle<R>) -> tauri::Result<WebviewWindow<R>>;
 
 /// What to do with a capture shortcut of bare PrintScreen.
 #[derive(Debug, PartialEq, Eq)]
@@ -58,25 +56,27 @@ pub fn is_print_screen(accelerator: &str) -> bool {
 /// The shortcut "Reset to default" picks: [`shortcut::DEFAULT`], or [`FALLBACK`] when the
 /// default is PrintScreen and Snipping Tool has it.
 pub fn default_shortcut(setting: Option<u32>) -> &'static str {
-    match decide(setting, true, false) {
-        Decision::Fallback { .. } if is_print_screen(shortcut::DEFAULT) => FALLBACK,
-        _ => shortcut::DEFAULT,
+    if is_print_screen(shortcut::DEFAULT) && setting != Some(0) {
+        FALLBACK
+    } else {
+        shortcut::DEFAULT
     }
 }
 
 /// Startup, after registering `prefs.shortcut` (`registered` says if it worked): swaps a bare
 /// PrintScreen that won't reach the app for [`FALLBACK`]. Saves it in `prefs` if the user never
 /// chose a shortcut. Returns whether to tell the user (once: it marks the notice shown).
+/// `setting` reads the Snipping Tool setting; `None` where there is no Snipping Tool.
 pub fn fall_back(
     shortcuts: &impl Registrar,
     current: &Registered,
     prefs: &mut Prefs,
     registered: bool,
-    setting: impl FnOnce() -> Option<u32>,
+    setting: Option<impl FnOnce() -> Option<u32>>,
 ) -> bool {
-    if !is_print_screen(&prefs.shortcut) {
+    let Some(setting) = setting.filter(|_| is_print_screen(&prefs.shortcut)) else {
         return false;
-    }
+    };
     let Decision::Fallback { save } = decide(setting(), registered, prefs.shortcut_chosen) else {
         return false;
     };
@@ -224,7 +224,7 @@ mod tests {
         let current = Registered::default();
         let registered = shortcuts.register(&prefs.shortcut).is_ok();
         current.set(&prefs.shortcut, registered);
-        let tell = fall_back(shortcuts, &current, prefs, registered, || setting);
+        let tell = fall_back(shortcuts, &current, prefs, registered, Some(|| setting));
         (current, tell)
     }
 
@@ -283,11 +283,20 @@ mod tests {
             ..Prefs::default()
         };
         let before = prefs.clone();
-        let tell = fall_back(&shortcuts, &current, &mut prefs, true, || {
-            panic!("read the setting")
-        });
+        let tell = fall_back(
+            &shortcuts,
+            &current,
+            &mut prefs,
+            true,
+            Some(|| panic!("read the setting")),
+        );
         assert!(!tell);
         assert_eq!(prefs, before);
+        // No Snipping Tool (Linux): a taken PrintScreen stays as it is.
+        let mut prefs = print_screen_prefs(false);
+        let tell = fall_back(&shortcuts, &current, &mut prefs, false, None::<fn() -> _>);
+        assert!(!tell);
+        assert_eq!(prefs, print_screen_prefs(false));
     }
 
     #[test]

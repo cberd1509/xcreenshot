@@ -142,11 +142,11 @@ fn transact<G: Registrar, L: LoginItem>(
 /// absence for the user removing it. Returns the prefs in effect and whether to tell the user
 /// about the PrintScreen fallback.
 fn start(
-    storage: &impl Storage,
+    storage: &dyn Storage,
     shortcuts: &impl Registrar,
     registered: &Registered,
     login: Option<&impl LoginItem>,
-    snipping_setting: impl FnOnce() -> Option<u32>,
+    snipping_setting: Option<impl FnOnce() -> Option<u32>>,
 ) -> (Prefs, bool) {
     let loaded = storage.load();
     let mut prefs = loaded.clone();
@@ -176,39 +176,32 @@ fn start(
     (prefs, tell)
 }
 
-/// Applies the saved settings at startup. Returns the capture shortcut, for the menu bar.
-pub fn init<R: Runtime>(app: &AppHandle<R>, open_settings: print_screen::Open<R>) -> String {
-    let (shortcut, tell) = init_with(app, app.global_shortcut(), print_screen::setting);
-    if tell {
-        print_screen::tell(app, open_settings);
-    }
-    shortcut
+/// Applies the saved settings at startup. Returns the capture shortcut, for the menu bar, and
+/// whether to tell the user about the PrintScreen fallback (see [`print_screen::tell`]).
+pub fn init<R: Runtime>(app: &AppHandle<R>) -> (String, bool) {
+    let snipping_tool = cfg!(target_os = "windows").then_some(print_screen::setting);
+    init_with(app, app.global_shortcut(), snipping_tool)
 }
 
-/// Returns the capture shortcut in effect and whether to tell about the PrintScreen fallback.
 fn init_with<R: Runtime>(
     app: &AppHandle<R>,
     shortcuts: &impl Registrar,
-    snipping_setting: impl FnOnce() -> Option<u32>,
+    snipping_setting: Option<impl FnOnce() -> Option<u32>>,
 ) -> (String, bool) {
     let login = login::item(app);
     let registered = app.state::<Registered>();
-    let (_, tell) = match prefs::open(app) {
-        Some(store) => start(
-            &*store,
-            shortcuts,
-            &registered,
-            login.as_deref(),
-            snipping_setting,
-        ),
-        None => start(
-            &prefs::Unsaved,
-            shortcuts,
-            &registered,
-            login.as_deref(),
-            snipping_setting,
-        ),
+    let store = prefs::open(app);
+    let storage: &dyn Storage = match &store {
+        Some(store) => &**store,
+        None => &prefs::Unsaved,
     };
+    let (_, tell) = start(
+        storage,
+        shortcuts,
+        &registered,
+        login.as_deref(),
+        snipping_setting,
+    );
     (registered.get().accelerator, tell)
 }
 
@@ -286,7 +279,7 @@ mod tests {
     use tauri::test::{MockRuntime, mock_builder, mock_context, noop_assets};
 
     /// Snipping Tool doesn't have PrintScreen.
-    const OFF: fn() -> Option<u32> = || Some(0);
+    const OFF: Option<fn() -> Option<u32>> = Some(|| Some(0));
 
     fn change(key: &str, value: Value) -> Change {
         Change::parse(key, value).unwrap()
@@ -422,7 +415,7 @@ mod tests {
         let (fakes, storage) = (Fakes::new(), storage(false));
         storage.prefs.borrow_mut().shortcut = "PrintScreen".into();
         let shortcuts = FakeRegistrar::default();
-        let on = || Some(1);
+        let on: Option<fn() -> Option<u32>> = Some(|| Some(1));
         let (p, tell) = start(
             &storage,
             &shortcuts,
