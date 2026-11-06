@@ -1,5 +1,27 @@
 # xcreenshot
 
+## 0.3.0
+
+### Minor Changes
+
+- [#67](https://github.com/cberd1509/xcreenshot/pull/67) [`2c6a2d5`](https://github.com/cberd1509/xcreenshot/commit/2c6a2d51c9b2fba1bc5c1754177f8b71f17e84bf) Thanks [@cberd1509](https://github.com/cberd1509)! - The capture starts with your last copied or saved region selected, per display setup; press Enter to copy it again.
+
+- [#69](https://github.com/cberd1509/xcreenshot/pull/69) [`ea79466`](https://github.com/cberd1509/xcreenshot/commit/ea7946603da465abcd48ef6e06776164b30201d1) Thanks [@cberd1509](https://github.com/cberd1509)! - Add pen, line, ellipse, highlighter and blur tools, Shift to snap, and a custom color.
+
+- [#66](https://github.com/cberd1509/xcreenshot/pull/66) [`1ea5e0c`](https://github.com/cberd1509/xcreenshot/commit/1ea5e0cff58eb41b3bece66b5fc20d099d50344f) Thanks [@cberd1509](https://github.com/cberd1509)! - On Windows, if Snipping Tool or another app has the Print Screen key, the capture shortcut becomes Ctrl+Shift+Print Screen and the app says so once.
+
+### Patch Changes
+
+- [#74](https://github.com/cberd1509/xcreenshot/pull/74) [`74fcf66`](https://github.com/cberd1509/xcreenshot/commit/74fcf666dd55d85589d0726d8aa93928ed2b3d35) Thanks [@cberd1509](https://github.com/cberd1509)! - The first capture after launch is as fast as the next ones, and the overlay uses less memory between captures.
+
+- [#77](https://github.com/cberd1509/xcreenshot/pull/77) [`9f6f258`](https://github.com/cberd1509/xcreenshot/commit/9f6f258b3adfb84c46a6550677b7052aaa5d3a78) Thanks [@cberd1509](https://github.com/cberd1509)! - Login Items now shows xcreenshot by name.
+
+- [#81](https://github.com/cberd1509/xcreenshot/pull/81) [`f45fc3a`](https://github.com/cberd1509/xcreenshot/commit/f45fc3a98bddb734b1ffbcb7ad15dbf0a5c6fd41) Thanks [@cberd1509](https://github.com/cberd1509)! - Settings, the permission window and the menu bar menu now match the design.
+
+- [#82](https://github.com/cberd1509/xcreenshot/pull/82) [`313dcc4`](https://github.com/cberd1509/xcreenshot/commit/313dcc4ec4936be76a26e37782142f18a33dac94) Thanks [@cberd1509](https://github.com/cberd1509)! - The capture overlay now matches the design.
+
+- [#76](https://github.com/cberd1509/xcreenshot/pull/76) [`5913f41`](https://github.com/cberd1509/xcreenshot/commit/5913f41d0b826669ac02d3af0cf31abef0a5fea6) Thanks [@cberd1509](https://github.com/cberd1509)! - Saved and copied screenshots now open at the size they had on screen.
+
 ## 0.2.0
 
 ### Minor Changes
