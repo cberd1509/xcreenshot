@@ -26,6 +26,13 @@ describe('detectOs', () => {
       'mac',
     ],
     ['empty client hints', { userAgentData: { platform: '' }, platform: 'Win32' }, 'other'],
+    ['an iPad, which reports a Mac', { platform: 'MacIntel', maxTouchPoints: 5 }, 'other'],
+    [
+      'an iPhone user agent',
+      { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)' },
+      'other',
+    ],
+    ['a Mac trackpad', { platform: 'MacIntel', maxTouchPoints: 0 }, 'mac'],
   ])('reads %s', (_, nav, os) => {
     expect(detectOs(nav)).toBe(os)
   })
@@ -125,6 +132,7 @@ describe('setUpOs', () => {
     expect(other.hidden).toBe(false)
     expect(mac.hidden).toBe(true)
     expect(readChoice(local)).toBe('other')
+    expect(document.activeElement).toBe(onMac)
 
     onMac.click()
     expect(mac.hidden).toBe(false)

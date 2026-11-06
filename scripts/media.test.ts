@@ -126,7 +126,6 @@ describe('mp4Args', () => {
     )
     expect(args[args.indexOf('-c:v') + 1]).toBe('libx264')
     expect(args[args.indexOf('-crf') + 1]).toBe('24')
-    expect(args[args.indexOf('-pix_fmt') + 1]).toBe('yuv420p')
     expect(args).toContain('-an')
     expect(args.slice(-3)).toEqual(['-movflags', '+faststart', 'demo.mp4'])
   })

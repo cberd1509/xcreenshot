@@ -56,6 +56,12 @@ export function concat(shots: Shot[], end: number, minimum: number): string {
   return `${lines.join('\n')}\n`
 }
 
+/** Overwrite the output, print only errors. */
+const QUIET = ['-y', '-loglevel', 'error']
+
+/** Reads an ffconcat list (see `concat`). */
+const concatInput = (input: string) => ['-f', 'concat', '-safe', '0', '-i', input]
+
 export type Gif = {
   /** An ffconcat list (see `concat`). */
   input: string
@@ -75,15 +81,8 @@ export function gifArgs({ input, output, width, fps }: Gif): string[] {
     `[a]palettegen=stats_mode=diff[p];` +
     `[b][p]paletteuse=dither=sierra2_4a:diff_mode=rectangle`
   return [
-    '-y',
-    '-loglevel',
-    'error',
-    '-f',
-    'concat',
-    '-safe',
-    '0',
-    '-i',
-    input,
+    ...QUIET,
+    ...concatInput(input),
     '-filter_complex',
     filter,
     '-fps_mode',
@@ -101,12 +100,7 @@ export function size(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
-export type Video = {
-  /** An ffconcat list (see `concat`). */
-  input: string
-  output: string
-  width: number
-  fps: number
+export type Video = Gif & {
   /** x264 quality: lower is better and bigger. */
   crf: number
 }
@@ -117,15 +111,8 @@ export type Video = {
  */
 export function mp4Args({ input, output, width, fps, crf }: Video): string[] {
   return [
-    '-y',
-    '-loglevel',
-    'error',
-    '-f',
-    'concat',
-    '-safe',
-    '0',
-    '-i',
-    input,
+    ...QUIET,
+    ...concatInput(input),
     '-vf',
     `fps=${fps},scale=${width}:-2:flags=lanczos:out_range=tv,format=yuv420p`,
     '-c:v',
@@ -134,8 +121,6 @@ export function mp4Args({ input, output, width, fps, crf }: Video): string[] {
     'veryslow',
     '-crf',
     String(crf),
-    '-pix_fmt',
-    'yuv420p',
     '-an',
     '-movflags',
     '+faststart',
@@ -157,9 +142,7 @@ export type Still = {
 export function stillArgs({ input, output, at, width, height }: Still): string[] {
   const scale = `scale=${width}:-2:flags=lanczos`
   return [
-    '-y',
-    '-loglevel',
-    'error',
+    ...QUIET,
     '-ss',
     at.toFixed(3),
     '-i',

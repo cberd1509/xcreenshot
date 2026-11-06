@@ -59,13 +59,13 @@
 
     <main>
       <section class="wrap hero">
-        <h1 data-enter><strong>A screenshot app</strong> that stays out of the way</h1>
-        <p class="lede" data-enter>
+        <h1><strong>A screenshot app</strong> that stays out of the way</h1>
+        <p class="lede">
           Press the shortcut, drag a region, mark it up, then copy or save. It lives in your menu
           bar.
         </p>
 
-        <div class="actions" data-enter data-os="mac">
+        <div class="actions" data-os="mac">
           <a class="button primary" href="%DOWNLOAD_URL%">
             <svg
               aria-hidden="true"
@@ -86,28 +86,28 @@
           </a>
           <a class="button secondary" href="https://github.com/cberd1509/xcreenshot">View source</a>
         </div>
-        <div class="actions" data-enter data-os="other" hidden>
+        <div class="actions" data-os="other" hidden>
           <a class="button primary" href="https://github.com/cberd1509/xcreenshot"
             >Get notified for Windows</a
           >
           <a class="button secondary" href="%DOWNLOAD_URL%">Download for Mac</a>
         </div>
-        <p class="meta" data-enter data-os="mac">
+        <p class="meta" data-os="mac">
           Version %VERSION% · macOS 14 or later · Apple Silicon and Intel · Free and open source ·
           <button class="switch" type="button" data-os-toggle>Not on a Mac?</button>
         </p>
-        <p class="meta" data-enter data-os="other" hidden>
+        <p class="meta" data-os="other" hidden>
           Mac only for now. The Windows version is in progress. ·
           <button class="switch" type="button" data-os-toggle>On a Mac?</button>
         </p>
 
-        <div class="window" data-window>
+        <div class="window">
           <video
             autoplay
             muted
             loop
             playsinline
-            preload="auto"
+            preload="metadata"
             width="1440"
             height="900"
             poster="/demo-poster.jpg"
@@ -122,13 +122,12 @@
         <h2 class="eyebrow">How it works</h2>
         <div class="steps">
           <div class="step">
-            <div class="keys">
+            <div>
               <span class="keys" data-os="mac">
-                <kbd class="kbd">⌃</kbd><kbd class="kbd">⇧</kbd><kbd class="kbd">⌘</kbd
-                ><kbd class="kbd">S</kbd>
+                <kbd>⌃</kbd><kbd>⇧</kbd><kbd>⌘</kbd><kbd>S</kbd>
               </span>
               <span class="keys" data-os="other" hidden>
-                <kbd class="kbd">Ctrl</kbd><kbd class="kbd">Shift</kbd><kbd class="kbd">PrtSc</kbd>
+                <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>PrtSc</kbd>
               </span>
             </div>
             <h3>Press the shortcut</h3>
@@ -143,14 +142,12 @@
             </p>
           </div>
           <div class="step">
-            <div class="keys">
+            <div>
               <span class="keys" data-os="mac">
-                <kbd class="kbd">⌘</kbd><kbd class="kbd">C</kbd><span class="gap"></span
-                ><kbd class="kbd">⌘</kbd><kbd class="kbd">S</kbd>
+                <kbd>⌘</kbd><kbd>C</kbd><span class="gap"></span><kbd>⌘</kbd><kbd>S</kbd>
               </span>
               <span class="keys" data-os="other" hidden>
-                <kbd class="kbd">Ctrl</kbd><kbd class="kbd">C</kbd><span class="gap"></span
-                ><kbd class="kbd">Ctrl</kbd><kbd class="kbd">S</kbd>
+                <kbd>Ctrl</kbd><kbd>C</kbd><span class="gap"></span><kbd>Ctrl</kbd><kbd>S</kbd>
               </span>
             </div>
             <h3>Copy or save</h3>
@@ -161,7 +158,7 @@
 
       <section id="install" class="wrap split" data-reveal>
         <div class="intro install-intro">
-          <h2>Install</h2>
+          <h2><strong>Install</strong></h2>
           <div class="tabs" role="tablist" aria-label="Platform">
             <button
               id="tab-mac"
@@ -210,7 +207,7 @@
             <span class="num">03</span
             ><span
               >Allow Screen Recording when it asks. That's it: press
-              <kbd class="kbd small">⌃⇧⌘S</kbd></span
+              <kbd class="small">⌃⇧⌘S</kbd></span
             >
           </li>
         </ol>
@@ -237,8 +234,8 @@
           <li>
             <span class="num">03</span
             ><span
-              >Press <kbd class="kbd small">Ctrl</kbd> <kbd class="kbd small">Shift</kbd>
-              <kbd class="kbd small">PrtSc</kbd> to take a screenshot.</span
+              >Press <kbd class="small">Ctrl</kbd> <kbd class="small">Shift</kbd>
+              <kbd class="small">PrtSc</kbd> to take a screenshot.</span
             >
           </li>
         </ol>

@@ -315,7 +315,7 @@ try {
       const video = join(dir, 'demo.mp4')
       execFileSync('ffmpeg', mp4Args({ input: list, output: video, ...MP4 }))
       const poster = join(dir, 'demo-poster.jpg')
-      execFileSync('ffmpeg', stillArgs({ input: video, output: poster, at: 0, ...MP4 }))
+      execFileSync('ffmpeg', stillArgs({ input: video, output: poster, at: 0, width: MP4.width }))
       const og = join(dir, 'og.jpg')
       execFileSync('ffmpeg', stillArgs({ input: video, output: og, at: marked, ...OG }))
     } finally {

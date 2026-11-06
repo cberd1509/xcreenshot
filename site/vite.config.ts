@@ -51,8 +51,6 @@ export default defineConfig({
   plugins: [release, contentSecurityPolicy],
   server: { port: 5181 },
   build: {
-    outDir: 'dist',
-    emptyOutDir: true,
     // Keep fonts and images as files; the CSP doesn't allow data: URLs.
     assetsInlineLimit: 0,
   },

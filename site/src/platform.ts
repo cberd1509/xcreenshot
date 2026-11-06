@@ -6,17 +6,22 @@ export interface NavigatorLike {
   userAgentData?: { platform?: string }
   platform?: string
   userAgent?: string
+  maxTouchPoints?: number
 }
 
 const STORAGE_KEY = 'xcreenshot-os'
 
 const isOs = (value: unknown): value is Os => value === 'mac' || value === 'other'
 
-/** Mac unless the browser says otherwise; Windows, Linux and phones all get the "other" page. */
+/**
+ * Mac unless the browser says otherwise; Windows, Linux, iPhones and iPads all get the "other"
+ * page. iPads report a Mac, so a touch screen rules it out.
+ */
 export function detectOs(nav: NavigatorLike | undefined): Os {
   const hint = [nav?.userAgentData?.platform, nav?.platform, nav?.userAgent].find(Boolean)
   if (!hint) return 'mac'
-  return /mac/i.test(hint) ? 'mac' : 'other'
+  const mac = /mac/i.test(hint) && !/iphone|ipad|ipod/i.test(hint)
+  return mac && (nav?.maxTouchPoints ?? 0) <= 1 ? 'mac' : 'other'
 }
 
 /** The version the visitor picked, if storage allows it. */
@@ -70,8 +75,13 @@ export function setUpOs(root: ParentNode, nav: NavigatorLike, storage: () => Sto
   }
   applyOs(root, os)
 
-  for (const toggle of root.querySelectorAll('[data-os-toggle]')) {
-    toggle.addEventListener('click', () => choose(os === 'mac' ? 'other' : 'mac'))
+  const toggles = [...root.querySelectorAll<HTMLElement>('[data-os-toggle]')]
+  for (const toggle of toggles) {
+    toggle.addEventListener('click', () => {
+      choose(os === 'mac' ? 'other' : 'mac')
+      // The clicked link is now hidden: keep focus on the one that took its place.
+      toggles.find((el) => !el.closest('[hidden]'))?.focus()
+    })
   }
 
   const tabs = [...root.querySelectorAll<HTMLElement>('[data-os-tab]')]

@@ -1,7 +1,7 @@
 // Picks the version and download link the landing page shows, from the latest published release.
 // Pure so it can be tested without the network; site/vite.config.ts does the file reading.
 
-export const REPO_URL = 'https://github.com/cberd1509/xcreenshot'
+const REPO_URL = 'https://github.com/cberd1509/xcreenshot'
 export const LATEST_RELEASE_URL = `${REPO_URL}/releases/latest`
 
 export interface Download {
