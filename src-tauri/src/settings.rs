@@ -99,9 +99,10 @@ impl Change {
             }
             Change::RememberRegion(on) => {
                 prefs.remember_region = on;
-                // Off forgets the regions too.
+                // Off forgets the regions too, and any still being saved.
                 if !on {
                     prefs.regions.clear();
+                    crate::region::ORDER.forget();
                 }
             }
             Change::Magnifier(on) => prefs.magnifier = on,

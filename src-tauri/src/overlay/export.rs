@@ -139,7 +139,11 @@ pub(crate) type Remember = Box<dyn FnOnce(Region) + Send>;
 /// Saves the region to the prefs on a blocking thread, so nothing waits for the file.
 fn remember_in<R: Runtime>(app: &AppHandle<R>) -> Remember {
     let app = app.clone();
-    Box::new(move |r| drop(spawn_blocking(move || region::save(&app, r))))
+    Box::new(move |r| {
+        // Numbered now, as the output succeeds, so saves that land late keep this order.
+        let seq = region::ORDER.next();
+        drop(spawn_blocking(move || region::save(&app, r, seq)));
+    })
 }
 
 async fn copy_with<R: Runtime>(
@@ -172,7 +176,9 @@ async fn copy_with<R: Runtime>(
     let (width, height) = copied.inspect_err(|e| log::warn!("copy failed: {e}"))?;
     let ms = started.elapsed().as_secs_f64() * 1000.0;
     log::info!("copied {width}x{height} px in {ms:.0} ms");
-    remember(region);
+    if let Some(region) = region {
+        remember(region);
+    }
     // Only if nothing happened meanwhile: a save started (even cancelled) keeps the overlay.
     on_main(window.app_handle(), move |app| {
         close_if(app, |phase| phase.copy_may_close(session, saves));
@@ -188,8 +194,8 @@ struct Selected {
     frame: Arc<RgbaImage>,
     /// The session's save count.
     saves: u32,
-    /// The selection to remember.
-    region: Region,
+    /// The selection to remember, unless a display was not captured.
+    region: Option<Region>,
 }
 
 /// What a copy or save works from, or `None` if the session or window is not an open overlay,
@@ -206,7 +212,7 @@ fn selected_frame<R: Runtime>(
         display,
         saves: phase.saves(session)?,
         frame: phase.image(session, display)?,
-        region: phase.region(session, display, out.rect)?,
+        region: phase.region(session, display, out.rect),
     })
 }
 
@@ -297,7 +303,7 @@ async fn save_with<R: Runtime>(
         .await
         .unwrap_or_else(|e| Err(CaptureError::Write(e.to_string())));
     let failed = written.is_err();
-    if !failed {
+    if let Some(region) = region.filter(|_| !failed) {
         remember(region);
     }
     on_main(&app, move |app| {

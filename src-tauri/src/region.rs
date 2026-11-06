@@ -7,10 +7,13 @@
 //!
 //! Rust saves it after a copy or save (from the session it already holds, never from the page)
 //! and sends it with the frame info when the overlay opens. Turning the setting off clears them.
+//! Saves run on other threads, so [`ORDER`] numbers them: an older one, or one from before the
+//! setting was last turned off, is dropped.
 
 use crate::capture::{Bounds, DisplayFrame, PixelRect};
 use crate::prefs::{self, Prefs, Storage};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::{AppHandle, Runtime};
 
 /// How many display arrangements keep a region.
@@ -143,25 +146,83 @@ pub fn remember(prefs: &mut Prefs, region: Region) -> bool {
     true
 }
 
-/// The saved regions, read when the overlay opens. Never waits for a change being saved.
-pub fn load<R: Runtime>(app: &AppHandle<R>) -> Vec<Region> {
-    prefs::peek(app).regions
+/// Numbers region saves in the order the outputs succeeded.
+pub struct Order {
+    /// The last number given out.
+    issued: AtomicU64,
+    /// Saves numbered up to this are dropped: the newest written, or every one numbered before
+    /// the setting was last turned off.
+    floor: AtomicU64,
 }
 
-/// Saves `region` (see [`remember`]). Writes the file, so call it off the hot path.
-pub fn save<R: Runtime>(app: &AppHandle<R>, region: Region) {
-    let saved = prefs::with_store(app, |store| save_to(store, region));
+/// The app's region saves.
+pub static ORDER: Order = Order::new();
+
+impl Order {
+    pub const fn new() -> Self {
+        Self {
+            issued: AtomicU64::new(0),
+            floor: AtomicU64::new(0),
+        }
+    }
+
+    /// The number of an output that just succeeded.
+    pub fn next(&self) -> u64 {
+        self.issued.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// The setting was turned off: every save numbered so far is dropped.
+    pub fn forget(&self) {
+        self.floor
+            .fetch_max(self.issued.load(Ordering::SeqCst), Ordering::SeqCst);
+    }
+
+    /// Whether save `seq` is newer than any written or forgotten; if so, older ones are dropped
+    /// from now on. Called under the prefs lock, so the check and the write go together.
+    fn admit(&self, seq: u64) -> bool {
+        // The lock orders this with other saves and with `forget`.
+        if seq <= self.floor.load(Ordering::SeqCst) {
+            return false;
+        }
+        self.floor.store(seq, Ordering::SeqCst);
+        true
+    }
+}
+
+/// The saved regions, read when the overlay opens: none while the setting is off. Never waits
+/// for a change being saved.
+pub fn load<R: Runtime>(app: &AppHandle<R>) -> Vec<Region> {
+    let prefs = prefs::peek(app);
+    if prefs.remember_region {
+        prefs.regions
+    } else {
+        Vec::new()
+    }
+}
+
+/// Saves `region`, numbered `seq` by [`ORDER`] (see [`remember`]). Writes the file, so call it
+/// off the hot path.
+pub fn save<R: Runtime>(app: &AppHandle<R>, region: Region, seq: u64) {
+    let saved = prefs::with_store(app, |store| save_to(store, region, seq, &ORDER));
     if let Err(e) = saved {
         log::warn!("could not remember the region: {e}");
     }
 }
 
-/// [`save`] into `storage`. Writes nothing if nothing changed.
-fn save_to(storage: &impl Storage, region: Region) -> Result<(), &'static str> {
+/// [`save`] into `storage`. Writes nothing if nothing changed, or if `order` drops it.
+fn save_to(
+    storage: &impl Storage,
+    region: Region,
+    seq: u64,
+    order: &Order,
+) -> Result<(), &'static str> {
     const UNCHANGED: &str = "unchanged";
-    match prefs::modify(storage, |p| {
-        remember(p, region).then_some(()).ok_or(UNCHANGED)
-    }) {
+    let change = |p: &mut Prefs| {
+        (order.admit(seq) && remember(p, region))
+            .then_some(())
+            .ok_or(UNCHANGED)
+    };
+    match prefs::modify(storage, change) {
         Ok(_) | Err(UNCHANGED) => Ok(()),
         Err(e) => Err(e),
     }
@@ -337,14 +398,20 @@ pub(crate) mod tests {
         assert!(prefs.regions.is_empty());
     }
 
+    /// Saves `region` with the next number from `order`.
+    fn save_next(storage: &FakeStorage, order: &Order, region: Region) -> Result<(), &'static str> {
+        save_to(storage, region, order.next(), order)
+    }
+
     #[test]
     fn saving_writes_the_prefs_unless_off() {
         let storage = FakeStorage::default();
-        assert_eq!(save_to(&storage, region("a", monitor(1))), Ok(()));
+        let order = Order::new();
+        assert_eq!(save_next(&storage, &order, region("a", monitor(1))), Ok(()));
         assert_eq!(storage.load().regions, [region("a", monitor(1))]);
-        assert_eq!(save_to(&storage, region("a", monitor(1))), Ok(()));
+        assert_eq!(save_next(&storage, &order, region("a", monitor(1))), Ok(()));
         storage.prefs.borrow_mut().remember_region = false;
-        assert_eq!(save_to(&storage, region("b", monitor(1))), Ok(()));
+        assert_eq!(save_next(&storage, &order, region("b", monitor(1))), Ok(()));
         assert_eq!(
             storage.saves.get(),
             1,
@@ -352,9 +419,43 @@ pub(crate) mod tests {
         );
         let failing = FakeStorage::failing();
         assert_eq!(
-            save_to(&failing, region("a", monitor(1))),
+            save_next(&failing, &order, region("a", monitor(1))),
             Err(prefs::NOT_SAVED)
         );
+    }
+
+    #[test]
+    fn a_save_that_lands_late_never_replaces_a_newer_one() {
+        let storage = FakeStorage::default();
+        let order = Order::new();
+        let (older, newer) = (order.next(), order.next());
+        assert_eq!(
+            save_to(&storage, region("new", monitor(1)), newer, &order),
+            Ok(())
+        );
+        assert_eq!(
+            save_to(&storage, region("old", monitor(1)), older, &order),
+            Ok(())
+        );
+        assert_eq!(storage.load().regions, [region("new", monitor(1))]);
+        assert_eq!(storage.saves.get(), 1);
+    }
+
+    #[test]
+    fn a_save_from_before_turning_off_never_brings_a_region_back() {
+        let storage = FakeStorage::default();
+        let order = Order::new();
+        let pending = order.next();
+        // Off (which clears the regions), then on again before the save lands.
+        order.forget();
+        assert_eq!(
+            save_to(&storage, region("a", monitor(1)), pending, &order),
+            Ok(())
+        );
+        assert!(storage.load().regions.is_empty());
+        // Outputs after that are remembered again.
+        assert_eq!(save_next(&storage, &order, region("b", monitor(1))), Ok(()));
+        assert_eq!(storage.load().regions, [region("b", monitor(1))]);
     }
 
     #[test]

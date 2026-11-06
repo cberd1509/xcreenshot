@@ -13,7 +13,7 @@
 //! Rust holds Esc exactly when [`Phase::wants_escape`] says so: [`sync_escape`] runs after every
 //! phase change. Window and shortcut calls stay on the main thread.
 
-use super::{FrameInfo, Phase, diff, display_at, display_id, label};
+use super::{FrameInfo, Phase, captured_all, diff, display_at, display_id, label};
 use crate::capture::{self, Bounds, CaptureError, Display, DisplayFrame};
 use crate::region::{self, Region};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -187,14 +187,17 @@ fn start_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) -> Option<u64
         let focus = screen
             .cursor(&worker)
             .and_then(|(x, y)| display_at(&listed, x, y));
-        let regions = screen.regions(&worker);
+        // Read last, just before the session opens, so it follows the current setting. Not if
+        // a display failed: see `Phase::open`.
+        let complete = frames.as_ref().is_ok_and(|f| captured_all(&listed, f));
+        let regions = complete.then(|| screen.regions(&worker));
         finish(
             &worker,
             session,
             frames,
             focus,
             escape_shortcut,
-            &regions,
+            regions.as_deref(),
             WATCHDOG,
         );
     });
@@ -213,7 +216,7 @@ fn finish<R: Runtime>(
     frames: Result<Vec<DisplayFrame>, CaptureError>,
     focus: Option<u32>,
     escape_shortcut: bool,
-    regions: &[Region],
+    regions: Option<&[Region]>,
     watchdog: Duration,
 ) {
     let frames = match frames {
@@ -614,11 +617,23 @@ pub(crate) fn overlay_painted<R: Runtime>(
         log::error!("could not show the overlay: {e}");
         return close(app);
     }
-    if let Some(focus) = paint.focus.and_then(|f| app.get_webview_window(&label(f))) {
-        let _ = focus.set_focus();
-    }
+    focus(app, paint.focus, paint.fallback);
     if let Some((total, capture)) = paint.first {
         log::info!("overlay painted {total:.0} ms after the hotkey (capture {capture:.0} ms)");
+    }
+}
+
+/// Focuses `display`'s window; if that fails, logs it and tries `fallback`'s.
+fn focus<R: Runtime>(app: &AppHandle<R>, display: Option<u32>, fallback: Option<u32>) {
+    for d in display.into_iter().chain(fallback) {
+        let focused = app
+            .get_webview_window(&label(d))
+            .ok_or_else(|| "no window".to_owned())
+            .and_then(|w| w.set_focus().map_err(|e| e.to_string()));
+        match focused {
+            Ok(()) => return,
+            Err(e) => log::warn!("could not focus overlay {d}: {e}"),
+        }
     }
 }
 
@@ -885,7 +900,7 @@ pub(super) mod tests {
         let h = app.handle();
         let session = open(h, &[1]);
         let failed = Err(CaptureError::NoDisplays);
-        finish(h, session + 100, failed, None, true, &[], WATCHDOG);
+        finish(h, session + 100, failed, None, true, None, WATCHDOG);
         assert!(is_open(h, session));
     }
 
