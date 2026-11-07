@@ -250,7 +250,7 @@ fn capture_option(key: &str) -> Result<(), &'static str> {
     }
 }
 
-fn set_with<R: Runtime>(
+pub(crate) fn set_with<R: Runtime>(
     app: &AppHandle<R>,
     shortcuts: &impl Registrar,
     key: &str,

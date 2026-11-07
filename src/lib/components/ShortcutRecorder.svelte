@@ -10,16 +10,20 @@
   let {
     title,
     description,
+    descriptionClass,
     accelerator,
     onchange,
     onreset,
   }: {
     title: string
     description: string
+    descriptionClass?: string
     accelerator: string
     /** Saves the new shortcut; rejects with the message to show. */
     onchange: (accelerator: string) => Promise<void>
-    onreset: () => Promise<void>
+    /** Offers "Reset to default" (and Cancel while recording) under the row. Without it, Esc
+     * or the button cancels. */
+    onreset?: () => Promise<void>
   } = $props()
 
   let recording = $state(false)
@@ -119,22 +123,27 @@
 <svelte:window {onkeydown} {onkeyup} onblur={() => void stop()} />
 
 {#snippet below()}
-  <div class="flex flex-col gap-1 text-[13px]">
-    <Button
-      variant="link"
-      class="h-auto self-start p-0 text-[13px] font-normal text-muted-foreground"
-      disabled={busy}
-      onclick={() => (recording ? void stop() : save(onreset))}
-    >
-      {recording ? 'Cancel' : 'Reset to default'}
-    </Button>
-    {#if error}
-      <p role="alert" class="text-destructive">{error}</p>
-    {/if}
-  </div>
+  {#if onreset || error}
+    <div class="flex flex-col gap-1 text-[13px]">
+      {#if onreset}
+        {@const reset = onreset}
+        <Button
+          variant="link"
+          class="h-auto self-start p-0 text-[13px] font-normal text-muted-foreground"
+          disabled={busy}
+          onclick={() => (recording ? void stop() : save(reset))}
+        >
+          {recording ? 'Cancel' : 'Reset to default'}
+        </Button>
+      {/if}
+      {#if error}
+        <p role="alert" class="text-destructive">{error}</p>
+      {/if}
+    </div>
+  {/if}
 {/snippet}
 
-<SettingRow {title} {description} {below}>
+<SettingRow {title} {description} {descriptionClass} {below}>
   <Button
     variant="outline"
     aria-label={recording

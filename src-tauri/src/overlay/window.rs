@@ -97,7 +97,7 @@ pub(super) fn shown<R: Runtime>(app: &AppHandle<R>) -> Vec<u32> {
 
 /// The OS side of a capture: permission, listing displays and grabbing them. Faked in tests.
 pub(crate) trait Screen: Send + 'static {
-    /// Whether capture is allowed. If not, opens the permission window.
+    /// Whether capture is allowed. If not, opens the onboarding window with the steps.
     fn permitted<R: Runtime>(&self, app: &AppHandle<R>) -> bool;
     fn displays(&self) -> Result<Vec<Display>, CaptureError>;
     fn capture(&self, ids: &[u32]) -> Result<Vec<DisplayFrame>, CaptureError>;
@@ -118,7 +118,7 @@ impl Screen for Os {
         if capture::has_permission() {
             return true;
         }
-        crate::permission::show(app);
+        crate::onboarding::show(app);
         false
     }
 
@@ -366,6 +366,10 @@ fn end_if<R: Runtime>(
     // A notice hidden for the capture comes back after a share too; only giving focus back
     // (in `close_if`) is skipped. First, so a notice shown again counts as an open window.
     crate::notice::show_after_capture(app);
+    // Its "Try it" box waits for this. Only a close that ended a capture counts.
+    if before.is_some() {
+        crate::onboarding::capture_closed(app);
+    }
     // Last, so a waiting update restart sees the overlay gone.
     app.state::<Overlay>().idle.notify_waiters();
     before

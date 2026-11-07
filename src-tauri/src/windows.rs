@@ -1,4 +1,4 @@
-//! Opening the app's regular windows (Settings, permission steps): one per label, created on
+//! Opening the app's regular windows (Settings, onboarding): one per label, created on
 //! demand and brought to the front when already open.
 
 use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder};

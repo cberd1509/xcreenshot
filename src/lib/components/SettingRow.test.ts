@@ -29,4 +29,17 @@ describe('SettingRow', () => {
     expect(title.tagName).toBe('DIV')
     expect(document.querySelector('.text-muted-foreground')).toBeNull()
   })
+
+  it('adds classes to the description', () => {
+    render(SettingRow, {
+      title: 'Take a screenshot',
+      description: 'Works from any app.',
+      descriptionClass: 'leading-5',
+      children: control,
+    })
+    expect(screen.getByText('Works from any app.')).toHaveClass(
+      'text-muted-foreground',
+      'leading-5',
+    )
+  })
 })

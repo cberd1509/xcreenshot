@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-onboarding-print-screen"
+description = "Enables the onboarding_print_screen command without any pre-configured scope."
+commands.allow = ["onboarding_print_screen"]
+
+[[permission]]
+identifier = "deny-onboarding-print-screen"
+description = "Denies the onboarding_print_screen command without any pre-configured scope."
+commands.deny = ["onboarding_print_screen"]

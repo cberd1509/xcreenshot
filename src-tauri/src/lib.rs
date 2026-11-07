@@ -9,6 +9,7 @@ mod login;
 #[cfg(all(target_os = "macos", not(test)))]
 mod macos;
 mod notice;
+mod onboarding;
 /// Public for `examples/save.rs`.
 pub mod output;
 mod overlay;
@@ -99,6 +100,9 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             permission::open_permission_settings,
             permission::restart_app,
+            onboarding::onboarding_print_screen,
+            #[cfg(target_os = "windows")]
+            onboarding::open_keyboard_settings,
             shortcut::capture_shortcut,
             shortcut::pause_capture_shortcut,
             shortcut::resume_capture_shortcut,
@@ -112,17 +116,23 @@ pub fn run() {
             toast::window::toast_ready,
             toast::window::toast_idle,
         ])
-        // The capture shortcut is paused while Settings records a new one: take it back if
-        // that page reloads or its window closes mid-recording.
+        // The capture shortcut is paused while Settings or onboarding records a new one: take
+        // it back if that page reloads or its window closes mid-recording.
         .on_page_load(|webview, payload| {
-            if webview.label() == SETTINGS_WINDOW {
+            if records_shortcuts(webview.label()) {
                 shortcut::resume_capture(webview.app_handle());
             }
             toast::on_page_load(webview, payload);
         })
         .on_window_event(|window, event| {
-            if window.label() == SETTINGS_WINDOW && matches!(event, tauri::WindowEvent::Destroyed) {
+            if !matches!(event, tauri::WindowEvent::Destroyed) {
+                return;
+            }
+            if records_shortcuts(window.label()) {
                 shortcut::resume_capture(window.app_handle());
+            }
+            if window.label() == onboarding::WINDOW {
+                onboarding::closed(window.app_handle());
             }
         })
         .setup(|app| {
@@ -132,14 +142,15 @@ pub fn run() {
 
             let (capture_shortcut, print_screen_moved) = settings::init(app.handle());
             build_tray(app.handle(), &capture_shortcut)?;
-            if let Some(reason) = print_screen_moved {
+            // Onboarding shows the shortcut in use, so it replaces the "Shortcut changed" notice.
+            let onboarding_shown = onboarding::on_startup(app.handle());
+            if let Some(reason) = print_screen_moved.filter(|_| !onboarding_shown) {
                 print_screen::tell(app.handle(), reason, |app| {
                     windows::open_from(app, Source::PrintScreenNotice, open_settings)
                 });
             }
             overlay::prewarm(app.handle());
             toast::prewarm(app.handle());
-            permission::on_startup(app.handle());
             updates::start(app.handle(), offer_update);
             share::init(app.handle());
             #[cfg(debug_assertions)]
@@ -262,6 +273,11 @@ fn handle(app: &AppHandle, action: Action) {
         Action::RestartToUpdate => updates::restart_now(app),
         Action::Quit => app.exit(0),
     }
+}
+
+/// The windows with a shortcut recorder (see `shortcut::pause`).
+fn records_shortcuts(label: &str) -> bool {
+    label == SETTINGS_WINDOW || label == onboarding::WINDOW
 }
 
 /// The Settings webview is created on demand and destroyed on close. The only webviews kept

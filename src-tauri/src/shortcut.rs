@@ -193,25 +193,25 @@ impl Registered {
     }
 }
 
-/// The capture shortcut for the permission page.
+/// The capture shortcut and whether it is registered, for the onboarding page.
 #[tauri::command]
 pub fn capture_shortcut(registered: State<'_, Registered>) -> CaptureShortcut {
     registered.get()
 }
 
-/// The Settings window started recording a shortcut.
+/// A shortcut recorder (Settings, onboarding) started recording.
 #[tauri::command]
 pub fn pause_capture_shortcut<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     Ok(pause(app.global_shortcut(), &app.state::<Registered>())?)
 }
 
-/// The Settings window stopped recording.
+/// The recorder stopped recording.
 #[tauri::command]
 pub fn resume_capture_shortcut<R: Runtime>(app: AppHandle<R>) {
     resume_capture(&app);
 }
 
-/// Takes the capture shortcut back if it is paused. Also called when the Settings page
+/// Takes the capture shortcut back if it is paused. Also called when a recorder's page
 /// reloads or its window closes, so the shortcut always comes back.
 pub fn resume_capture<R: Runtime>(app: &AppHandle<R>) {
     if let Some(shortcuts) = app.try_state::<GlobalShortcut<R>>() {

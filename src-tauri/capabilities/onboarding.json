@@ -1,0 +1,22 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "onboarding",
+  "description": "First-run window: Screen Recording status, pane name, open System Settings, restart, close (Later, Done); the capture shortcut: read and change settings (with events), pause it while recording; the capture-closed event; PrintScreen check and Windows keyboard settings",
+  "windows": ["onboarding"],
+  "permissions": [
+    "core:window:allow-close",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-permission-granted",
+    "allow-permission-pane",
+    "allow-open-permission-settings",
+    "allow-restart-app",
+    "allow-capture-shortcut",
+    "allow-get-prefs",
+    "allow-set-pref",
+    "allow-pause-capture-shortcut",
+    "allow-resume-capture-shortcut",
+    "allow-onboarding-print-screen",
+    "allow-open-keyboard-settings"
+  ]
+}

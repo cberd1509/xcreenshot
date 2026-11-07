@@ -27,6 +27,8 @@ fn main() {
         "open_repo",
         "toast_ready",
         "toast_idle",
+        "onboarding_print_screen",
+        "open_keyboard_settings",
     ];
     let mut attributes = tauri_build::Attributes::new()
         .app_manifest(tauri_build::AppManifest::new().commands(commands));

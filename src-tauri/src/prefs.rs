@@ -55,6 +55,10 @@ pub struct Prefs {
     /// The user was told PrintScreen went to Snipping Tool (Windows; see `print_screen`).
     #[serde(default, deserialize_with = "lenient")]
     pub print_screen_notice_shown: bool,
+    /// The first-run window was finished (see `onboarding`). `None` in prefs saved before this
+    /// was recorded, an install from before onboarding; a fresh install starts at `false`.
+    #[serde(default, deserialize_with = "lenient")]
+    pub onboarded: Option<bool>,
     /// The last region per display arrangement, newest first (see `region`).
     #[serde(default, deserialize_with = "lenient")]
     pub regions: Vec<Region>,
@@ -73,6 +77,7 @@ impl Default for Prefs {
             login_item_added: false,
             launch_agent_removed: false,
             print_screen_notice_shown: false,
+            onboarded: Some(false),
             regions: Vec::new(),
         }
     }
@@ -419,13 +424,20 @@ pub(crate) mod tests {
             json!({ "shortcut": "Control+Nope", "openAtLogin": 0, "checkForUpdates": [] }),
             json!({ "shortcut": "S", "loginItemAdded": "no" }),
             json!({ "printScreenNoticeShown": 1 }),
+            json!({ "onboarded": "yes" }),
             json!({}),
             json!({ "unknown": true }),
             json!("not an object"),
             json!(null),
         ] {
             s.set(KEY, bad.clone());
-            assert_eq!(Prefs::load(&*s), Prefs::default(), "{bad}");
+            // Stored prefs without `onboarded` are from before onboarding (see `onboarding`).
+            let onboarded = if bad.is_object() { None } else { Some(false) };
+            let expected = Prefs {
+                onboarded,
+                ..Prefs::default()
+            };
+            assert_eq!(Prefs::load(&*s), expected, "{bad}");
         }
     }
 
@@ -443,8 +455,10 @@ pub(crate) mod tests {
         assert!(p.remember_region && !p.magnifier && p.open_at_login && p.check_for_updates);
         assert!(!p.quick_copy);
         assert!(!p.login_item_added && !p.launch_agent_removed && !p.print_screen_notice_shown);
+        assert_eq!(p.onboarded, Some(false), "a fresh install");
     }
 
+    /// Also how onboarding tells an install from before it (`onboarded: None`).
     #[test]
     fn a_file_from_before_the_settings_loads_with_their_defaults() {
         let dir = tempfile::tempdir().unwrap();
@@ -457,6 +471,7 @@ pub(crate) mod tests {
         let loaded = Prefs::load(&*store(&app, dir.path()));
         let expected = Prefs {
             last_save_dir: Some("/old".into()),
+            onboarded: None,
             ..Prefs::default()
         };
         assert_eq!(loaded, expected);
@@ -478,6 +493,7 @@ pub(crate) mod tests {
             login_item_added: true,
             launch_agent_removed: true,
             print_screen_notice_shown: true,
+            onboarded: Some(true),
             regions: Vec::new(),
         };
         prefs.save(&*s).unwrap();
