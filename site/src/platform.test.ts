@@ -149,14 +149,15 @@ describe('setUpOs', () => {
 
     heroWin.click()
     expect(other.hidden).toBe(false)
-    expect(selected(winTab)).toBe('true')
-    expect(selected(macTab)).toBe('false')
+    // Both tablists, the clicked one included.
+    expect([heroWin, winTab].map(selected)).toEqual(['true', 'true'])
+    expect([heroMac, macTab].map(selected)).toEqual(['false', 'false'])
     expect(readChoice(local)).toBe('other')
 
     macTab.click()
     expect(mac.hidden).toBe(false)
-    expect(selected(heroMac)).toBe('true')
-    expect(selected(heroWin)).toBe('false')
+    expect([macTab, heroMac].map(selected)).toEqual(['true', 'true'])
+    expect([winTab, heroWin].map(selected)).toEqual(['false', 'false'])
     expect(readChoice(local)).toBe('mac')
   })
 

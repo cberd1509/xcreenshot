@@ -78,6 +78,12 @@ describe('releaseNotes', () => {
     expect(releaseNotes('- a', false)).toBe(`${WINDOWS_NOTE}\n\n- a\n`)
   })
 
+  it('marks unsigned notes the way the publish check looks for them', () => {
+    // release.yml's updater-urls job tells unsigned releases apart by this text.
+    expect(releaseNotes('- a', true)).toContain('Unsigned test build')
+    expect(releaseNotes('- a', false)).not.toContain('Unsigned test build')
+  })
+
   it('tells Windows users how to get past SmartScreen', () => {
     expect(WINDOWS_NOTE).toContain('More info › Run anyway')
   })
