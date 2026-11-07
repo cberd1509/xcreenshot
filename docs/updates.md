@@ -13,7 +13,7 @@ xcreenshot updates itself from GitHub Releases with [`tauri-plugin-updater`](htt
 
 The updater runs in Rust. The webview gets no updater or dialog permissions, and the CSP is unchanged.
 
-Automatic checks follow `checkForUpdates` in `prefs.json` (on by default), read before each check. The Settings switch for it comes with #20. A manual check always runs.
+Automatic checks follow `checkForUpdates` in `prefs.json` (on by default), read before each check. Settings › General › Check for updates turns them off. A manual check always runs.
 
 ## What gets requested
 
