@@ -253,7 +253,8 @@ describe('Toolbar', () => {
       .map((b) => b.getAttribute('aria-label') ?? b.textContent?.trim())
       .filter(Boolean)
     expect(names).toEqual(['More', 'Share', 'Save', 'Copy', 'Cancel'])
-    const at = { x: 40, y: 300, width: 80, height: 36 }
+    // Made up at run time, so only the button's real rect can match it.
+    const at = { x: Math.random() * 500, y: Math.random() * 500, width: 80, height: 36 }
     vi.spyOn(share, 'getBoundingClientRect').mockReturnValue(DOMRect.fromRect(at) as DOMRect)
     await user.hover(share)
     expect(await tooltip('Share')).toBeInTheDocument()

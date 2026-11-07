@@ -1130,7 +1130,8 @@ describe('Overlay', () => {
       platform.mac = true
       await annotated()
       const share = screen.getByRole('button', { name: 'Share' })
-      const anchor = { x: 40, y: 300, width: 80, height: 36 }
+      // Made up at run time, so only the button's real rect can match it.
+      const anchor = { x: Math.random() * 500, y: Math.random() * 500, width: 80, height: 36 }
       vi.spyOn(share, 'getBoundingClientRect').mockReturnValue(DOMRect.fromRect(anchor) as DOMRect)
       await userEvent.click(share)
       await waitFor(() => expect(called('overlay_share')).toHaveLength(1))
@@ -1138,7 +1139,11 @@ describe('Overlay', () => {
       expect(head.anchor).toEqual(anchor)
       // The same request as a save, annotations included.
       expect(head.rect).toEqual(rect200)
-      expect(head.layer).toBeDefined()
+      // The annotation's pixels go as the raw body, drawn (not blank) and sized to the layer.
+      const drawn = head.layer!
+      const body = sent.find((c) => c.cmd === 'overlay_share')!.body as Uint8Array
+      expect(body).toHaveLength(drawn.width * drawn.height * 4)
+      expect(body.some((b) => b !== 0)).toBe(true)
     })
 
     it('says so when sharing fails, and stays open', async () => {

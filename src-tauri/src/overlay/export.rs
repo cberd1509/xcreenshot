@@ -462,7 +462,10 @@ async fn share_with<R: Runtime>(
         .unwrap_or_else(|e| Err(ShareError::Window(e.to_string())));
     shown.map_err(|e| {
         log::error!("{e}");
-        on_main(&app, move |app| unshare(app, session));
+        // Ended now, so a retry right after the error is not turned away; Esc follows.
+        if state.phase().end_share(session) {
+            on_main(&app, take_escape_back);
+        }
         CaptureError::Share(e.to_string())
     })
 }
@@ -480,27 +483,31 @@ fn shared<R: Runtime>(
     match outcome {
         ShareOutcome::Chosen(service) => {
             log::info!("shared with {service}");
-            // Only for the session still sharing: a stale answer changes nothing.
-            if phase(app).end_share(session) {
+            // Only for the session still sharing: a stale answer changes nothing, not even
+            // the level of a window a newer sheet lowered.
+            if close_for_share(app, session) {
                 if let Some(region) = region {
                     remember(region);
                 }
-                close_for_share(app, session);
+                // The sheet left the window lowered, so the service's UI shows over it.
+                share::restore_level(window);
             }
-            // The sheet left the window lowered, so the service's UI shows over it.
-            share::restore_level(window);
         }
         ShareOutcome::Cancelled => {
             log::info!("share cancelled");
-            unshare(app, session);
+            if phase(app).end_share(session) {
+                // Usually back already; not for a picker that expired with its menu open.
+                share::restore_level(window);
+                take_escape_back(app);
+            }
         }
     }
 }
 
 /// The share sheet is gone without a choice: Esc is the overlay's again. Closes the overlay
 /// instead if Esc cannot be taken back, so it never stays open without a way out.
-fn unshare<R: Runtime>(app: &AppHandle<R>, session: u64) {
-    if phase(app).end_share(session) && !sync_escape(app) {
+fn take_escape_back<R: Runtime>(app: &AppHandle<R>) {
+    if !sync_escape(app) {
         log::error!("could not take Esc back; closing the overlay");
         close(app);
     }
@@ -1334,6 +1341,8 @@ mod tests {
             "{r:?}"
         );
         assert_eq!(shown_sheets(&seen), 1);
+        // Ended before the error returns, so a retry right away is not turned away.
+        assert!(!phase(h).in_dialog());
         assert!(is_open(h, session));
         assert!(esc_held(h), "Esc is the overlay's again");
         // Not left sharing: the next share opens.
@@ -1364,14 +1373,17 @@ mod tests {
         let (show, seen) = sheet(false);
         let not_shown = share_out(h, &anchored(session, px(0, 0, 1, 1)), show, forget());
         assert_eq!(not_shown, Ok(()), "not painted");
+        assert_eq!(shown_sheets(&seen), 0);
         overlay_painted(window(h, 1), h.state(), session);
-        let (show, _) = sheet(false);
+        let (show, seen) = sheet(false);
         let other = share_out(h, &anchored(session + 1, px(0, 0, 1, 1)), show, forget());
         assert_eq!(other, Ok(()), "other session");
-        let (show, _) = sheet(false);
+        assert_eq!(shown_sheets(&seen), 0);
+        let (show, seen) = sheet(false);
         let empty = share_out(h, &anchored(session, px(0, 0, 0, 0)), show, forget());
         assert_eq!(empty, Err(CaptureError::EmptySelection));
-        let (show, _) = sheet(false);
+        assert_eq!(shown_sheets(&seen), 0);
+        let (show, seen) = sheet(false);
         let no_anchor = share_out(h, &plain(session, px(0, 0, 1, 1)), show, forget());
         assert!(matches!(no_anchor, Err(CaptureError::Invalid(_))));
         assert_eq!(shown_sheets(&seen), 0);
@@ -1389,6 +1401,7 @@ mod tests {
         share_out(h, &anchored(session, px(0, 0, 2, 2)), show, forget()).unwrap();
         answer(&seen, ShareOutcome::Cancelled);
         assert!(is_idle(h));
+        assert!(on_screen(h).is_empty(), "the windows are gone too");
     }
 
     #[test]

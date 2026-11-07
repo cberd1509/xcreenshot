@@ -300,26 +300,32 @@ pub fn close<R: Runtime>(app: &AppHandle<R>) {
 /// [`close`], only if `ok` holds for the phase. Checked and closed under one lock, so nothing
 /// can start in between (a save, say).
 pub fn close_if<R: Runtime>(app: &AppHandle<R>, ok: impl FnOnce(&Phase) -> bool) {
-    if end_if(app, ok) {
-        crate::windows::yield_focus(app, None);
-    }
-}
-
-/// [`close_session`], but the app stays active: a service chosen in the share sheet shows its
-/// UI (AirDrop, Mail…) in this app, and hiding the app would hide it too. Main thread only.
-pub(super) fn close_for_share<R: Runtime>(app: &AppHandle<R>, session: u64) {
-    end_if(app, |phase| phase.session() == Some(session));
-}
-
-/// Closes if `ok` holds and no dialog is open. Returns whether it closed.
-fn end_if<R: Runtime>(app: &AppHandle<R>, ok: impl FnOnce(&Phase) -> bool) -> bool {
-    {
-        let mut phase = phase(app);
+    let closed = end_if(app, |phase| {
         if phase.in_dialog() {
             log::info!("not closing the overlay while the Save dialog or share sheet is open");
             return false;
         }
-        if !ok(&phase) {
+        ok(phase)
+    });
+    if closed {
+        crate::windows::yield_focus(app, None);
+    }
+}
+
+/// Ends `session`'s share sheet and closes the overlay in one step, so nothing can start or
+/// close in between. The app stays active: a service chosen in the sheet shows its UI
+/// (AirDrop, Mail…) in this app, and hiding the app would hide it too. Returns whether
+/// `session` was the one sharing. Main thread only.
+pub(super) fn close_for_share<R: Runtime>(app: &AppHandle<R>, session: u64) -> bool {
+    end_if(app, |phase| phase.end_share(session))
+}
+
+/// Closes if `ok` (which may change the phase first) holds, under one lock. Returns whether it
+/// closed.
+fn end_if<R: Runtime>(app: &AppHandle<R>, ok: impl FnOnce(&mut Phase) -> bool) -> bool {
+    {
+        let mut phase = phase(app);
+        if !ok(&mut phase) {
             return false;
         }
         *phase = Phase::Idle;
