@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       dry-run:
-        description: Only build the Windows installer, from any branch. No release is touched.
+        description: Only build and sign the Windows installer, from main. No release is touched.
         type: boolean
         default: false
   release:
@@ -210,7 +210,8 @@ jobs:
           tauriScript: pnpm tauri
           args: --target universal-apple-darwin --bundles app,dmg
           tagName: v__VERSION__
-          releaseName: xcreenshot __VERSION__
+          # windows-upload drops "(adding Windows)" once the installer is in.
+          releaseName: xcreenshot __VERSION__ (adding Windows)
           releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: true
           uploadUpdaterJson: ${{ steps.secrets.outputs.signed == 'true' }}
@@ -239,7 +240,8 @@ jobs:
           tauriScript: pnpm tauri
           args: --target universal-apple-darwin --bundles app,dmg
           tagName: v__VERSION__
-          releaseName: xcreenshot __VERSION__
+          # windows-upload drops "(adding Windows)" once the installer is in.
+          releaseName: xcreenshot __VERSION__ (adding Windows)
           releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: true
           uploadUpdaterJson: ${{ steps.secrets.outputs.signed == 'true' }}
@@ -276,8 +278,9 @@ jobs:
         run: rm -f "$RUNNER_TEMP"/AuthKey_*.p8
 
   # Builds the NSIS installer and signs it for the updater, with a read-only token: it never
-  # touches the release. A dry run (workflow_dispatch with dry-run) builds any branch this way and
-  # uploads nothing.
+  # touches the release. A dry run (workflow_dispatch with dry-run) builds main this way and
+  # uploads nothing. Only main: the build has the updater key, so it never runs unreviewed code.
+  # To try a branch, use windows-test.yml, which has no secrets.
   windows:
     name: Build the Windows installer
     needs: plan
@@ -291,6 +294,9 @@ jobs:
       run:
         shell: bash
     steps:
+      - name: Only build from main
+        if: github.ref != 'refs/heads/main'
+        run: echo "::error::Run this workflow from main, not $GITHUB_REF_NAME"; exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -302,8 +308,6 @@ jobs:
         with:
           workspaces: src-tauri
           key: release-windows
-          # Dry runs from other branches read the cache but don't fill the quota with their own.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # createUpdaterArtifacts (tauri.conf.json) writes <installer>.exe.sig next to the installer,
       # signed with the same updater key as the macOS build.
@@ -340,12 +344,14 @@ jobs:
 
   # Runs no code from the build: it adds the installer and its .sig to the draft the macOS job
   # created, then merges the Windows entries into that job's latest.json. Running after both
-  # builds keeps one writer per file. If the Windows build or this job fails, the draft is deleted,
-  # so a macOS-only draft is never left to publish.
+  # builds keeps one writer per file. The macOS job titles the draft "… (adding Windows)" and this
+  # job removes that once it's done, so the draft says when it's ready to publish. If the Windows
+  # build fails, the run is cancelled or this job fails, the draft is deleted, so a macOS-only
+  # draft is never left to publish. It runs even when cancelled, to clean up.
   windows-upload:
     name: Add Windows to the v${{ needs.plan.outputs.version }} draft
     needs: [plan, build, windows]
-    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    if: ${{ always() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -373,24 +379,28 @@ jobs:
           name: windows-installer
           path: out
 
-      - name: Upload the installer
+      # Unsigned macOS test builds have no latest.json, so the updater offers neither platform.
+      # If the draft was published early, stop: updater-urls may be rewriting latest.json.
+      - name: Add Windows to the draft and latest.json
         run: |
+          draft=$(gh release view "v$VERSION" --json isDraft --jq .isDraft)
+          if [ "$draft" != true ]; then
+            echo "::error::v$VERSION was published before Windows was added; see docs/releasing.md."
+            exit 1
+          fi
           exe="out/xcreenshot_${VERSION}_x64-setup.exe"
           gh release upload "v$VERSION" "$exe" "$exe.sig" --clobber
-
-      # Unsigned macOS test builds have no latest.json, so the updater offers neither platform.
-      - name: Add Windows to latest.json
-        if: env.SIGNED == 'true'
-        run: |
-          dir="$RUNNER_TEMP/updater"
-          mkdir -p "$dir/merged"
-          gh release download "v$VERSION" --pattern latest.json --dir "$dir"
-          node scripts/release.ts add-windows "$dir/latest.json" \
-            "out/xcreenshot_${VERSION}_x64-setup.exe.sig" "$GH_REPO" "v$VERSION" \
-            > "$dir/merged/latest.json"
-          jq -e '.platforms | has("darwin-aarch64") and has("windows-x86_64")' \
-            "$dir/merged/latest.json" > /dev/null
-          gh release upload "v$VERSION" "$dir/merged/latest.json" --clobber
+          if [ "$SIGNED" = true ]; then
+            dir="$RUNNER_TEMP/updater"
+            mkdir -p "$dir/merged"
+            gh release download "v$VERSION" --pattern latest.json --dir "$dir"
+            node scripts/release.ts add-windows "$dir/latest.json" "$exe.sig" "$GH_REPO" \
+              "v$VERSION" > "$dir/merged/latest.json"
+            jq -e '.platforms | has("darwin-aarch64") and has("windows-x86_64")' \
+              "$dir/merged/latest.json" > /dev/null
+            gh release upload "v$VERSION" "$dir/merged/latest.json" --clobber
+          fi
+          gh release edit "v$VERSION" --title "xcreenshot $VERSION"
 
       # Only the draft this run made; a published release is never deleted.
       - name: Delete the unfinished draft

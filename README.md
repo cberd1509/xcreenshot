@@ -48,7 +48,7 @@ Download the `.dmg` from the [latest release](https://github.com/cberd1509/xcree
 
 **Windows** (10 and 11, 64-bit)
 
-Download the `x64-setup.exe` installer from the [latest release](https://github.com/cberd1509/xcreenshot/releases/latest) and run it. It isn't code signed yet, so the first time Windows may say it protected your PC: click **More info › Run anyway**. It checks for updates and asks before restarting to install one.
+Download the `x64-setup.exe` installer from the [latest release](https://github.com/cberd1509/xcreenshot/releases/latest) and run it (if the latest release has no `.exe` yet, Windows comes with the next one). It isn't code signed yet, so the first time Windows may say it protected your PC: click **More info › Run anyway**. It checks for updates and asks before restarting to install one.
 
 ## Usage
 

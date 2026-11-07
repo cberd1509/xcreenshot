@@ -9,14 +9,14 @@
    - `xcreenshot_<version>_x64-setup.exe`, the Windows installer, which the updater also uses, and its `.sig`
    - `latest.json`, the update manifest with the macOS and Windows entries (signed macOS builds only)
    - release notes taken from that version's `CHANGELOG.md` section, with a note about the unsigned Windows installer
-3. Download the DMG and the installer from the draft, install them and check that they work.
+3. Wait until the draft's title loses "(adding Windows)": the Windows installer and its `latest.json` entries go in last. Then download the DMG and the installer from the draft, install them and check that they work.
 4. Publish the draft. Publishing creates the `v<version>` tag. The workflow then points `latest.json` at the tag's download URLs (a few seconds), and the updater starts offering the new version.
 
 A waiting draft is left alone by later merges that don't change the version. To rebuild it from the latest `main`, run **Release** from the Actions tab on `main`: it deletes the draft and builds a new one. If that build fails or is cancelled, its unfinished draft is deleted too, so there's no draft until the next successful run. A published release is never rebuilt or deleted.
 
-The macOS job creates the draft. The Windows installer is built at the same time with a read-only token; once both builds are done, a separate job uploads it to the draft and adds its entries to the macOS job's `latest.json` (see [updates.md](updates.md#what-a-release-publishes)). If the Windows build or that job fails, the draft is deleted, so a draft without Windows is never left to publish. Run **Release** again to retry; re-running only the failed job doesn't work, because the draft is gone.
+The macOS job creates the draft. The Windows installer is built at the same time with a read-only token; once both builds are done, a separate job uploads it to the draft and adds its entries to the macOS job's `latest.json` (see [updates.md](updates.md#what-a-release-publishes)). If the Windows build fails, the run is cancelled or that job fails, the draft is deleted, so a draft without Windows is never left to publish. Run **Release** again to retry; re-running only the failed job doesn't work, because the draft is gone. If the draft is published before Windows is added, the job stops without touching it; add the installer and its `latest.json` entries by hand, or publish a patch release.
 
-To check the Windows build without a release, run **Release** with **dry-run** from any branch (`gh workflow run release.yml --ref <branch> -f dry-run=true`). It only builds and signs the installer; nothing is uploaded and no release is created or changed.
+To check the release's Windows build without a release, run **Release** with **dry-run** on `main` (`gh workflow run release.yml --ref main -f dry-run=true`). It builds and signs the installer with the updater key; nothing is uploaded and no release is created or changed. It refuses other branches, because the build has the updater key; to try a branch, use the Windows test build below.
 
 ## Secrets
 
