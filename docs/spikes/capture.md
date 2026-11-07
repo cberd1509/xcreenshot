@@ -427,3 +427,8 @@ captures:
 | Before | 109 ms, 71–200 ms (11 runs) | 38 ms |
 | Waiting for frames in the hidden window | 213 ms, 202–367 ms (8 runs, all gave up) | 135 ms |
 | After (transparent window, two frames) | 133 ms, 89–233 ms (8 runs, none gave up) | 56 ms |
+
+A second pair, run back to back on a quieter machine: before 95 ms (67–187 ms, after capture
+24 ms), after 121 ms (83–144 ms, after capture 58 ms, none gave up). The wait costs about two
+frames. Before, "painted" was logged before the frame reached the screen, so the real
+difference on screen is smaller.
