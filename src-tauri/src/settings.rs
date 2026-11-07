@@ -228,7 +228,14 @@ pub async fn set_pref<R: Runtime>(
     key: String,
     value: Value,
 ) -> Result<Settings, String> {
-    set_with(&app, app.global_shortcut(), &key, value).map_err(Into::into)
+    set_with(
+        &app,
+        app.global_shortcut(),
+        print_screen::SNIPPING_TOOL,
+        &key,
+        value,
+    )
+    .map_err(Into::into)
 }
 
 /// The overlay's own switches: Remember region and Magnifier (its ⋯ menu), and Quick copy (its
@@ -240,7 +247,14 @@ pub async fn set_capture_option<R: Runtime>(
     on: bool,
 ) -> Result<Settings, String> {
     capture_option(&key)?;
-    set_with(&app, app.global_shortcut(), &key, Value::Bool(on)).map_err(Into::into)
+    set_with(
+        &app,
+        app.global_shortcut(),
+        print_screen::SNIPPING_TOOL,
+        &key,
+        Value::Bool(on),
+    )
+    .map_err(Into::into)
 }
 
 fn capture_option(key: &str) -> Result<(), &'static str> {
@@ -250,9 +264,11 @@ fn capture_option(key: &str) -> Result<(), &'static str> {
     }
 }
 
+/// `snipping`: whether Snipping Tool has PrintScreen (see [`print_screen`]).
 pub(crate) fn set_with<R: Runtime>(
     app: &AppHandle<R>,
     shortcuts: &impl Registrar,
+    snipping: print_screen::SnippingTool,
     key: &str,
     value: Value,
 ) -> Result<Settings, &'static str> {
@@ -263,7 +279,7 @@ pub(crate) fn set_with<R: Runtime>(
         shortcuts,
         registered: &registered,
         login: login.as_deref(),
-        snipping: print_screen::SNIPPING_TOOL,
+        snipping,
     };
     prefs::with_store(app, |store| {
         let was_on = Prefs::load(store).remember_region;
@@ -775,7 +791,7 @@ mod tests {
         let first = block_on(get_prefs(h.clone()));
         assert_eq!(first, Settings::new(&Prefs::default(), first.version));
 
-        let saved = set_with(&h, &shortcuts, "magnifier", json!(true)).unwrap();
+        let saved = set_with(&h, &shortcuts, OFF, "magnifier", json!(true)).unwrap();
         assert!(saved.magnifier);
         assert!(saved.version > first.version);
         let loaded = block_on(get_prefs(h.clone()));
@@ -786,7 +802,7 @@ mod tests {
             [serde_json::to_string(&saved).unwrap()]
         );
 
-        let next = set_with(&h, &shortcuts, "shortcut", json!("Alt+Shift+F5")).unwrap();
+        let next = set_with(&h, &shortcuts, OFF, "shortcut", json!("Alt+Shift+F5")).unwrap();
         assert_eq!(next.shortcut, "Alt+Shift+F5");
         assert!(next.version > saved.version);
         assert_eq!(shortcuts.held(), ["Alt+Shift+F5"]);
@@ -798,8 +814,11 @@ mod tests {
             ("Alt+Shift+F5".to_owned(), None)
         );
 
-        assert_eq!(set_with(&h, &shortcuts, "nope", json!(true)), Err(UNKNOWN));
-        assert!(set_with(&h, &shortcuts, "shortcut", json!("S")).is_err());
+        assert_eq!(
+            set_with(&h, &shortcuts, OFF, "nope", json!(true)),
+            Err(UNKNOWN)
+        );
+        assert!(set_with(&h, &shortcuts, OFF, "shortcut", json!("S")).is_err());
         assert_eq!(prefs::load(&h).shortcut, "Alt+Shift+F5", "not saved");
         assert_eq!(
             heard.lock().unwrap().len(),

@@ -31,6 +31,8 @@ use tauri_plugin_global_shortcut::{GlobalShortcut, ShortcutState};
 const SHOW_EVENT: &str = "overlay:show";
 /// The overlay closed: the pages free their frames and selections.
 const CLOSED_EVENT: &str = "overlay:closed";
+/// Sent to every page when a capture ends (copy, save, share or Esc).
+pub const CAPTURE_CLOSED: &str = "capture:closed";
 /// Esc, forwarded to every overlay page.
 const ESCAPE_EVENT: &str = "overlay:escape";
 const ESCAPE: &str = "Escape";
@@ -366,9 +368,12 @@ fn end_if<R: Runtime>(
     // A notice hidden for the capture comes back after a share too; only giving focus back
     // (in `close_if`) is skipped. First, so a notice shown again counts as an open window.
     crate::notice::show_after_capture(app);
-    // Its "Try it" box waits for this. Only a close that ended a capture counts.
-    if before.is_some() {
-        crate::onboarding::capture_closed(app);
+    // For any page that waits for a capture to end (onboarding's "Try it"). Only a close
+    // that ended a capture counts.
+    if before.is_some()
+        && let Err(e) = app.emit(CAPTURE_CLOSED, ())
+    {
+        log::warn!("could not send {CAPTURE_CLOSED}: {e}");
     }
     // Last, so a waiting update restart sees the overlay gone.
     app.state::<Overlay>().idle.notify_waiters();
@@ -1103,11 +1108,23 @@ pub(crate) mod tests {
     fn close_session_leaves_a_newer_session_alone() {
         let app = app();
         let h = app.handle();
+        let ended = std::sync::Arc::new(AtomicU64::new(0));
+        let count = ended.clone();
+        tauri::Listener::listen_any(h, CAPTURE_CLOSED, move |_| {
+            count.fetch_add(1, Ordering::Relaxed);
+        });
         let session = open(h, &[1]);
         close_session(h, session + 1);
         assert!(is_open(h, session));
+        assert_eq!(ended.load(Ordering::Relaxed), 0);
         close_session(h, session);
         assert!(is_idle(h));
+        close(h);
+        assert_eq!(
+            ended.load(Ordering::Relaxed),
+            1,
+            "once, for the close that ended it"
+        );
     }
 
     #[test]

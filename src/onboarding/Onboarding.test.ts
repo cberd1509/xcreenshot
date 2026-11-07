@@ -26,6 +26,8 @@ const SHORTCUT = 'Control+Shift+Super+S'
 const FALLBACK = 'Control+Shift+PrintScreen'
 
 let calls: string[]
+/** The `claim` argument of each PrtSc check. */
+let claims: boolean[]
 let granted: boolean
 let registered: boolean
 let taken: boolean
@@ -63,6 +65,7 @@ describe('Onboarding', () => {
     vi.useFakeTimers()
     platform.mac = true
     calls = []
+    claims = []
     granted = false
     registered = true
     taken = false
@@ -75,6 +78,7 @@ describe('Onboarding', () => {
     mockIPC(
       (cmd, args) => {
         calls.push(cmd)
+        if (cmd === 'onboarding_print_screen') claims.push((args as { claim: boolean }).claim)
         if (failing.has(cmd)) throw new Error('nope')
         if (cmd === 'permission_granted') return granted
         if (cmd === 'capture_shortcut') return { accelerator: settings.shortcut, registered }
@@ -388,6 +392,7 @@ describe('Onboarding', () => {
       expect(screen.queryByText('Want to use PrtSc instead?')).toBeNull()
       expect(count('permission_granted')).toBe(0)
       expect(count('permission_pane')).toBe(0)
+      expect(count('onboarding_print_screen')).toBe(0)
       expect(noButton('Later')).toBeNull()
       expect(isPrimary(button('Done'))).toBe(true)
       await emit('capture:closed')
@@ -418,16 +423,34 @@ describe('Onboarding', () => {
       await fireEvent.focus(window)
       await after()
       await changed('PrintScreen')
-      expect(count('onboarding_print_screen')).toBe(2)
+      // Only claims PrtSc once the steps were shown.
+      expect(claims).toEqual([false, true])
       expect(screen.queryByText('Want to use PrtSc instead?')).toBeNull()
       expect(changeButton()).toHaveAccessibleName('Change shortcut, currently PrintScreen')
       expect(screen.getByText('Works from any app. Click to change it.')).toBeInTheDocument()
+    })
+
+    it('drops the PrtSc steps when another shortcut is picked here', async () => {
+      taken = true
+      Object.assign(settings, { shortcut: FALLBACK })
+      await mount()
+      expect(screen.getByText('Want to use PrtSc instead?')).toBeInTheDocument()
+      await fireEvent.click(changeButton())
+      await after()
+      await fireEvent.keyDown(window, { code: 'KeyD', altKey: true })
+      await fireEvent.keyUp(window, { code: 'KeyD', altKey: true })
+      await after()
+      expect(settings.shortcut).toBe('Alt+D')
+      expect(screen.queryByText('Want to use PrtSc instead?')).toBeNull()
+      expect(screen.getByText('Works from any app. Click to change it.')).toBeInTheDocument()
+      expect(claims).toEqual([false])
     })
 
     it('logs failed commands', async () => {
       const error = vi.spyOn(console, 'error').mockImplementation(() => {})
       failing = new Set(['onboarding_print_screen', 'open_keyboard_settings'])
       taken = true
+      Object.assign(settings, { shortcut: FALLBACK })
       await mount()
       expect(error).toHaveBeenCalledWith('onboarding_print_screen failed', expect.any(Error))
       failing = new Set(['open_keyboard_settings'])

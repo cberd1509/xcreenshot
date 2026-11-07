@@ -7,7 +7,7 @@
   import { listen } from '@tauri-apps/api/event'
   import { getCurrentWindow } from '@tauri-apps/api/window'
   import { Check } from '@lucide/svelte'
-  import { onMount } from 'svelte'
+  import { onMount, untrack } from 'svelte'
   import ShortcutKbd from '$lib/components/ShortcutKbd.svelte'
   import ShortcutRecorder from '$lib/components/ShortcutRecorder.svelte'
   import { isMac } from '$lib/keys'
@@ -20,6 +20,8 @@
   /** Sent by Rust when a capture closes (copy, save, share or Esc). */
   const CAPTURE_CLOSED = 'capture:closed'
   const IN_USE = 'That shortcut is in use by another app.'
+  /** Used while Snipping Tool has PrtSc (Rust's `print_screen::FALLBACK`). */
+  const FALLBACK = 'Control+Shift+PrintScreen'
 
   /** Capture works: the permission is on (macOS; always elsewhere). */
   let granted = $state(!isMac)
@@ -83,16 +85,19 @@
 
   /** Whether the shortcut is registered; again when it changes or the window gets focus. */
   function loadRegistered() {
+    if (!settings.shortcut) return // Not loaded yet.
     invoke<{ registered: boolean }>('capture_shortcut')
       .then((s) => (registered = s.registered))
       .catch(failed('capture_shortcut'))
   }
 
-  /** Windows: whether Snipping Tool still has PrtSc. Rust switches to PrtSc once it doesn't,
-   * and the new shortcut arrives as a settings change. */
+  /** Windows: whether Snipping Tool keeps the shortcut on Ctrl Shift PrtSc. Once the steps
+   * were shown, Rust switches to PrtSc when Snipping Tool lets go, and the new shortcut
+   * arrives as a settings change. Any other shortcut was picked, so there's nothing to say. */
   function checkPrintScreen() {
-    if (isMac) return
-    invoke<boolean>('onboarding_print_screen')
+    const claim = untrack(() => taken)
+    if (isMac || settings.shortcut !== FALLBACK) return void (taken = false)
+    invoke<boolean>('onboarding_print_screen', { claim })
       .then((t) => (taken = t))
       .catch(failed('onboarding_print_screen'))
   }
@@ -108,14 +113,13 @@
 
   // Follows the shortcut, which can change here, in Settings or when PrtSc is claimed.
   $effect(() => {
-    void settings.shortcut
     loadRegistered()
+    checkPrintScreen()
   })
 
   onMount(() => {
     const unlisten = listen(CAPTURE_CLOSED, () => (tried = true))
     unlisten.catch(failed('listen'))
-    checkPrintScreen()
     if (isMac) {
       void check()
       invoke<string>('permission_pane')
@@ -150,16 +154,13 @@
 
 <svelte:window {onfocus} />
 
-{#snippet number(n: number)}
+<!-- A step's number: 22 px in the permission steps, 20 px in the PrtSc box. -->
+{#snippet number(n: number, small = false)}
   <span
-    class="flex size-[22px] shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold"
-    aria-hidden="true">{n}</span
-  >
-{/snippet}
-
-{#snippet smallNumber(n: number)}
-  <span
-    class="flex size-5 shrink-0 items-center justify-center rounded-full bg-border text-[11px] font-semibold text-foreground"
+    class={[
+      'flex shrink-0 items-center justify-center rounded-full font-semibold',
+      small ? 'size-5 bg-border text-[11px] text-foreground' : 'size-[22px] bg-muted text-xs',
+    ]}
     aria-hidden="true">{n}</span
   >
 {/snippet}
@@ -278,11 +279,11 @@
       <h2 id="print-screen" class="text-sm/[normal] font-semibold">Want to use PrtSc instead?</h2>
       <ol class="flex flex-col gap-2 text-[13px]/5 text-subtle-foreground">
         <li class="flex items-start gap-3">
-          {@render smallNumber(1)}
+          {@render number(1, true)}
           <span>Click <b class="font-semibold text-foreground">Open keyboard settings</b>.</span>
         </li>
         <li class="flex items-start gap-3">
-          {@render smallNumber(2)}
+          {@render number(2, true)}
           <span>
             Turn off
             <b class="font-semibold text-foreground"
@@ -291,7 +292,7 @@
           </span>
         </li>
         <li class="flex items-start gap-3">
-          {@render smallNumber(3)}
+          {@render number(3, true)}
           <span>Come back here. xcreenshot switches to PrtSc on its own.</span>
         </li>
       </ol>
