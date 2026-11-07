@@ -125,10 +125,11 @@ fn open<R: Runtime>(
         if let Some(pending) = app.state::<Notices>().lock().get_mut(label) {
             pending.hidden = true;
         }
-        Ok(())
-    } else {
-        window.set_focus()
+    } else if let Err(e) = window.set_focus() {
+        // Still on screen and usable: a click focuses it.
+        log::warn!("could not focus {label}: {e}");
     }
+    Ok(())
 }
 
 /// The window closed: its question is dropped, so `ask` resolves to `None`.
@@ -144,19 +145,22 @@ fn set_hidden<R: Runtime>(app: &AppHandle<R>, hide: bool) {
     // Collected first: the lock isn't held while windows hide or show.
     let labels: Vec<String> = notices
         .lock()
-        .iter_mut()
+        .iter()
         .filter(|(_, p)| p.hidden != hide)
-        .map(|(label, p)| {
-            p.hidden = hide;
-            label.clone()
-        })
+        .map(|(label, _)| label.clone())
         .collect();
     for label in labels {
         let Some(window) = app.get_webview_window(&label) else {
             continue;
         };
-        if let Err(e) = if hide { window.hide() } else { window.show() } {
-            log::warn!("could not hide or show {label}: {e}");
+        // Marked only once done, so a failed one is tried again next time.
+        match if hide { window.hide() } else { window.show() } {
+            Ok(()) => {
+                if let Some(pending) = notices.lock().get_mut(&label) {
+                    pending.hidden = hide;
+                }
+            }
+            Err(e) => log::warn!("could not hide or show {label}: {e}"),
         }
     }
 }
@@ -180,18 +184,18 @@ pub(crate) fn notice<R: Runtime>(window: WebviewWindow<R>) -> Option<Notice> {
     open.get(window.label()).map(|p| p.notice.clone())
 }
 
-/// A button was clicked (`primary`: the main one): answers and closes the window. An error
-/// means the window is still open; clicking again closes it.
+/// A button was clicked (`primary`: the main one): closes the window, then answers. An error
+/// means the window is still open and unanswered; clicking again tries again.
 #[tauri::command]
 pub(crate) fn notice_answer<R: Runtime>(
     window: WebviewWindow<R>,
     primary: bool,
 ) -> Result<(), String> {
+    window.close().map_err(|e| e.to_string())?;
     let pending = window.state::<Notices>().lock().remove(window.label());
     if let Some(pending) = pending {
         let _ = pending.answer.send(primary);
     }
-    window.close().map_err(|e| e.to_string())?;
     crate::windows::yield_focus(window.app_handle(), Some(window.label()));
     Ok(())
 }

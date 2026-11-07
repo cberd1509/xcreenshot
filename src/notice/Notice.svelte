@@ -1,6 +1,7 @@
 <script lang="ts">
   import { failed } from '$lib/log'
   import { invoke } from '@tauri-apps/api/core'
+  import { getCurrentWindow } from '@tauri-apps/api/window'
   import { onMount } from 'svelte'
   import ShortcutKbd from '$lib/components/ShortcutKbd.svelte'
   import { Button } from '$lib/components/ui/button'
@@ -13,10 +14,21 @@
   let answered = false
   const shown = $derived(notice && card(notice))
 
+  /** Closes a window with nothing to show; Rust then drops its question. */
+  function close() {
+    getCurrentWindow().close().catch(failed('close'))
+  }
+
   onMount(() => {
     invoke<Notice | null>('notice')
-      .then((n) => (notice = n))
-      .catch(failed('notice'))
+      .then((n) => {
+        notice = n
+        if (!n) close()
+      })
+      .catch((e: unknown) => {
+        failed('notice')(e)
+        close()
+      })
   })
 
   // Enter clicks the main button. No focus ring until the keyboard moves focus, as on the board.

@@ -197,6 +197,9 @@ fn start_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) -> Option<u64
         app.state::<Overlay>().idle.notify_waiters();
         return None;
     };
+    // Before the capture, so a notice isn't in the frame; with none open it costs nothing. The
+    // overlay is always on top: a notice waits until it closes.
+    crate::notice::hide_for_capture(app);
     // Before the capture, so the pages learn whether Rust owns Esc.
     let escape_shortcut = sync_escape(app);
     let worker = app.clone();
@@ -225,9 +228,6 @@ fn start_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) -> Option<u64
         close(app);
         return None;
     }
-    // Last, so neither the capture nor the overlay waits for it. The overlay is always on top:
-    // a notice waits until it closes.
-    crate::notice::hide_for_capture(app);
     Some(session)
 }
 

@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte'
+import userEvent from '@testing-library/user-event'
 import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { shortcutKeys } from '$lib/keys'
@@ -15,6 +16,7 @@ const SHORTCUT: Shown = {
 
 let notice: Shown | null
 let answers: boolean[]
+let closed: number
 let failing: Set<string>
 
 const button = (name: string) => screen.getByRole('button', { name })
@@ -32,12 +34,14 @@ async function mount(shown: Shown | null) {
 describe('Notice', () => {
   beforeEach(() => {
     answers = []
+    closed = 0
     failing = new Set()
     mockWindows('notice-update')
     mockIPC((cmd, args) => {
       if (failing.has(cmd)) throw new Error('nope')
       if (cmd === 'notice') return notice
       if (cmd === 'notice_answer') answers.push((args as { primary: boolean }).primary)
+      if (cmd === 'plugin:window|close') closed++
     })
   })
 
@@ -86,11 +90,21 @@ describe('Notice', () => {
   })
 
   it('leaves Enter on a button to the button', async () => {
+    const user = userEvent.setup()
     await mount(UPDATE)
-    await fireEvent.keyDown(button('Later'), { key: 'Enter' })
-    await fireEvent.keyDown(window, { key: 'a' })
+    button('Later').focus()
+    await user.keyboard('{Enter}')
+    await user.keyboard('a')
     await settle()
-    expect(answers).toEqual([])
+    expect(answers).toEqual([false])
+  })
+
+  it('clicks the focused main button on Enter', async () => {
+    const user = userEvent.setup()
+    await mount(UPDATE)
+    await user.keyboard('{Enter}')
+    await settle()
+    expect(answers).toEqual([true])
   })
 
   it('shows the shortcut it moved to as key caps', async () => {
@@ -115,9 +129,10 @@ describe('Notice', () => {
     expect(answers).toEqual([true])
   })
 
-  it('shows nothing and ignores keys without a notice', async () => {
+  it('closes, shows nothing and ignores keys without a notice', async () => {
     await mount(null)
     expect(screen.queryByRole('button')).toBeNull()
+    expect(closed).toBe(1)
     await fireEvent.keyDown(window, { key: 'Escape' })
     await settle()
     expect(answers).toEqual([])
@@ -136,12 +151,20 @@ describe('Notice', () => {
     expect(answers).toEqual([false])
   })
 
-  it('logs when the notice cannot be read', async () => {
+  it('logs and closes when the notice cannot be read', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     failing = new Set(['notice'])
     await mount(UPDATE)
     expect(error).toHaveBeenCalledWith('notice failed', expect.any(Error))
     expect(screen.queryByRole('button')).toBeNull()
+    expect(closed).toBe(1)
+  })
+
+  it('logs when the window cannot close', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    failing = new Set(['notice', 'plugin:window|close'])
+    await mount(UPDATE)
+    expect(error).toHaveBeenCalledWith('close failed', expect.any(Error))
   })
 })
 

@@ -176,9 +176,16 @@ pub fn tell<R: Runtime>(
             accelerator: FALLBACK.to_owned(),
         };
         // "Open Settings" is the second button; "OK" the main one.
-        if notice::ask(&app, notice).await == Some(false)
-            && let Err(e) = open_settings(&app)
-        {
+        if notice::ask(&app, notice).await != Some(false) {
+            return;
+        }
+        let handle = app.clone();
+        let opened = app.run_on_main_thread(move || {
+            if let Err(e) = open_settings(&handle) {
+                log::error!("could not open settings: {e}");
+            }
+        });
+        if let Err(e) = opened {
             log::error!("could not open settings: {e}");
         }
     })

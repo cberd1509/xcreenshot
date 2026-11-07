@@ -34,8 +34,9 @@ pub fn yield_focus<R: Runtime>(app: &AppHandle<R>, closing: Option<&str>) {
         Some(label.as_str()) != closing
             && crate::overlay::display_id(label).is_none()
             && w.is_visible().unwrap_or(false)
-    }) {
-        let _ = app.hide();
+    }) && let Err(e) = app.hide()
+    {
+        log::warn!("could not give focus back: {e}");
     }
     #[cfg(not(target_os = "macos"))]
     let _ = (app, closing);
