@@ -48,20 +48,6 @@ pub fn show_window<'a, R: Runtime>(
     Ok(window)
 }
 
-/// Gives focus back to the app the user was in (macOS: hides this menu bar app), unless one of
-/// its regular windows (Settings, a notice) other than `closing` is on screen. Elsewhere the
-/// system does this when a window hides or closes.
-pub fn yield_focus<R: Runtime>(app: &AppHandle<R>, closing: Option<&str>) {
-    #[cfg(target_os = "macos")]
-    if !window_open(app, closing)
-        && let Err(e) = app.hide()
-    {
-        log::warn!("could not give focus back: {e}");
-    }
-    #[cfg(not(target_os = "macos"))]
-    let _ = (app, closing);
-}
-
 /// Whether one of the app's regular windows (Settings, a notice) other than `closing` is on
 /// screen. Overlay windows don't count.
 pub fn window_open<R: Runtime>(app: &AppHandle<R>, closing: Option<&str>) -> bool {

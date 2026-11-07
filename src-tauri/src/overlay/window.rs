@@ -314,7 +314,7 @@ pub fn close_if<R: Runtime>(app: &AppHandle<R>, ok: impl FnOnce(&Phase) -> bool)
     // Give focus back to the app the user was in, even with Settings open behind it. Only the
     // close that ends the capture does: a second close has nothing to hand back.
     if let Some(before) = before {
-        focus::hand_back(app, before);
+        focus::hand_back(app, before, None);
     }
 }
 

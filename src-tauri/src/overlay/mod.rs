@@ -40,6 +40,11 @@ pub fn is_busy<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
     window::phase(app).session().is_some()
 }
 
+/// The app in front at the hotkey of the capture under way; `None` if no capture is.
+pub fn front<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<Front> {
+    window::phase(app).front()
+}
+
 /// Overlay windows to create and destroy so there is exactly one per display.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct WindowDiff {
@@ -220,14 +225,21 @@ impl Phase {
         }
     }
 
+    /// The app in front at the hotkey of the capture or session under way, if any.
+    pub fn front(&self) -> Option<Front> {
+        match self {
+            Phase::Idle => None,
+            Phase::Capturing { front, .. } => Some(*front),
+            Phase::Open(s) => Some(s.front),
+        }
+    }
+
     /// Ends the capture or session, if any, and returns the app that was in front at its
     /// hotkey: `None` if there was nothing to end.
     pub fn end(&mut self) -> Option<Front> {
-        match std::mem::take(self) {
-            Phase::Idle => None,
-            Phase::Capturing { front, .. } => Some(front),
-            Phase::Open(s) => Some(s.front),
-        }
+        let front = self.front();
+        *self = Phase::Idle;
+        front
     }
 
     /// The capture finished. Opens the session if this capture is still current (Esc may have
@@ -633,6 +645,22 @@ pub(crate) mod tests {
             .unwrap();
         assert!(!p.begin(3, Instant::now()), "pressed while open");
         assert_eq!(p.session(), Some(1));
+    }
+
+    #[test]
+    fn the_app_in_front_lasts_from_the_hotkey_to_the_close() {
+        let mut p = Phase::default();
+        assert_eq!(p.front(), None);
+        p.set_front(Front::Us);
+        assert_eq!(p.front(), None, "nothing to record it for");
+        assert!(p.begin(1, Instant::now()));
+        assert_eq!(p.front(), Some(Front::Unknown));
+        p.set_front(Front::Us);
+        p.open(1, vec![frame(1, 4, 2)], None, true, Some(&[]))
+            .unwrap();
+        assert_eq!(p.front(), Some(Front::Us));
+        assert_eq!(p.end(), Some(Front::Us));
+        assert_eq!((p.front(), p.end()), (None, None));
     }
 
     #[test]
