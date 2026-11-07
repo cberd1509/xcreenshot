@@ -59,7 +59,7 @@ Until Windows ships, a Windows installer for testing comes from the **Windows te
 workflow (`.github/workflows/windows-test.yml`). Run it from the Actions tab, or:
 
 ```sh
-gh workflow run windows-test.yml -f ref=<branch>
+gh workflow run windows-test.yml --ref <branch>
 ```
 
 It builds the NSIS installer from that branch and uploads it to a **draft** release named
