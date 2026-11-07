@@ -15,6 +15,7 @@
 
 use super::{FrameInfo, Phase, captured_all, diff, display_at, display_id, label, ms_since};
 use crate::capture::{self, Bounds, CaptureError, Display, DisplayFrame};
+use crate::focus;
 use crate::region::{self, Region};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -54,8 +55,12 @@ pub struct Overlay {
 
 impl Overlay {
     pub(super) fn phase(&self) -> MutexGuard<'_, Phase> {
-        self.phase.lock().unwrap_or_else(PoisonError::into_inner)
+        lock(&self.phase)
     }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 pub(crate) fn phase<R: Runtime>(app: &AppHandle<R>) -> MutexGuard<'_, Phase> {
@@ -71,7 +76,7 @@ fn set_shown<R: Runtime>(window: &WebviewWindow<R>, on: bool) -> tauri::Result<(
     }
     if let Some(display) = display_id(window.label()) {
         let overlay = window.state::<Overlay>();
-        let mut shown = overlay.shown.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut shown = lock(&overlay.shown);
         shown.retain(|&d| d != display);
         if on {
             shown.push(display);
@@ -85,11 +90,7 @@ fn set_shown<R: Runtime>(window: &WebviewWindow<R>, on: bool) -> tauri::Result<(
 #[cfg(test)]
 pub(super) fn shown<R: Runtime>(app: &AppHandle<R>) -> Vec<u32> {
     let overlay = app.state::<Overlay>();
-    let mut shown = overlay
-        .shown
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone();
+    let mut shown = lock(&overlay.shown).clone();
     shown.sort_unstable();
     shown
 }
@@ -197,6 +198,9 @@ fn start_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) -> Option<u64
         app.state::<Overlay>().idle.notify_waiters();
         return None;
     };
+    // Before any overlay window takes focus.
+    let front = focus::frontmost(app);
+    phase(app).set_front(front);
     // Before the capture, so a notice isn't in the frame; with none open it costs nothing. The
     // overlay is always on top: a notice waits until it closes.
     crate::notice::hide_for_capture(app);
@@ -300,15 +304,17 @@ pub fn close<R: Runtime>(app: &AppHandle<R>) {
 /// [`close`], only if `ok` holds for the phase. Checked and closed under one lock, so nothing
 /// can start in between (a save, say).
 pub fn close_if<R: Runtime>(app: &AppHandle<R>, ok: impl FnOnce(&Phase) -> bool) {
-    let closed = end_if(app, |phase| {
+    let before = end_if(app, |phase| {
         if phase.in_dialog() {
             log::info!("not closing the overlay while the Save dialog or share sheet is open");
             return false;
         }
         ok(phase)
     });
-    if closed {
-        crate::windows::yield_focus(app, None);
+    // Give focus back to the app the user was in, even with Settings open behind it. Only the
+    // close that ends the capture does: a second close has nothing to hand back.
+    if let Some(before) = before {
+        focus::hand_back(app, before);
     }
 }
 
@@ -317,19 +323,23 @@ pub fn close_if<R: Runtime>(app: &AppHandle<R>, ok: impl FnOnce(&Phase) -> bool)
 /// (AirDrop, Mail…) in this app, and hiding the app would hide it too. Returns whether
 /// `session` was the one sharing. Main thread only.
 pub(crate) fn close_for_share<R: Runtime>(app: &AppHandle<R>, session: u64) -> bool {
-    end_if(app, |phase| phase.end_share(session))
+    end_if(app, |phase| phase.end_share(session)).is_some()
 }
 
-/// Closes if `ok` (which may change the phase first) holds, under one lock. Returns whether it
-/// closed.
-fn end_if<R: Runtime>(app: &AppHandle<R>, ok: impl FnOnce(&mut Phase) -> bool) -> bool {
-    {
+/// Closes if `ok` (which may change the phase first) holds, under one lock. Returns the app
+/// that was in front at the capture's hotkey if this ended a capture; `None` if `ok` failed
+/// or nothing was open (see [`Phase::end`]).
+fn end_if<R: Runtime>(
+    app: &AppHandle<R>,
+    ok: impl FnOnce(&mut Phase) -> bool,
+) -> Option<focus::Front> {
+    let before = {
         let mut phase = phase(app);
         if !ok(&mut phase) {
-            return false;
+            return None;
         }
-        *phase = Phase::Idle;
-    }
+        phase.end()
+    };
     sync_escape(app);
     hide(app);
     for label in app
@@ -342,11 +352,11 @@ fn end_if<R: Runtime>(app: &AppHandle<R>, ok: impl FnOnce(&mut Phase) -> bool) -
         }
     }
     // A notice hidden for the capture comes back after a share too; only giving focus back
-    // (in `close_if`) is skipped.
+    // (in `close_if`) is skipped. First, so a notice shown again counts as an open window.
     crate::notice::show_after_capture(app);
     // Last, so a waiting update restart sees the overlay gone.
     app.state::<Overlay>().idle.notify_waiters();
-    true
+    before
 }
 
 /// Hides every overlay window, keeping the session (the Save dialog hides them this way).
@@ -1004,6 +1014,32 @@ pub(crate) mod tests {
         // The windows stay, hidden, for the next capture.
         assert_eq!(overlay_labels(h), ["overlay-1"]);
         open(h, &[1]);
+    }
+
+    #[test]
+    fn closing_a_capture_hands_focus_back_once_to_the_app_in_front() {
+        use crate::focus::tests::{Fake, SAFARI};
+        let fake = Fake::new(Some(SAFARI));
+        let app = mock_builder()
+            .manage(Overlay::default())
+            .manage(focus::Focus::new(fake.clone()))
+            .build(mock_context(noop_assets()))
+            .unwrap();
+        let h = app.handle();
+        // Nothing else open: hide, as before.
+        open(h, &[1]);
+        close(h);
+        assert_eq!(fake.calls(), ["hide"]);
+        // Settings open behind Safari: Safari comes back, not Settings.
+        WebviewWindowBuilder::new(h, "settings", WebviewUrl::default())
+            .build()
+            .unwrap();
+        open(h, &[1]);
+        close(h);
+        assert_eq!(fake.calls(), ["hide", "activate 7"]);
+        // A second close of the same capture leaves focus alone.
+        close(h);
+        assert_eq!(fake.calls().len(), 2);
     }
 
     #[test]

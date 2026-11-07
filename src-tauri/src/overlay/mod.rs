@@ -16,6 +16,7 @@ pub(crate) mod window;
 pub use window::{Overlay, global_escape, prewarm, start_capture};
 
 use crate::capture::{Density, Display, DisplayFrame, PixelRect};
+use crate::focus::Front;
 use crate::region::{self, LogicalRect, Monitor, Region};
 use image::RgbaImage;
 use std::sync::Arc;
@@ -123,6 +124,8 @@ pub enum Phase {
     Capturing {
         session: u64,
         started: Instant,
+        /// The app in front at the hotkey, to hand focus back to on close.
+        front: Front,
     },
     Open(Session),
 }
@@ -149,6 +152,7 @@ pub struct Session {
     saves: u32,
     /// Whether Rust held Esc when the session opened (see [`Phase::wants_escape`]).
     escape_shortcut: bool,
+    front: Front,
 }
 
 /// A dialog over the overlay. One at a time; Esc is its while it is open.
@@ -201,8 +205,29 @@ impl Phase {
         if !matches!(self, Phase::Idle) {
             return false;
         }
-        *self = Phase::Capturing { session, started };
+        *self = Phase::Capturing {
+            session,
+            started,
+            front: Front::Unknown,
+        };
         true
+    }
+
+    /// Records the app in front for the capture under way.
+    pub fn set_front(&mut self, app: Front) {
+        if let Phase::Capturing { front, .. } = self {
+            *front = app;
+        }
+    }
+
+    /// Ends the capture or session, if any, and returns the app that was in front at its
+    /// hotkey: `None` if there was nothing to end.
+    pub fn end(&mut self) -> Option<Front> {
+        match std::mem::take(self) {
+            Phase::Idle => None,
+            Phase::Capturing { front, .. } => Some(front),
+            Phase::Open(s) => Some(s.front),
+        }
     }
 
     /// The capture finished. Opens the session if this capture is still current (Esc may have
@@ -222,6 +247,7 @@ impl Phase {
         let Phase::Capturing {
             session: id,
             started,
+            front,
         } = *self
         else {
             return None;
@@ -271,6 +297,7 @@ impl Phase {
             dialog: None,
             saves: 0,
             escape_shortcut,
+            front,
         });
         Some(shows)
     }
