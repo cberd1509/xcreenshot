@@ -85,11 +85,14 @@ describe.each([
 
   it('keeps the title and descriptions for both platforms', () => {
     render(release)
-    const meta = $$('title, meta[name="description"], meta[property^="og:"]')
-      .map((el) => el.textContent || el.getAttribute('content'))
-      .join(' ')
-    expect(meta).not.toMatch(/menu bar(?! or system tray)/)
-    expect($('title')?.textContent).toBe('xcreenshot — screenshots for macOS and Windows')
+    const content = (selector: string) => $(selector)?.getAttribute('content')
+    expect($('title')?.textContent).toBe('xcreenshot — a screenshot app that stays out of the way')
+    expect(content('meta[property="og:title"]')).toBe($('title')?.textContent)
+    expect(content('meta[name="description"]')).toMatch(/lives in your menu bar or system tray\.$/)
+    expect(content('meta[property="og:description"]')).toBe(
+      'Press the shortcut, drag a region, mark it up, then copy or save. It lives in your menu ' +
+        'bar or system tray.',
+    )
   })
 })
 

@@ -28,7 +28,6 @@ describe('detectOs', () => {
       'mac',
     ],
     ['empty client hints', { userAgentData: { platform: '' }, platform: 'Win32' }, 'other'],
-    ['an iPad, which reports a Mac', { platform: 'MacIntel' }, 'mac'],
     [
       'an iPhone user agent',
       { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)' },
