@@ -129,7 +129,8 @@ fn open<R: Runtime>(
         }
     });
     if let Some(pending) = app.state::<Notices>().lock().get_mut(label) {
-        pending.hidden = busy;
+        // Never un-hides: a capture that began meanwhile may have hidden it already.
+        pending.hidden |= busy;
         pending.front = front;
     }
     if !busy && let Err(e) = window.set_focus() {
