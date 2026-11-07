@@ -9,6 +9,7 @@ type Props = Partial<{
   tool: Tool | null
   canUndo: boolean
   mac: boolean
+  canShare: boolean
   drawable: boolean
   text: ShownTextOptions | null
   ontext: (t: Partial<TextOptions>) => void
@@ -19,6 +20,7 @@ function setup(props: Props = {}) {
   const actions: ToolbarActions = {
     copy: vi.fn<() => void>(),
     save: vi.fn<() => void>(),
+    share: vi.fn<ToolbarActions['share']>(),
     cancel: vi.fn<() => void>(),
     option: vi.fn<ToolbarActions['option']>(),
   }
@@ -46,6 +48,7 @@ function setup(props: Props = {}) {
       options: { rememberRegion: true, magnifier: false },
       actions,
       mac: true,
+      canShare: true,
       ...handlers,
       ...props,
     },
@@ -233,7 +236,7 @@ describe('Toolbar', () => {
     expect(style().color).toBe('#3B82F6')
   })
 
-  it('copies, saves and cancels; Share is coming', async () => {
+  it('copies, saves and cancels', async () => {
     const { actions, user } = setup()
     await user.click(button('Copy'))
     await user.click(button('Save'))
@@ -241,9 +244,28 @@ describe('Toolbar', () => {
     expect(actions.copy).toHaveBeenCalledOnce()
     expect(actions.save).toHaveBeenCalledOnce()
     expect(actions.cancel).toHaveBeenCalledOnce()
-    expect(button('Share')).toHaveAttribute('aria-disabled', 'true')
-    await user.hover(button('Share'))
-    expect(await tooltip('Coming soon')).toBeInTheDocument()
+  })
+
+  it('shares under the Share button, between ⋯ and Save', async () => {
+    const { actions, user } = setup()
+    const share = button('Share')
+    const names = [...screen.getByRole('toolbar', { name: 'Capture actions' }).children]
+      .map((b) => b.getAttribute('aria-label') ?? b.textContent?.trim())
+      .filter(Boolean)
+    expect(names).toEqual(['More', 'Share', 'Save', 'Copy', 'Cancel'])
+    // Made up at run time, so only the button's real rect can match it.
+    const at = { x: Math.random() * 500, y: Math.random() * 500, width: 80, height: 36 }
+    vi.spyOn(share, 'getBoundingClientRect').mockReturnValue(DOMRect.fromRect(at) as DOMRect)
+    await user.hover(share)
+    expect(await tooltip('Share')).toBeInTheDocument()
+    await user.click(share)
+    expect(actions.share).toHaveBeenCalledExactlyOnceWith(at)
+  })
+
+  it('has no Share button without a share sheet', () => {
+    setup({ canShare: false })
+    expect(button('Save')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Share' })).toBeNull()
   })
 
   it('shows the platform key on Copy', async () => {

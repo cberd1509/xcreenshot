@@ -65,6 +65,7 @@
   const actions: ToolbarActions = $derived({
     copy: noop,
     save: noop,
+    share: noop,
     cancel: noop,
     option: noop,
     ...given,

@@ -58,7 +58,7 @@ impl Overlay {
     }
 }
 
-pub(super) fn phase<R: Runtime>(app: &AppHandle<R>) -> MutexGuard<'_, Phase> {
+pub(crate) fn phase<R: Runtime>(app: &AppHandle<R>) -> MutexGuard<'_, Phase> {
     app.state::<Overlay>().inner().phase()
 }
 
@@ -291,8 +291,8 @@ pub fn close_session<R: Runtime>(app: &AppHandle<R>, session: u64) {
 }
 
 /// Hides every overlay, frees the frames, releases Esc and allows the next capture. Does
-/// nothing while the Save dialog is open: the save ends the session itself, so a save is never
-/// lost to a close. Main thread only. Safe to call twice.
+/// nothing while the Save dialog or share sheet is open: they end the session themselves, so a
+/// save or share is never lost to a close. Main thread only. Safe to call twice.
 pub fn close<R: Runtime>(app: &AppHandle<R>) {
     close_if(app, |_| true);
 }
@@ -300,30 +300,53 @@ pub fn close<R: Runtime>(app: &AppHandle<R>) {
 /// [`close`], only if `ok` holds for the phase. Checked and closed under one lock, so nothing
 /// can start in between (a save, say).
 pub fn close_if<R: Runtime>(app: &AppHandle<R>, ok: impl FnOnce(&Phase) -> bool) {
+    let closed = end_if(app, |phase| {
+        if phase.in_dialog() {
+            log::info!("not closing the overlay while the Save dialog or share sheet is open");
+            return false;
+        }
+        ok(phase)
+    });
+    if closed {
+        crate::windows::yield_focus(app, None);
+    }
+}
+
+/// Ends `session`'s share sheet and closes the overlay in one step, so nothing can start or
+/// close in between. The app stays active: a service chosen in the sheet shows its UI
+/// (AirDrop, Mail…) in this app, and hiding the app would hide it too. Returns whether
+/// `session` was the one sharing. Main thread only.
+pub(crate) fn close_for_share<R: Runtime>(app: &AppHandle<R>, session: u64) -> bool {
+    end_if(app, |phase| phase.end_share(session))
+}
+
+/// Closes if `ok` (which may change the phase first) holds, under one lock. Returns whether it
+/// closed.
+fn end_if<R: Runtime>(app: &AppHandle<R>, ok: impl FnOnce(&mut Phase) -> bool) -> bool {
     {
         let mut phase = phase(app);
-        if phase.saving() {
-            log::info!("not closing the overlay while the Save dialog is open");
-            return;
-        }
-        if !ok(&phase) {
-            return;
+        if !ok(&mut phase) {
+            return false;
         }
         *phase = Phase::Idle;
     }
     sync_escape(app);
     hide(app);
-    let windows = app.webview_windows();
-    for label in windows.keys().filter(|l| display_id(l).is_some()) {
+    for label in app
+        .webview_windows()
+        .keys()
+        .filter(|l| display_id(l).is_some())
+    {
         if let Err(e) = app.emit_to(label.as_str(), CLOSED_EVENT, ()) {
             log::warn!("could not tell {label} to free its frame: {e}");
         }
     }
-    // First, so a notice shown again keeps the app visible, as Settings does.
+    // A notice hidden for the capture comes back after a share too; only giving focus back
+    // (in `close_if`) is skipped.
     crate::notice::show_after_capture(app);
-    crate::windows::yield_focus(app, None);
     // Last, so a waiting update restart sees the overlay gone.
     app.state::<Overlay>().idle.notify_waiters();
+    true
 }
 
 /// Hides every overlay window, keeping the session (the Save dialog hides them this way).
@@ -373,8 +396,8 @@ pub(super) fn reshow<R: Runtime>(app: &AppHandle<R>, displays: &[u32], focus: u3
 /// no page answers within `timeout` (a hung page never locks the user out). Returns the Esc
 /// token if it was forwarded.
 fn escape<R: Runtime>(app: &AppHandle<R>, timeout: Duration) -> Option<u64> {
-    // The Save dialog is open: Esc is the dialog's.
-    if phase(app).saving() {
+    // The Save dialog or share sheet is open: Esc is theirs.
+    if phase(app).in_dialog() {
         return None;
     }
     let token = NEXT_ESCAPE.fetch_add(1, Ordering::Relaxed);

@@ -143,12 +143,21 @@ pub struct Session {
     painted: Vec<u32>,
     /// The Esc forwarded to the pages that is still waiting for their answers.
     escape: Option<EscapeWait>,
-    /// The Save dialog is open and the windows are hidden.
-    saving: bool,
+    /// The Save dialog or share sheet that owns the session while it is open.
+    dialog: Option<Dialog>,
     /// Saves started in this session, so a slow copy can tell whether one began meanwhile.
     saves: u32,
     /// Whether Rust held Esc when the session opened (see [`Phase::wants_escape`]).
     escape_shortcut: bool,
+}
+
+/// A dialog over the overlay. One at a time; Esc is its while it is open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Dialog {
+    /// The Save dialog: the windows are hidden.
+    Save,
+    /// The share sheet: the windows stay.
+    Share,
 }
 
 /// One Esc press, until a page handles it or every shown page says it had nothing to undo.
@@ -259,7 +268,7 @@ impl Phase {
             remember: regions.is_some(),
             painted: Vec::new(),
             escape: None,
-            saving: false,
+            dialog: None,
             saves: 0,
             escape_shortcut,
         });
@@ -396,59 +405,88 @@ impl Phase {
             focus,
             fallback,
             first,
-            hidden: s.saving,
+            hidden: s.dialog == Some(Dialog::Save),
         })
     }
 
+    /// The open session `session` if it is shown and neither saving nor sharing, so a save or
+    /// share may start.
+    fn idle_shown(&mut self, session: u64) -> Option<&mut Session> {
+        self.current(session)
+            .filter(|s| s.dialog.is_none() && !s.painted.is_empty())
+    }
+
     /// Starts a save in `session`: its windows hide while the Save dialog is open. `false`
-    /// unless the session is open, shown and not already saving.
+    /// unless the session is open, shown and not already saving or sharing.
     pub fn begin_save(&mut self, session: u64) -> bool {
-        match self.current(session) {
-            Some(s) if !s.saving && !s.painted.is_empty() => {
-                s.saving = true;
-                s.saves += 1;
-                s.escape = None;
-                true
-            }
-            _ => false,
-        }
+        let Some(s) = self.idle_shown(session) else {
+            return false;
+        };
+        s.dialog = Some(Dialog::Save);
+        s.saves += 1;
+        s.escape = None;
+        true
+    }
+
+    /// Opens the share sheet in `session`: Esc is the sheet's until it closes. `false` unless
+    /// the session is open, shown and not already saving or sharing.
+    pub fn begin_share(&mut self, session: u64) -> bool {
+        let Some(s) = self.idle_shown(session) else {
+            return false;
+        };
+        s.dialog = Some(Dialog::Share);
+        s.escape = None;
+        true
+    }
+
+    /// The share sheet closed. Returns whether `session` was the one sharing.
+    pub fn end_share(&mut self, session: u64) -> bool {
+        self.current(session)
+            .is_some_and(|s| s.dialog.take_if(|d| *d == Dialog::Share).is_some())
     }
 
     /// The Save dialog closed. Returns the displays to show again if `session` is still the
     /// one saving (one lock, so nothing can close it in between), or `None`.
     pub fn end_save(&mut self, session: u64) -> Option<Vec<u32>> {
-        let s = self.current(session).filter(|s| s.saving)?;
-        s.saving = false;
+        let s = self.current(session)?;
+        s.dialog.take_if(|d| *d == Dialog::Save)?;
         Some(s.painted.clone())
     }
 
     /// Whether Rust should hold Esc now: while capturing, and while the overlay is open unless
-    /// the Save dialog is up (Esc is the dialog's) or Esc could not be registered at the start
-    /// (the pages forward their own Esc instead, so holding it would act twice).
+    /// the Save dialog or share sheet is up (Esc is theirs) or Esc could not be registered at
+    /// the start (the pages forward their own Esc instead, so holding it would act twice).
     pub fn wants_escape(&self) -> bool {
         match self {
             Phase::Idle => false,
             Phase::Capturing { .. } => true,
-            Phase::Open(s) => s.escape_shortcut && !s.saving,
+            Phase::Open(s) => s.escape_shortcut && s.dialog.is_none(),
         }
     }
 
-    /// Whether the Save dialog is open (the windows are hidden).
+    /// Whether the Save dialog is open (the windows are hidden). Tests tell it from sharing.
+    #[cfg(test)]
     pub fn saving(&self) -> bool {
-        matches!(self, Phase::Open(s) if s.saving)
+        matches!(self, Phase::Open(s) if s.dialog == Some(Dialog::Save))
     }
 
-    /// How many saves `session` has started, or `None` unless it is open and not saving. A copy
-    /// notes it when it starts.
+    /// Whether the Save dialog or the share sheet is open, so Esc is theirs.
+    pub fn in_dialog(&self) -> bool {
+        matches!(self, Phase::Open(s) if s.dialog.is_some())
+    }
+
+    /// How many saves `session` has started, or `None` unless it is open and neither saving nor
+    /// sharing. A copy notes it when it starts.
     pub fn saves(&self, session: u64) -> Option<u32> {
         match self {
-            Phase::Open(s) if s.id == session && !s.saving => Some(s.saves),
+            Phase::Open(s) if s.id == session && s.dialog.is_none() => Some(s.saves),
             _ => None,
         }
     }
 
-    /// Whether a copy that started at `saves` may close `session`: it is still open, not saving,
-    /// and no save started since (a save, even cancelled, means the user moved on).
+    /// Whether a copy that started at `saves` may close `session`: it is still open, neither
+    /// saving nor sharing, and no save started since (a save, even cancelled, means the user
+    /// moved on).
     pub fn copy_may_close(&self, session: u64, saves: u32) -> bool {
         self.saves(session) == Some(saves)
     }
@@ -851,6 +889,37 @@ pub(crate) mod tests {
         assert!(!Phase::Idle.begin_save(7));
         assert!(!Phase::Idle.saving());
         assert_eq!(Phase::Idle.end_save(7), None);
+    }
+
+    #[test]
+    fn a_share_holds_the_session_until_its_sheet_closes() {
+        let mut p = open(None);
+        assert!(!p.begin_share(7), "nothing shown yet");
+        p.painted(7, 2);
+        p.forward_escape(1);
+        assert!(!p.begin_share(6), "other session");
+        assert!(p.wants_escape());
+        assert!(p.begin_share(7));
+        assert!(!p.escape_unhandled(1), "a pending Esc is dropped");
+        assert!(!p.wants_escape(), "Esc is the sheet's");
+        assert!(p.in_dialog());
+        assert!(!p.saving(), "the windows stay shown");
+        assert!(!p.begin_share(7), "already sharing");
+        assert!(!p.begin_save(7), "no save over the sheet");
+        assert_eq!(p.saves(7), None, "no copy or share over the sheet");
+        assert!(!p.end_share(6), "other session");
+        assert!(p.end_share(7));
+        assert!(!p.end_share(7), "ended once");
+        assert!(p.wants_escape());
+        assert!(!p.in_dialog());
+        assert_eq!(p.saves(7), Some(0));
+        // Nor a share over the Save dialog.
+        assert!(p.begin_save(7));
+        assert!(p.in_dialog());
+        assert!(!p.begin_share(7));
+        assert!(!Phase::Idle.begin_share(7));
+        assert!(!Phase::Idle.end_share(7));
+        assert!(!Phase::Idle.in_dialog());
     }
 
     #[test]

@@ -61,6 +61,8 @@ pub enum CaptureError {
     Write(String),
     /// The Save dialog failed (not a cancel).
     Dialog(String),
+    /// The share sheet could not be shown.
+    Share(String),
     /// The page sent a copy or save request that does not make sense.
     Invalid(String),
 }
@@ -77,6 +79,7 @@ impl CaptureError {
             Self::Clipboard(_) => "clipboard",
             Self::Write(_) => "write",
             Self::Dialog(_) => "dialog",
+            Self::Share(_) => "share",
             Self::Invalid(_) => "invalid",
         }
     }
@@ -94,6 +97,7 @@ impl fmt::Display for CaptureError {
             Self::Clipboard(e) => write!(f, "could not copy to the clipboard: {e}"),
             Self::Write(e) => write!(f, "could not save the file: {e}"),
             Self::Dialog(e) => write!(f, "the Save dialog failed: {e}"),
+            Self::Share(e) => write!(f, "could not share: {e}"),
             Self::Invalid(e) => write!(f, "invalid request: {e}"),
         }
     }
@@ -670,6 +674,7 @@ mod tests {
             CaptureError::Clipboard("z".into()),
             CaptureError::Write("w".into()),
             CaptureError::Dialog("d".into()),
+            CaptureError::Share("s".into()),
         ]
         .map(|e| json(e)["kind"].as_str().unwrap().to_owned());
         assert_eq!(
@@ -681,7 +686,8 @@ mod tests {
                 "encode",
                 "clipboard",
                 "write",
-                "dialog"
+                "dialog",
+                "share"
             ]
         );
     }

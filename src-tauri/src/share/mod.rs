@@ -16,9 +16,9 @@ mod picker;
 mod session;
 mod temp;
 
-pub use session::ShareOutcome;
+pub use session::{OnDone, ShareOutcome};
 
-use session::{OnDone, Session};
+use session::Session;
 use temp::TempFiles;
 
 use std::fmt;

@@ -152,7 +152,7 @@ describe('Overlay', () => {
         calls.push({ cmd, args })
         if (cmd === 'overlay_ready') return ready
         if (cmd === 'overlay_frame') return frame(args as { session: number })
-        if (cmd === 'overlay_copy' || cmd === 'overlay_save') return finished(cmd)
+        if (['overlay_copy', 'overlay_save', 'overlay_share'].includes(cmd)) return finished(cmd)
         if (cmd === 'set_capture_option') {
           const { key, on } = args as { key: string; on: boolean }
           return { ...settings, [key]: on, version: calls.length }
@@ -1124,6 +1124,44 @@ describe('Overlay', () => {
       await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
       await waitFor(() => expect(called('overlay_copy')).toHaveLength(1))
       expect(sent).toHaveLength(2)
+    })
+
+    it('shares from the toolbar on macOS, under the Share button', async () => {
+      platform.mac = true
+      await annotated()
+      const share = screen.getByRole('button', { name: 'Share' })
+      // Made up at run time, so only the button's real rect can match it.
+      const anchor = { x: Math.random() * 500, y: Math.random() * 500, width: 80, height: 36 }
+      vi.spyOn(share, 'getBoundingClientRect').mockReturnValue(DOMRect.fromRect(anchor) as DOMRect)
+      await userEvent.click(share)
+      await waitFor(() => expect(called('overlay_share')).toHaveLength(1))
+      const head = output('overlay_share', 0) as { rect: Rect; anchor: Rect; layer?: Rect }
+      expect(head.anchor).toEqual(anchor)
+      // The same request as a save, annotations included.
+      expect(head.rect).toEqual(rect200)
+      // The annotation's pixels go as the raw body, drawn (not blank) and sized to the layer.
+      const drawn = head.layer!
+      const body = sent.find((c) => c.cmd === 'overlay_share')!.body as Uint8Array
+      expect(body).toHaveLength(drawn.width * drawn.height * 4)
+      expect(body.some((b) => b !== 0)).toBe(true)
+    })
+
+    it('says so when sharing fails, and stays open', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      platform.mac = true
+      finished = () => {
+        throw new Error('no sheet')
+      }
+      await annotated()
+      await userEvent.click(screen.getByRole('button', { name: 'Share' }))
+      expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't share")
+      expect(selection()).not.toBeNull()
+    })
+
+    it('has no Share button without a share sheet', async () => {
+      await annotated()
+      expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Share' })).toBeNull()
     })
 
     it('turns options on and off in the settings', async () => {

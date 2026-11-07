@@ -343,6 +343,21 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_share_that_ends_the_capture_shows_the_notice_again() {
+        use crate::overlay::window::{close_for_share, phase};
+        let app = app();
+        let h = app.handle();
+        let (task, window) = asking(h, update());
+        let session = overlay::shown(h, &[1]);
+        assert!(phase(h).begin_share(session));
+        assert_eq!(hidden(h), [window.label()]);
+        assert!(close_for_share(h, session));
+        assert!(hidden(h).is_empty(), "shown again");
+        forget(h, window.label());
+        assert_eq!(block_on(task).unwrap(), None);
+    }
+
+    #[test]
     fn a_notice_asked_during_a_capture_waits_for_it() {
         let app = app();
         let h = app.handle();

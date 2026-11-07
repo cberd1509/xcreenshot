@@ -16,6 +16,7 @@
     moreOpen = $bindable(false),
     keepFocus,
     mod,
+    canShare,
   }: {
     actions: ToolbarActions
     options: Record<Option, boolean>
@@ -23,9 +24,17 @@
     keepFocus: boolean
     /** How the platform writes ⌘ in a shortcut. */
     mod: string
+    /** Whether the platform has a share sheet (macOS; Windows is #30). */
+    canShare: boolean
   } = $props()
 
   const keep = (e: Event) => keepFocus && e.preventDefault()
+
+  /** The sheet opens under the button: its rect in the page. */
+  function share(e: MouseEvent) {
+    const { x, y, width, height } = (e.currentTarget as Element).getBoundingClientRect()
+    actions.share({ x, y, width, height })
+  }
 
   const ICON = 'flex size-9 items-center justify-center rounded-lg [&_svg]:size-[18px]'
   const LABELED =
@@ -51,13 +60,12 @@
   </DropdownMenu.Trigger>
 {/snippet}
 
-{#snippet share(props: Record<string, unknown>)}
-  <!-- Share from the overlay comes in #68: shown, but not yet usable. -->
+{#snippet shareButton(props: Record<string, unknown>)}
   <button
     {...props}
     type="button"
-    class="{LABELED} cursor-default bg-zinc-800 text-zinc-50 opacity-50"
-    aria-disabled="true"
+    class="{LABELED} bg-zinc-800 text-zinc-50 hover:bg-zinc-700"
+    onclick={share}
   >
     <ShareIcon />Share
   </button>
@@ -128,7 +136,9 @@
 
   <div class="mx-1 h-5 w-px bg-zinc-800"></div>
 
-  <Tip label="Coming soon" side="top" sideOffset={10} trigger={share} />
+  {#if canShare}
+    <Tip label="Share" side="top" sideOffset={10} trigger={shareButton} />
+  {/if}
   <Tip label="Save" keys="{mod}S" side="top" sideOffset={10} trigger={save} />
   <button
     type="button"

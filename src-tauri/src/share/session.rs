@@ -15,7 +15,8 @@ pub enum ShareOutcome {
 }
 
 /// What the picker reports. `Chosen` or `Cancelled` when the menu closes; after `Chosen`,
-/// `Finished` once the service reports success or failure (some never do).
+/// `Finished` once the service reports success or failure (some never do). An open picker that
+/// expires sends `Finished` too.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Chosen(String),
@@ -57,7 +58,15 @@ impl Session {
                     self.release(Duration::ZERO);
                 }
             }
-            Event::Finished => self.release(self.grace),
+            // Finished with no outcome (an open picker expired): it counts as dismissed, so
+            // `on_done` always runs.
+            Event::Finished => {
+                if self.report(ShareOutcome::Cancelled) {
+                    self.release(Duration::ZERO);
+                } else {
+                    self.release(self.grace);
+                }
+            }
         }
     }
 
@@ -143,6 +152,11 @@ mod tests {
             run(&[Event::Cancelled, Event::Cancelled, Event::Finished]),
             ["Cancelled", "release 0ns"]
         );
+    }
+
+    #[test]
+    fn a_picker_that_ends_without_an_answer_counts_as_dismissed() {
+        assert_eq!(run(&[Event::Finished]), ["Cancelled", "release 0ns"]);
     }
 
     #[test]

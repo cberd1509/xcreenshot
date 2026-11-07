@@ -152,19 +152,23 @@ type AnnotationExport = {
 - `blurs` are rects in physical px relative to the crop, rounded outwards to whole pixels and
   clipped to it.
 
-## Copy and save request
+## Copy, save and share request
 
-Copy (Enter, ⌘C), Save (⌘S) and the toolbar's Copy and Save buttons export the annotations for
-the selection's physical rect and send one raw IPC request (`overlay/annotate/output.ts`):
+Copy (Enter, ⌘C), Save (⌘S) and the toolbar's Copy, Save and Share buttons export the
+annotations for the selection's physical rect and send one raw IPC request
+(`overlay/annotate/output.ts`):
 
 ```ts
-invoke('overlay_copy' | 'overlay_save', body, { headers: { 'x-xcreenshot-output': json } })
+invoke('overlay_copy' | 'overlay_save' | 'overlay_share', body, {
+  headers: { 'x-xcreenshot-output': json },
+})
 ```
 
 - `body` is the layer's `rgba` as a `Uint8Array` (empty without a layer). It reaches Rust as
   `InvokeBody::Raw`, never as JSON, and Rust reads the pixels in place.
-- `json` is `{ session, rect, layer?: { x, y, width, height }, blurs }`. `rect` is the selection in
-  physical px; `layer` is there only when the body has its pixels.
+- `json` is `{ session, rect, layer?: { x, y, width, height }, blurs, anchor? }`. `rect` is the
+  selection in physical px; `layer` is there only when the body has its pixels. `anchor` is the
+  Share button's rect in logical px, for a share only (see `docs/share.md`).
 
 `overlay/export.rs` parses the request (the body must be exactly `width × height × 4` bytes, and
 there may be at most 256 blurs, each clipped to the selection) and crops the frame. Then `output/compose.rs`:

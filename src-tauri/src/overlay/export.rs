@@ -11,19 +11,27 @@
 //!   write failed, or the dialog was cancelled, the windows come back with the selection
 //!   intact, so the user can try again, copy, change the selection or press Esc.
 //!
-//! On failure the command returns the error and the page says so; the overlay is never left
-//! without a way out. The OS side is behind [`Clipboard`] and [`Saver`], faked in tests.
+//! - **Share** (the Share button, macOS) encodes the PNG, releases Esc to the share sheet and
+//!   opens it under the button. The windows stay. Picking a service closes the overlay; closing
+//!   the sheet without one takes Esc back and keeps the selection. See `docs/share.md`.
 //!
-//! A copy or save that worked remembers the selection (see `region`), after the clipboard
-//! write or the file, on another thread.
+//! On failure the command returns the error and the page says so; the overlay is never left
+//! without a way out. The OS side is behind [`Clipboard`], [`Saver`] and [`ShowSheet`], faked in
+//! tests.
+//!
+//! A copy, save or share that worked remembers the selection (see `region`), after the
+//! clipboard write, the file or the choice of a service, on another thread.
 
 use super::display_id;
-use super::window::{Overlay, close, close_if, hide, on_main, phase, reshow, sync_escape};
+use super::window::{
+    Overlay, close, close_for_share, close_if, hide, on_main, phase, reshow, sync_escape,
+};
 use crate::capture::{self, CaptureError, Density, PixelRect, clamp_rect};
 use crate::output::compose::{self, Layer, Marks};
 use crate::output::{self, Clipboard, Target};
 use crate::prefs;
 use crate::region::{self, Region};
+use crate::share::{self, OnDone, ShareError, ShareOutcome};
 use chrono::NaiveDateTime;
 use image::{ImageBuffer, RgbaImage};
 use serde::Deserialize;
@@ -42,7 +50,7 @@ pub const HEADER: &str = "x-xcreenshot-output";
 pub const MAX_BLURS: usize = 256;
 
 /// The JSON in [`HEADER`]. `layer` is where the body's pixels go, relative to `rect`; it is
-/// there only when the body has them.
+/// there only when the body has them. `anchor` is the Share button, for a share.
 #[derive(Debug, Deserialize)]
 struct Head {
     session: u64,
@@ -51,15 +59,19 @@ struct Head {
     layer: Option<PixelRect>,
     #[serde(default)]
     blurs: Vec<PixelRect>,
+    #[serde(default)]
+    anchor: Option<share::Rect>,
 }
 
-/// A copy or save request: the session, the selection in native px, and its annotations, whose
-/// pixels are read in place from the request body.
+/// A copy, save or share request: the session, the selection in native px, and its
+/// annotations, whose pixels are read in place from the request body. A share also has the
+/// button the sheet opens under, in logical px in the page.
 #[derive(Debug, PartialEq)]
 pub(crate) struct Output<'a> {
     pub session: u64,
     pub rect: PixelRect,
     pub marks: Marks<'a>,
+    pub anchor: Option<share::Rect>,
 }
 
 fn invalid(e: impl std::fmt::Display) -> CaptureError {
@@ -116,6 +128,7 @@ pub(crate) fn parse<'a>(
         session: head.session,
         rect: head.rect,
         marks: Marks { layer, blurs },
+        anchor: head.anchor,
     })
 }
 
@@ -379,6 +392,127 @@ fn back<R: Runtime>(app: &AppHandle<R>, session: u64, display: u32) {
     }
 }
 
+/// Shares the selection, with its annotations, in the share sheet under the Share button.
+/// Returns once the sheet is open: the overlay closes when a service is picked and stays when
+/// the sheet is dismissed. The request is raw: see [`compose`].
+#[tauri::command]
+pub(crate) async fn overlay_share<R: Runtime>(
+    window: WebviewWindow<R>,
+    state: State<'_, Overlay>,
+    request: Request<'_>,
+) -> Result<(), CaptureError> {
+    let out = parse(request.body(), request.headers())?;
+    let remember = remember_in(window.app_handle());
+    share_with(&window, &state, &out, os_sheet(), remember).await
+}
+
+/// The real share sheet.
+fn os_sheet<R: Runtime>() -> ShowSheet<R> {
+    Box::new(|w, png, anchor, done| share::share_png(w, png, anchor, done))
+}
+
+/// Shows the share sheet for a PNG under an anchor and returns once it is open
+/// (`share::share_png`). Faked in tests.
+pub(crate) type ShowSheet<R> =
+    Box<dyn FnOnce(&WebviewWindow<R>, &[u8], share::Rect, OnDone) -> Result<(), ShareError> + Send>;
+
+async fn share_with<R: Runtime>(
+    window: &WebviewWindow<R>,
+    state: &Overlay,
+    out: &Output<'_>,
+    show: ShowSheet<R>,
+    remember: Remember,
+) -> Result<(), CaptureError> {
+    let anchor = out
+        .anchor
+        .ok_or_else(|| invalid("a share needs the button's rect"))?;
+    let session = out.session;
+    let Some(Selected {
+        frame,
+        density,
+        region,
+        ..
+    }) = selected_frame(window, state, out)
+    else {
+        return Ok(());
+    };
+    let image = annotated(&frame, out)?;
+    drop(frame);
+    // The same PNG a save writes: the services read it from the temp file.
+    let png = spawn_blocking(move || capture::encode_png(&image, density))
+        .await
+        .unwrap_or_else(|e| Err(CaptureError::Encode(e.to_string())))?;
+    if !state.phase().begin_share(session) {
+        return Ok(());
+    }
+    let app = window.app_handle().clone();
+    // Released so Esc closes the sheet, not the overlay. Queued before the sheet, which opens
+    // from the main thread too. If it cannot be released the sheet still opens; `escape`
+    // ignores Esc while sharing.
+    on_main(&app, |app| {
+        if !sync_escape(app) {
+            log::warn!("could not release Esc for the share sheet");
+        }
+    });
+    let target = window.clone();
+    let done: OnDone = Box::new(move |outcome| shared(&target, session, outcome, region, remember));
+    let sheet = window.clone();
+    let shown = spawn_blocking(move || show(&sheet, &png, anchor, done))
+        .await
+        .unwrap_or_else(|e| Err(ShareError::Window(e.to_string())));
+    shown.map_err(|e| {
+        log::error!("{e}");
+        // Ended now, so a retry right after the error is not turned away; Esc follows.
+        if state.phase().end_share(session) {
+            on_main(&app, take_escape_back);
+        }
+        CaptureError::Share(e.to_string())
+    })
+}
+
+/// The share sheet closed (main thread). A chosen service closes the overlay, leaving the app
+/// active for its own UI, and remembers the region; a dismissal keeps it open.
+fn shared<R: Runtime>(
+    window: &WebviewWindow<R>,
+    session: u64,
+    outcome: ShareOutcome,
+    region: Option<Region>,
+    remember: Remember,
+) {
+    let app = window.app_handle();
+    match outcome {
+        ShareOutcome::Chosen(service) => {
+            log::info!("shared with {service}");
+            // Only for the session still sharing: a stale answer changes nothing, not even
+            // the level of a window a newer sheet lowered.
+            if close_for_share(app, session) {
+                if let Some(region) = region {
+                    remember(region);
+                }
+                // The sheet left the window lowered, so the service's UI shows over it.
+                share::restore_level(window);
+            }
+        }
+        ShareOutcome::Cancelled => {
+            log::info!("share cancelled");
+            if phase(app).end_share(session) {
+                // Usually back already; not for a picker that expired with its menu open.
+                share::restore_level(window);
+                take_escape_back(app);
+            }
+        }
+    }
+}
+
+/// The share sheet is gone without a choice: Esc is the overlay's again. Closes the overlay
+/// instead if Esc cannot be taken back, so it never stays open without a way out.
+fn take_escape_back<R: Runtime>(app: &AppHandle<R>) {
+    if !sync_escape(app) {
+        log::error!("could not take Esc back; closing the overlay");
+        close(app);
+    }
+}
+
 /// The OS side of a save. Faked in tests.
 pub(crate) trait Saver: Send + Sync + 'static {
     /// Shows the Save dialog in `dir` with `name` filled in and waits for it (never on the main
@@ -452,6 +586,7 @@ mod tests {
     use std::fs;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use tauri::test::MockRuntime;
 
     /// The test frames have twice as many pixels as points.
     const RETINA: Density = Density::new(2.0, 2.0);
@@ -711,6 +846,7 @@ mod tests {
             session,
             rect,
             marks: Marks::default(),
+            anchor: None,
         }
     }
 
@@ -1054,6 +1190,250 @@ mod tests {
         assert!(is_open(h, session));
     }
 
+    const ANCHOR: share::Rect = share::Rect {
+        x: 10.0,
+        y: 20.0,
+        width: 80.0,
+        height: 36.0,
+    };
+
+    /// What the fake share sheet was shown with (the PNG, the anchor and whether Esc was held
+    /// then), and its `on_done`, to answer with.
+    #[derive(Default)]
+    struct Sheet {
+        shown: Vec<(Vec<u8>, share::Rect, bool)>,
+        done: Option<OnDone>,
+    }
+
+    /// A share sheet that records what it is shown with, or fails to open.
+    fn sheet(fail: bool) -> (ShowSheet<MockRuntime>, Arc<Mutex<Sheet>>) {
+        let seen = Arc::new(Mutex::new(Sheet::default()));
+        let record = Arc::clone(&seen);
+        let show: ShowSheet<MockRuntime> = Box::new(move |w, png, anchor, done| {
+            let mut s = record.lock().unwrap();
+            s.shown
+                .push((png.to_vec(), anchor, esc_held(w.app_handle())));
+            if fail {
+                return Err(ShareError::Window("no view".into()));
+            }
+            s.done = Some(done);
+            Ok(())
+        });
+        (show, seen)
+    }
+
+    /// The user picks a service in the sheet, or dismisses it.
+    fn answer(seen: &Mutex<Sheet>, outcome: ShareOutcome) {
+        let done = seen.lock().unwrap().done.take().expect("the sheet is open");
+        done(outcome);
+    }
+
+    fn shown_sheets(seen: &Mutex<Sheet>) -> usize {
+        seen.lock().unwrap().shown.len()
+    }
+
+    /// A share request with no annotations.
+    fn anchored(session: u64, rect: PixelRect) -> Output<'static> {
+        Output {
+            anchor: Some(ANCHOR),
+            ..plain(session, rect)
+        }
+    }
+
+    fn share_out(
+        h: &Handle,
+        out: &Output,
+        show: ShowSheet<MockRuntime>,
+        remember: Remember,
+    ) -> Result<(), CaptureError> {
+        let state = h.state::<Overlay>();
+        let w = window(h, 1);
+        tauri::async_runtime::block_on(share_with(&w, &state, out, show, remember))
+    }
+
+    #[test]
+    fn share_shows_the_annotated_png_and_closes_once_a_service_is_picked() {
+        let app = app_with_escape();
+        let h = app.handle();
+        let session = shown(h, &[1]);
+        let (show, seen) = sheet(false);
+        let (remember, regions) = remembering();
+        let out = Output {
+            marks: marks(),
+            ..anchored(session, px(1, 0, 2, 2))
+        };
+        assert_eq!(share_out(h, &out, show, remember), Ok(()));
+        {
+            let s = seen.lock().unwrap();
+            let (png, anchor, held) = &s.shown[0];
+            // The same PNG a save writes: blur baked in, at the frame's density.
+            assert_clean_png(png, &marked(), RETINA);
+            assert_eq!(*anchor, ANCHOR);
+            assert!(!held, "Esc is the sheet's");
+        }
+        assert!(is_open(h, session), "open until a service is picked");
+        assert_eq!(on_screen(h), [1], "the windows stay under the sheet");
+        assert!(regions.lock().unwrap().is_empty());
+        answer(&seen, ShareOutcome::Chosen("AirDrop".into()));
+        assert!(is_idle(h));
+        assert!(on_screen(h).is_empty());
+        assert!(!esc_held(h));
+        let regions = regions.lock().unwrap();
+        assert_eq!(regions.len(), 1, "the region is remembered");
+        assert_eq!(regions[0].rect, region::tests::rect(0.5, 0.0, 1.0, 1.0));
+    }
+
+    #[test]
+    fn dismissing_the_sheet_keeps_the_overlay_and_takes_esc_back() {
+        let app = app_with_escape();
+        let h = app.handle();
+        let session = shown(h, &[1, 2]);
+        let (show, seen) = sheet(false);
+        let (remember, regions) = remembering();
+        share_out(h, &anchored(session, px(0, 0, 2, 2)), show, remember).unwrap();
+        assert!(!esc_held(h));
+        answer(&seen, ShareOutcome::Cancelled);
+        assert!(is_open(h, session));
+        assert!(esc_held(h), "Esc is the overlay's again");
+        assert_eq!(on_screen(h), [1, 2]);
+        assert!(regions.lock().unwrap().is_empty(), "nothing was shared");
+        // The selection is still usable.
+        let (c, images) = clipboard(false);
+        copy(h, session, px(0, 0, 1, 1), c).unwrap();
+        assert_eq!(images.lock().unwrap().len(), 1);
+        assert!(is_idle(h));
+    }
+
+    #[test]
+    fn nothing_else_runs_while_the_sheet_is_open() {
+        let app = app_with_escape();
+        let h = app.handle();
+        let dir = tempfile::tempdir().unwrap();
+        let session = shown(h, &[1]);
+        let (show, seen) = sheet(false);
+        share_out(h, &anchored(session, px(0, 0, 2, 2)), show, forget()).unwrap();
+        // Esc forwarded by a page, a copy, a save and a second share all do nothing.
+        overlay_escape(h.clone());
+        let (c, images) = clipboard(false);
+        copy(h, session, px(0, 0, 1, 1), c).unwrap();
+        assert!(images.lock().unwrap().is_empty());
+        let saver = Arc::new(FakeSaver::default());
+        save(h, session, px(0, 0, 1, 1), &saver, dir.path()).unwrap();
+        assert!(saver.asked.lock().unwrap().is_empty());
+        let (again, other) = sheet(false);
+        let second = share_out(h, &anchored(session, px(0, 0, 1, 1)), again, forget());
+        assert_eq!(second, Ok(()));
+        assert_eq!(shown_sheets(&other), 0);
+        assert!(is_open(h, session));
+        answer(&seen, ShareOutcome::Chosen("Messages".into()));
+        assert!(is_idle(h));
+    }
+
+    #[test]
+    fn a_sheet_that_cannot_open_keeps_the_overlay_and_reports_it() {
+        let app = app_with_escape();
+        let h = app.handle();
+        let session = shown(h, &[1]);
+        let (show, seen) = sheet(true);
+        let r = share_out(h, &anchored(session, px(0, 0, 2, 2)), show, forget());
+        assert!(
+            matches!(&r, Err(CaptureError::Share(e)) if e.contains("no view")),
+            "{r:?}"
+        );
+        assert_eq!(shown_sheets(&seen), 1);
+        // Ended before the error returns, so a retry right away is not turned away.
+        assert!(!phase(h).in_dialog());
+        assert!(is_open(h, session));
+        assert!(esc_held(h), "Esc is the overlay's again");
+        // Not left sharing: the next share opens.
+        let (show, seen) = sheet(false);
+        share_out(h, &anchored(session, px(0, 0, 2, 2)), show, forget()).unwrap();
+        assert_eq!(shown_sheets(&seen), 1);
+    }
+
+    #[test]
+    fn there_is_no_sheet_off_macos_or_in_tests() {
+        let app = app_with_escape();
+        let h = app.handle();
+        let session = shown(h, &[1]);
+        let r = share_out(h, &anchored(session, px(0, 0, 2, 2)), os_sheet(), forget());
+        assert!(
+            matches!(&r, Err(CaptureError::Share(e)) if e.contains("not supported")),
+            "{r:?}"
+        );
+        assert!(is_open(h, session));
+        assert!(esc_held(h));
+    }
+
+    #[test]
+    fn share_is_ignored_unless_shown_and_needs_a_selection_and_an_anchor() {
+        let app = app_with_escape();
+        let h = app.handle();
+        let session = open(h, &[1]);
+        let (show, seen) = sheet(false);
+        let not_shown = share_out(h, &anchored(session, px(0, 0, 1, 1)), show, forget());
+        assert_eq!(not_shown, Ok(()), "not painted");
+        assert_eq!(shown_sheets(&seen), 0);
+        overlay_painted(window(h, 1), h.state(), session);
+        let (show, seen) = sheet(false);
+        let other = share_out(h, &anchored(session + 1, px(0, 0, 1, 1)), show, forget());
+        assert_eq!(other, Ok(()), "other session");
+        assert_eq!(shown_sheets(&seen), 0);
+        let (show, seen) = sheet(false);
+        let empty = share_out(h, &anchored(session, px(0, 0, 0, 0)), show, forget());
+        assert_eq!(empty, Err(CaptureError::EmptySelection));
+        assert_eq!(shown_sheets(&seen), 0);
+        let (show, seen) = sheet(false);
+        let no_anchor = share_out(h, &plain(session, px(0, 0, 1, 1)), show, forget());
+        assert!(matches!(no_anchor, Err(CaptureError::Invalid(_))));
+        assert_eq!(shown_sheets(&seen), 0);
+        assert!(is_open(h, session));
+        assert!(esc_held(h));
+    }
+
+    #[test]
+    fn closes_if_esc_cannot_be_taken_back_after_the_sheet() {
+        let calls = AtomicU32::new(0);
+        let app = app_with_escape_by(move |on| !on || calls.fetch_add(1, Ordering::Relaxed) == 0);
+        let h = app.handle();
+        let session = shown(h, &[1]);
+        let (show, seen) = sheet(false);
+        share_out(h, &anchored(session, px(0, 0, 2, 2)), show, forget()).unwrap();
+        answer(&seen, ShareOutcome::Cancelled);
+        assert!(is_idle(h));
+        assert!(on_screen(h).is_empty(), "the windows are gone too");
+    }
+
+    #[test]
+    fn nothing_closes_the_overlay_under_the_sheet() {
+        let app = app_with_escape();
+        let h = app.handle();
+        let session = shown(h, &[1]);
+        let (show, seen) = sheet(false);
+        share_out(h, &anchored(session, px(0, 0, 2, 2)), show, forget()).unwrap();
+        close(h);
+        close_session(h, session);
+        assert!(is_open(h, session));
+        assert_eq!(on_screen(h), [1]);
+        answer(&seen, ShareOutcome::Cancelled);
+        assert!(is_open(h, session));
+        assert!(esc_held(h));
+    }
+
+    #[test]
+    fn a_stale_choice_neither_remembers_nor_closes() {
+        let app = app_with_escape();
+        let h = app.handle();
+        let session = shown(h, &[1]);
+        let (remember, regions) = remembering();
+        let region = phase(h).region(session, 1, px(0, 0, 2, 2));
+        // This session is not sharing: the answer belongs to an older sheet.
+        let chosen = ShareOutcome::Chosen("Mail".into());
+        shared(&window(h, 1), session, chosen, region, remember);
+        assert!(regions.lock().unwrap().is_empty());
+        assert!(is_open(h, session));
+    }
+
     fn headers(json: &str) -> HeaderMap {
         let mut h = HeaderMap::new();
         h.insert(HEADER, tauri::http::HeaderValue::from_str(json).unwrap());
@@ -1088,6 +1468,15 @@ mod tests {
         // The body itself, not a copy.
         assert_eq!(layer.pixels.as_raw().as_ptr(), bytes.as_ptr());
         assert_eq!(out.marks.blurs, [px(0, 0, 4, 4)]);
+    }
+
+    #[test]
+    fn parses_the_share_buttons_rect() {
+        let h = headers(
+            r#"{"session":3,"rect":{"x":1,"y":2,"width":3,"height":4},"anchor":{"x":10,"y":20,"width":80,"height":36}}"#,
+        );
+        let body = InvokeBody::Raw(vec![]);
+        assert_eq!(parse(&body, &h).unwrap(), anchored(3, px(1, 2, 3, 4)));
     }
 
     #[test]
