@@ -180,10 +180,9 @@ pub fn tell<R: Runtime>(
             return;
         }
         let handle = app.clone();
+        // `open_settings` logs its own failure.
         let opened = app.run_on_main_thread(move || {
-            if let Err(e) = open_settings(&handle) {
-                log::error!("could not open settings: {e}");
-            }
+            let _ = open_settings(&handle);
         });
         if let Err(e) = opened {
             log::error!("could not open settings: {e}");

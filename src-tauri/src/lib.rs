@@ -4,6 +4,7 @@ mod about;
 mod actions;
 /// Public for `examples/capture.rs`.
 pub mod capture;
+mod focus;
 mod login;
 #[cfg(all(target_os = "macos", not(test)))]
 mod macos;
@@ -26,6 +27,7 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Listener, Manager, WebviewUrl, WebviewWindow};
 use tauri_plugin_global_shortcut::ShortcutState;
+use windows::Source;
 
 const SETTINGS_WINDOW: &str = "settings";
 
@@ -34,7 +36,7 @@ pub fn run() {
     let builder = tauri::Builder::default()
         // Must be first: a second launch focuses the running app instead.
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            handle(app, Action::OpenSettings)
+            let _ = windows::open_from(app, Source::SecondLaunch, open_settings);
         }))
         // Local log file only (nothing is sent anywhere); stderr is invisible in Windows release builds.
         .plugin(
@@ -68,6 +70,9 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_autostart::Builder::new().build());
     #[cfg(target_os = "macos")]
     let builder = builder.manage(login::System::default());
+    // Hands focus back to the app the user was in when a capture closes.
+    #[cfg(all(target_os = "macos", not(test)))]
+    let builder = builder.manage(focus::Focus::os());
     builder
         .manage(overlay::Overlay::default())
         .manage(notice::Notices::default())
@@ -122,7 +127,9 @@ pub fn run() {
             let (capture_shortcut, print_screen_moved) = settings::init(app.handle());
             build_tray(app.handle(), &capture_shortcut)?;
             if let Some(reason) = print_screen_moved {
-                print_screen::tell(app.handle(), reason, open_settings);
+                print_screen::tell(app.handle(), reason, |app| {
+                    windows::open_from(app, Source::PrintScreenNotice, open_settings)
+                });
             }
             overlay::prewarm(app.handle());
             permission::on_startup(app.handle());
@@ -139,8 +146,12 @@ pub fn run() {
         .run(|app, event| {
             // Opening the app again (Finder, Spotlight) shows Settings.
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { .. } = event {
-                handle(app, Action::OpenSettings);
+            if let tauri::RunEvent::Reopen {
+                has_visible_windows: visible_windows,
+                ..
+            } = event
+            {
+                let _ = windows::open_from(app, Source::Reopen { visible_windows }, open_settings);
             }
             let _ = (app, event);
         });
@@ -238,9 +249,7 @@ fn handle(app: &AppHandle, action: Action) {
             overlay::start_capture(app);
         }
         Action::OpenSettings => {
-            if let Err(e) = open_settings(app) {
-                log::error!("could not open settings: {e}");
-            }
+            let _ = windows::open_from(app, Source::Menu, open_settings);
         }
         Action::CheckForUpdates => updates::check_now(app),
         Action::RestartToUpdate => updates::restart_now(app),
