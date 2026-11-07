@@ -1,7 +1,7 @@
 //! Tauri glue for the toasts: the window, the sound and the page's two commands.
 //!
-//! [`show`] plays the sound, builds the window if needed, moves it to the bottom of the display
-//! the capture was on and sends the toast (`toast:show`), or keeps it until the page asks for
+//! [`show`] builds the window if needed, moves it to the bottom of the display the capture was
+//! on, plays the sound and sends the toast (`toast:show`), or keeps it until the page asks for
 //! it (`toast_ready`). The page calls `toast_idle` when its last toast has faded; the window
 //! then hides. A capture hides it at once ([`hide_for_capture`]), so no toast is in the frame.
 
@@ -47,7 +47,7 @@ pub fn show<R: Runtime>(anchor: &WebviewWindow<R>, toast: Toast) {
     }
     // `None`: the page is still loading; it asks for the toast when ready.
     let sent = toasts.queue().push(toast);
-    // Only with a toast on its way.
+    // Not if the window failed: no toast, no sound.
     sound::play();
     let Some(shown) = sent else {
         return;
@@ -57,6 +57,10 @@ pub fn show<R: Runtime>(anchor: &WebviewWindow<R>, toast: Toast) {
         log::warn!("could not show the toast: {e}");
         toasts.queue().undelivered(shown);
         conceal(&window);
+        // The page only asks for missed toasts when it loads: reload it so it asks again.
+        if let Err(e) = window.reload() {
+            log::warn!("could not reload the toasts: {e}");
+        }
     }
 }
 

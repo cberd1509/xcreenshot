@@ -1,5 +1,6 @@
 //! Confirmation toasts: "Copied", "Saved" or "Shared" at the bottom of the display the capture
-//! was on, after every finished copy, save and share, with the system screenshot sound.
+//! was on, after every finished copy, save and share, with the system screenshot sound on
+//! macOS (Windows has none).
 //!
 //! One window (`toast.html`), built hidden at startup and shown only while toasts are up. It never
 //! takes focus: it can't become the key window, ignores the mouse, and is shown without
@@ -123,8 +124,7 @@ impl Queue {
     /// `shown` could not reach the page: it waits for the page to ask again, and the window is
     /// off screen meanwhile.
     pub fn undelivered(&mut self, shown: Shown) {
-        self.ready = false;
-        self.on_screen = false;
+        self.reloading();
         self.keep(shown);
     }
 
