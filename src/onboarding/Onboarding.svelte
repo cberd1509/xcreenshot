@@ -47,7 +47,8 @@
   /** Requests started, per check: only the latest one's answer counts, as they can cross. */
   const latest = { permission: 0, registered: 0, printScreen: 0 }
 
-  /** Checks now and plans the next check. Resolves to the permission, or null if it failed. */
+  /** Checks now and plans the next check. Resolves to the permission, or null if it failed or
+   * a newer check answers instead. */
   async function check(): Promise<boolean | null> {
     clearTimeout(timer)
     const id = ++latest.permission
@@ -58,7 +59,7 @@
       failed('permission_granted')(e)
     }
     // A focus check can overlap the timer's; only the latest one counts and plans the next.
-    if (id !== latest.permission) return now
+    if (id !== latest.permission) return null
     if (now === null) failures++
     else [granted, failures] = [now, 0]
     clearTimeout(timer)
@@ -130,9 +131,12 @@
     const unlisten = listen(CAPTURE_CLOSED, () => (tried = true))
     // Rust remembers a capture that ended before the listener was ready.
     unlisten
-      .then(() => invoke<boolean>('onboarding_tried'))
-      .then((t) => (tried ||= t))
-      .catch(failed('onboarding_tried'))
+      .then(() =>
+        invoke<boolean>('onboarding_tried')
+          .then((t) => (tried ||= t))
+          .catch(failed('onboarding_tried')),
+      )
+      .catch(failed('listen'))
     if (isMac) {
       void check()
       invoke<string>('permission_pane')

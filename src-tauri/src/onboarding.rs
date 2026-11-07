@@ -105,9 +105,12 @@ fn closed<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-/// The window's events: closing it records onboarding.
+/// The window's events: closing it records onboarding, and forgets a try for the next window.
 fn on_event<R: Runtime>(app: &AppHandle<R>, event: &WindowEvent) {
     if matches!(event, WindowEvent::Destroyed) {
+        if let Some(tried) = app.try_state::<Tried>() {
+            tried.0.store(false, Ordering::Relaxed);
+        }
         closed(app);
     }
 }
@@ -292,6 +295,15 @@ mod tests {
         app
     }
 
+    /// The saved shortcut is the fallback, as startup leaves it when Snipping Tool has PrtSc.
+    fn save_fallback(app: &AppHandle<MockRuntime>) {
+        let fallback = |p: &mut prefs::Prefs| {
+            p.shortcut = print_screen::FALLBACK.to_owned();
+            Ok(())
+        };
+        prefs::update(app, fallback).unwrap();
+    }
+
     #[test]
     fn switches_to_print_screen_once_snipping_tool_lets_go() {
         let app = app("onboarding-prtsc");
@@ -299,6 +311,7 @@ mod tests {
         let fake = FakeRegistrar::holding(print_screen::FALLBACK);
         let registered = h.state::<Registered>();
         registered.set(print_screen::FALLBACK, true);
+        save_fallback(h);
         assert!(claim_print_screen(h, &fake, ON, true), "still taken");
         assert!(
             !claim_print_screen(h, &fake, None, true),
@@ -325,6 +338,7 @@ mod tests {
         let mut taken = FakeRegistrar::holding(print_screen::FALLBACK);
         taken.taken.insert("PrintScreen".into());
         registered.set(print_screen::FALLBACK, true);
+        save_fallback(h);
         assert!(!claim_print_screen(h, &taken, OFF, true));
         assert_eq!(registered.get().accelerator, print_screen::FALLBACK);
         let _ = std::fs::remove_dir_all(h.path().app_data_dir().unwrap());
@@ -360,13 +374,17 @@ mod tests {
 
     #[test]
     fn remembers_a_capture_that_ended_while_the_window_was_open() {
-        let app = mock_builder().build(mock_context(noop_assets())).unwrap();
+        let app = app("onboarding-tried");
         let h = app.handle();
         assert!(!onboarding_tried(h.clone()), "never opened");
         assert!(show(h));
         assert!(!onboarding_tried(h.clone()));
         tauri::Emitter::emit(h, CAPTURE_CLOSED, ()).unwrap();
         assert!(onboarding_tried(h.clone()));
+        // Closing the window forgets it, before any next window loads.
+        on_event(h, &WindowEvent::Destroyed);
+        assert!(!onboarding_tried(h.clone()));
+        tauri::Emitter::emit(h, CAPTURE_CLOSED, ()).unwrap();
         // A new window starts over (the mock runtime can't destroy one, so watch it again).
         watch(h, &h.get_webview_window(WINDOW).unwrap());
         assert!(!onboarding_tried(h.clone()));

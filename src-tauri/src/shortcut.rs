@@ -79,16 +79,14 @@ pub fn swap(
     let Err(e) = registrar.register(new) else {
         // Another page is still recording: it works (it registered), but stays let go until
         // that page is done.
-        if registered.is_paused() {
-            if let Err(e) = registrar.unregister(new) {
+        match registered.is_paused().then(|| registrar.unregister(new)) {
+            Some(Ok(())) => registered.set_paused(new),
+            Some(Err(e)) => {
+                // Held, so it works now: better than a shortcut nobody can press.
                 log::warn!("could not keep {new} paused: {e}");
+                registered.set(new, true);
             }
-            registered.lock().shortcut = CaptureShortcut {
-                accelerator: new.to_owned(),
-                registered: true,
-            };
-        } else {
-            registered.set(new, true);
+            None => registered.set(new, true),
         }
         return Ok(());
     };
@@ -196,6 +194,16 @@ impl Registered {
         };
     }
 
+    /// `accelerator` works but stays let go while pages record (see [`resume`]).
+    fn set_paused(&self, accelerator: &str) {
+        let mut current = self.lock();
+        current.shortcut = CaptureShortcut {
+            accelerator: accelerator.to_owned(),
+            registered: true,
+        };
+        current.id = None;
+    }
+
     pub fn get(&self) -> CaptureShortcut {
         self.lock().shortcut.clone()
     }
@@ -208,7 +216,6 @@ impl Registered {
     }
 
     /// Whether the page in `label` has the capture shortcut paused.
-    #[cfg(test)]
     pub fn paused_by(&self, label: &str) -> bool {
         self.lock().paused_by.contains(label)
     }
@@ -252,6 +259,10 @@ pub fn resume_capture_shortcut<R: Runtime>(app: AppHandle<R>, webview: Webview<R
 /// The page in `label` stopped recording, reloaded or closed: takes the capture shortcut back
 /// if that page paused it and no other page is recording, so it always comes back.
 pub fn page_gone<R: Runtime>(app: &AppHandle<R>, label: &str) {
+    // Checked first, so other pages never wait on a shortcut change in progress.
+    if !app.state::<Registered>().paused_by(label) {
+        return;
+    }
     if let Some(shortcuts) = app.try_state::<GlobalShortcut<R>>() {
         resume(&*shortcuts, &app.state::<Registered>(), label);
     }

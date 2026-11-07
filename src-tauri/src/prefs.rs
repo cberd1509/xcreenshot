@@ -58,7 +58,11 @@ pub struct Prefs {
     /// The first-run window was finished (see `onboarding`). `None` (missing) in prefs saved
     /// before this was recorded, an install from before onboarding; a fresh install starts at
     /// `false`, and so does an invalid value.
-    #[serde(default, deserialize_with = "lenient_onboarded")]
+    #[serde(
+        default,
+        deserialize_with = "lenient_onboarded",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub onboarded: Option<bool>,
     /// The last region per display arrangement, newest first (see `region`).
     #[serde(default, deserialize_with = "lenient")]
@@ -444,6 +448,13 @@ pub(crate) mod tests {
             };
             assert_eq!(Prefs::load(&*s), expected, "{bad}");
         }
+        // A missing one stays missing when saved, so the migration still sees it.
+        let from_before = Prefs {
+            onboarded: None,
+            ..Prefs::default()
+        };
+        let stored = serde_json::to_value(&from_before).unwrap();
+        assert!(stored.get("onboarded").is_none(), "{stored}");
         // An invalid `onboarded` is not done, unlike a missing one.
         for bad in [json!("yes"), json!(null), json!(1)] {
             s.set(KEY, json!({ "onboarded": bad }));
