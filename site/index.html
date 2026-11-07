@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>xcreenshot — screenshots for your menu bar</title>
+    <meta
+      name="description"
+      content="Press the shortcut, drag a region, mark it up, then copy or save. A free, open source screenshot app that lives in your menu bar."
+    />
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#ffffff" />
+    <link rel="canonical" href="https://cberd1509.github.io/xcreenshot/" />
+    <link rel="icon" href="../assets/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="../src-tauri/icons/128x128@2x.png" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://cberd1509.github.io/xcreenshot/" />
+    <meta property="og:title" content="xcreenshot — screenshots for your menu bar" />
+    <meta
+      property="og:description"
+      content="Press the shortcut, drag a region, mark it up, then copy or save. It lives in your menu bar."
+    />
+    <meta property="og:image" content="https://cberd1509.github.io/xcreenshot/og.jpg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <script type="module" src="./src/main.ts"></script>
+  </head>
+  <body>
+    <header class="wrap top">
+      <a class="brand" href="./" aria-label="xcreenshot">
+        <svg aria-hidden="true" width="28" height="28" viewBox="0 0 256 256">
+          <rect x="8" y="8" width="240" height="240" rx="56" fill="#09090b" />
+          <g
+            transform="translate(56 56) scale(6)"
+            fill="none"
+            stroke="#fafafa"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M2 12a10 10 0 1 0 20 0a10 10 0 1 0-20 0" />
+            <path d="m14.31 8 5.74 9.94" />
+            <path d="M9.69 8h11.48" />
+            <path d="m7.38 12 5.74-9.94" />
+            <path d="M9.69 16 3.95 6.06" />
+            <path d="M14.31 16H2.83" />
+            <path d="m16.62 12-5.74 9.94" />
+          </g>
+        </svg>
+        <span>xcreenshot</span>
+      </a>
+      <nav class="nav">
+        <a href="#install">Install</a>
+        <a href="https://github.com/cberd1509/xcreenshot/releases">Releases</a>
+        <a href="https://github.com/cberd1509/xcreenshot">GitHub</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="wrap hero">
+        <h1><strong>A screenshot app</strong> that stays out of the way</h1>
+        <p class="lede">
+          Press the shortcut, drag a region, mark it up, then copy or save. It lives in your menu
+          bar.
+        </p>
+
+        <div class="actions" data-os="mac">
+          <a class="button primary" href="%DOWNLOAD_URL%">
+            <svg
+              aria-hidden="true"
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M12 15V3" />
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <path d="m7 10 5 5 5-5" />
+            </svg>
+            Download for Mac
+          </a>
+          <a class="button secondary" href="https://github.com/cberd1509/xcreenshot">View source</a>
+        </div>
+        <div class="actions" data-os="other" hidden>
+          <a class="button primary" href="https://github.com/cberd1509/xcreenshot"
+            >Get notified for Windows</a
+          >
+          <a class="button secondary" href="%DOWNLOAD_URL%">Download for Mac</a>
+        </div>
+        <p class="meta" data-os="mac">
+          Version %VERSION% · macOS 14 or later · Apple Silicon and Intel · Free and open source ·
+          <button class="switch" type="button" data-os-toggle>Not on a Mac?</button>
+        </p>
+        <p class="meta" data-os="other" hidden>
+          Mac only for now. The Windows version is in progress. ·
+          <button class="switch" type="button" data-os-toggle>On a Mac?</button>
+        </p>
+
+        <div class="window">
+          <video
+            controls
+            muted
+            loop
+            playsinline
+            preload="metadata"
+            width="1440"
+            height="900"
+            poster="/demo-poster.jpg"
+            aria-label="xcreenshot in use: drag a region, draw an arrow and a box, blur a field, then copy"
+          >
+            <source src="/demo.mp4" type="video/mp4" />
+          </video>
+        </div>
+      </section>
+
+      <section class="wrap steps-section" data-reveal>
+        <h2 class="eyebrow">How it works</h2>
+        <div class="steps">
+          <div class="step">
+            <div>
+              <span class="keys" data-os="mac">
+                <kbd>⌃</kbd><kbd>⇧</kbd><kbd>⌘</kbd><kbd>S</kbd>
+              </span>
+              <span class="keys" data-os="other" hidden>
+                <kbd>PrtSc</kbd>
+              </span>
+            </div>
+            <h3>Press the shortcut</h3>
+            <p>The screen freezes the moment you press it, so menus and hover states stay put.</p>
+          </div>
+          <div class="step">
+            <div class="size">1260 × 1064</div>
+            <h3>Drag a region</h3>
+            <p>
+              Add arrows, boxes, text, a highlighter or a blur. Undo with
+              <span data-os="mac">⌘Z</span><span data-os="other" hidden>Ctrl+Z</span>.
+            </p>
+          </div>
+          <div class="step">
+            <div>
+              <span class="keys" data-os="mac">
+                <kbd>⌘</kbd><kbd>C</kbd><span class="gap"></span><kbd>⌘</kbd><kbd>S</kbd>
+              </span>
+              <span class="keys" data-os="other" hidden>
+                <kbd>Ctrl</kbd><kbd>C</kbd><span class="gap"></span><kbd>Ctrl</kbd><kbd>S</kbd>
+              </span>
+            </div>
+            <h3>Copy or save</h3>
+            <p>Paste it anywhere at the size you saw it, or save a PNG.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="install" class="wrap split" data-reveal>
+        <div class="intro install-intro">
+          <h2><strong>Install</strong></h2>
+          <div class="tabs" role="tablist" aria-label="Platform">
+            <button
+              id="tab-mac"
+              class="tab"
+              type="button"
+              role="tab"
+              aria-selected="true"
+              aria-controls="install-mac"
+              data-os-tab="mac"
+            >
+              macOS
+            </button>
+            <button
+              id="tab-windows"
+              class="tab"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="install-windows"
+              tabindex="-1"
+              data-os-tab="other"
+            >
+              Windows
+            </button>
+          </div>
+          <p data-os="mac">
+            Signed and notarized by Apple. It updates itself, and you can turn that off in Settings.
+          </p>
+          <p data-os="other" hidden>The Windows version is in progress.</p>
+        </div>
+        <ol
+          id="install-mac"
+          class="install"
+          role="tabpanel"
+          aria-labelledby="tab-mac"
+          data-os="mac"
+        >
+          <li>
+            <span class="num">01</span
+            ><span><a class="strong" href="%DOWNLOAD_URL%">Download the .dmg</a> and open it.</span>
+          </li>
+          <li>
+            <span class="num">02</span><span>Drag xcreenshot to Applications, then open it.</span>
+          </li>
+          <li>
+            <span class="num">03</span
+            ><span
+              >Allow Screen Recording when it asks. That's it: press
+              <kbd class="small">⌃⇧⌘S</kbd></span
+            >
+          </li>
+        </ol>
+        <ol
+          id="install-windows"
+          class="install"
+          role="tabpanel"
+          aria-labelledby="tab-windows"
+          data-os="other"
+          hidden
+        >
+          <li>
+            <span class="num">01</span
+            ><span
+              >It isn't out yet. On
+              <a class="strong" href="https://github.com/cberd1509/xcreenshot">GitHub</a>, click
+              <b>Watch › Custom › Releases</b> to get an email when it is.</span
+            >
+          </li>
+          <li>
+            <span class="num">02</span
+            ><span>Once it's out: download the installer from Releases and run it.</span>
+          </li>
+          <li>
+            <span class="num">03</span
+            ><span
+              >Press <kbd class="small">PrtSc</kbd> to take a screenshot, or
+              <kbd class="small">Ctrl</kbd> <kbd class="small">Shift</kbd>
+              <kbd class="small">PrtSc</kbd> if Snipping Tool already uses PrtSc.</span
+            >
+          </li>
+        </ol>
+      </section>
+
+      <section class="wrap split settings" data-reveal>
+        <div class="intro">
+          <h2><strong>Small</strong> on purpose</h2>
+          <p>
+            A handful of settings: your shortcut, whether it remembers the last region, a magnifier
+            for exact pixels, and whether it opens at login.
+          </p>
+        </div>
+        <div class="shot">
+          <img
+            src="/settings-window.png"
+            width="1760"
+            height="1600"
+            loading="lazy"
+            alt="xcreenshot Settings: open at login, check for updates, the shortcut, remember region and magnifier"
+          />
+        </div>
+      </section>
+    </main>
+
+    <footer class="wrap footer">
+      <span>MIT License</span>
+      <span aria-hidden="true">·</span>
+      <a href="https://github.com/cberd1509/xcreenshot">Source</a>
+      <span aria-hidden="true">·</span>
+      <a href="https://github.com/cberd1509/xcreenshot/releases">Releases</a>
+      <span aria-hidden="true">·</span>
+      <a href="https://github.com/cberd1509/xcreenshot/issues">Report a bug</a>
+      <span class="spacer"></span>
+      <span>Windows version in progress.</span>
+    </footer>
+  </body>
+</html>

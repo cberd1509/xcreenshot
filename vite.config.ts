@@ -38,10 +38,10 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
     // scripts/ tests opt into the Node environment with a `@vitest-environment node` comment.
-    include: ['src/**/*.test.ts', 'scripts/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'scripts/**/*.test.ts', 'site/src/**/*.test.ts'],
     coverage: {
       provider: 'v8',
-      include: ['src/**/*.{ts,svelte}', 'scripts/**/*.ts'],
+      include: ['src/**/*.{ts,svelte}', 'scripts/**/*.ts', 'site/src/**/*.ts'],
       // Generated shadcn-svelte components, test helpers and the entry point.
       exclude: [
         ...coverageConfigDefaults.exclude,
@@ -50,7 +50,9 @@ export default defineConfig({
         'src/main.ts',
         'src/overlay/main.ts',
         'src/permission/main.ts',
+        'site/src/main.ts',
         'scripts/**/*.test.ts',
+        'site/src/**/*.test.ts',
         // Drives a browser; its pure parts are in scripts/media.ts.
         'scripts/readme-media.ts',
       ],

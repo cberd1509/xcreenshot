@@ -14,7 +14,7 @@ body{margin:0}
 a{color:#2563eb}a:hover{color:#1d4ed8}
 </style>
 </helmet>
-<div style="width: 880px; height: 680px; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden; border-radius: 12px; border: 1px solid #e4e4e7; background: #ffffff; font-family: Inter, system-ui, sans-serif; color: #09090b;">
+<div style="width: 880px; height: 800px; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden; border-radius: 12px; border: 1px solid #e4e4e7; background: #ffffff; font-family: Inter, system-ui, sans-serif; color: #09090b;">
   <div style="height: 44px; flex-shrink: 0; display: flex; align-items: center; padding: 0 16px; gap: 8px; border-bottom: 1px solid #e4e4e7; background: #fafafa;">
     <span style="width: 12px; height: 12px; border-radius: 50%; background: #d4d4d8;"></span>
     <span style="width: 12px; height: 12px; border-radius: 50%; background: #d4d4d8;"></span>
@@ -88,11 +88,23 @@ a{color:#2563eb}a:hover{color:#1d4ed8}
         </div>
       </section>
 
+      <div style="height: 1px; background: #e4e4e7;"></div>
+
+      <section id="about" style="display: flex; flex-direction: column; gap: 14px;">
+        <h2 style="margin: 0; font-size: 14px; font-weight: 600;">About</h2>
+        <div style="display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #71717a;">
+          <div style="font-size: 14px; font-weight: 500; color: #09090b;">xcreenshot</div>
+          <div>Version 0.1.0</div>
+          <a href="https://github.com/cberd1509/xcreenshot" style="align-self: flex-start;">github.com/cberd1509/xcreenshot</a>
+          <div>MIT License</div>
+        </div>
+      </section>
+
     </div>
   </div>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":880,"height":680}}'>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":880,"height":800}}'>
 class Component extends DCLogic {
   renderVals() { return {}; }
 }
