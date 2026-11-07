@@ -73,7 +73,7 @@ pub(crate) fn phase<R: Runtime>(app: &AppHandle<R>) -> MutexGuard<'_, Phase> {
 /// Shows or hides an overlay window and records which are on screen ([`shown`]).
 fn set_shown<R: Runtime>(window: &WebviewWindow<R>, on: bool) -> tauri::Result<()> {
     if on {
-        reveal(window);
+        stage(window, false);
         window.show()?;
     } else {
         window.hide()?;
@@ -277,9 +277,13 @@ fn finish<R: Runtime>(
     let displays: Vec<u32> = shows.iter().map(|(d, _)| *d).collect();
     on_main(app, move |app| {
         sync_escape(app);
+        // Not if a close ran first: nothing would hide the window again.
+        if phase(app).session() != Some(session) {
+            return;
+        }
         for d in displays {
             if let Some(window) = app.get_webview_window(&label(d)) {
-                prepare(&window);
+                stage(&window, true);
             }
         }
     });
@@ -578,7 +582,8 @@ fn build<R: Runtime>(app: &AppHandle<R>, display: u32) -> tauri::Result<WebviewW
         .always_on_top(true)
         .visible_on_all_workspaces(true)
         .background_color(tauri::window::Color(0, 0, 0, 255))
-        // The page draws while its window is hidden; WebKit would otherwise throttle it.
+        // The page fetches and draws its frame while the window is hidden or transparent;
+        // WebKit would otherwise throttle it.
         .background_throttling(BackgroundThrottlingPolicy::Disabled);
     // The first click on the overlay starts the selection instead of only focusing it.
     #[cfg(target_os = "macos")]
@@ -599,68 +604,65 @@ fn build<R: Runtime>(app: &AppHandle<R>, display: u32) -> tauri::Result<WebviewW
     Ok(window)
 }
 
-/// Puts a hidden overlay window on screen fully transparent, so its webview renders the frame
-/// while nothing shows yet: a hidden webview renders nothing, so a window shown as soon as the
-/// page drew would first show what it rendered last (black, or the previous capture). The
-/// page reports the paint once the frame is rendered; [`set_shown`] then makes it opaque.
-/// Main thread only.
-fn prepare<R: Runtime>(window: &WebviewWindow<R>) {
+/// Stages a hidden overlay window: on screen but fully transparent and click-through, so its
+/// webview renders the frame while nothing shows yet. A hidden webview renders nothing, so a
+/// window shown as soon as the page drew would first show what it rendered last (black, or
+/// the previous capture). The page reports the paint once the frame is rendered, and
+/// [`set_shown`] unstages it (opaque, taking clicks again). Main thread only.
+fn stage<R: Runtime>(window: &WebviewWindow<R>, staged: bool) {
+    let click_through = || {
+        if let Err(e) = window.set_ignore_cursor_events(staged) {
+            log::warn!("could not change clicks on {}: {e}", window.label());
+        }
+    };
+    // Click-through before it goes on screen; taking clicks only once it is opaque.
+    if staged {
+        click_through();
+    }
     #[cfg(all(target_os = "macos", not(test)))]
-    macos::set_opacity(window, false);
+    macos::stage(window, staged);
     #[cfg(all(target_os = "windows", not(test)))]
-    win::set_opacity(window, false);
-    let _ = window;
-}
-
-/// Makes a window [`prepare`]d for the paint opaque again.
-fn reveal<R: Runtime>(window: &WebviewWindow<R>) {
-    #[cfg(all(target_os = "macos", not(test)))]
-    macos::set_opacity(window, true);
-    #[cfg(all(target_os = "windows", not(test)))]
-    win::set_opacity(window, true);
-    let _ = window;
+    win::stage(window, staged);
+    if !staged {
+        click_through();
+    }
 }
 
 /// Window level and Spaces: `always_on_top` alone stays under the menu bar and the Dock.
 #[cfg(all(target_os = "macos", not(test)))]
 mod macos {
+    use crate::macos::{SCREEN_SAVER_LEVEL, ns_window};
     use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior};
+    use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
     use tauri::{Runtime, WebviewWindow};
 
-    fn ns_window<R: Runtime>(window: &WebviewWindow<R>) -> Option<&NSWindow> {
+    fn on_main<R: Runtime>(window: &WebviewWindow<R>) -> Option<&NSWindow> {
         if MainThreadMarker::new().is_none() {
             log::error!("overlay windows must be changed on the main thread");
             return None;
         }
-        match window.ns_window() {
-            // SAFETY: Tauri returns the live NSWindow of this window, and we are on the main
-            // thread.
-            Ok(ptr) => Some(unsafe { &*ptr.cast::<NSWindow>() }),
-            Err(e) => {
-                log::error!("no NSWindow for {}: {e}", window.label());
-                None
-            }
-        }
+        ns_window(window)
+            .inspect_err(|e| log::error!("no NSWindow for {}: {e}", window.label()))
+            .ok()
     }
 
-    /// Opaque, or on screen but fully transparent (ordered in without taking focus).
-    pub fn set_opacity<R: Runtime>(window: &WebviewWindow<R>, opaque: bool) {
-        let Some(ns_window) = ns_window(window) else {
+    /// Staged: ordered in at alpha 0 without taking focus. Unstaged: opaque.
+    pub fn stage<R: Runtime>(window: &WebviewWindow<R>, staged: bool) {
+        let Some(ns_window) = on_main(window) else {
             return;
         };
-        ns_window.setAlphaValue(if opaque { 1.0 } else { 0.0 });
-        if !opaque {
+        ns_window.setAlphaValue(if staged { 0.0 } else { 1.0 });
+        if staged {
             ns_window.orderFrontRegardless();
         }
     }
 
     pub fn raise<R: Runtime>(window: &WebviewWindow<R>) {
-        let Some(ns_window) = ns_window(window) else {
+        let Some(ns_window) = on_main(window) else {
             return;
         };
         // Above the menu bar (24), the Dock (20) and pop-up menus (101).
-        ns_window.setLevel(NSScreenSaverWindowLevel);
+        ns_window.setLevel(SCREEN_SAVER_LEVEL);
         // Over full-screen apps too. `visible_on_all_workspaces` already set CanJoinAllSpaces.
         ns_window.setCollectionBehavior(
             ns_window.collectionBehavior() | NSWindowCollectionBehavior::FullScreenAuxiliary,
@@ -672,32 +674,28 @@ mod macos {
 mod win {
     use tauri::{Runtime, WebviewWindow};
     use windows::Win32::Foundation::COLORREF;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GWL_EXSTYLE, GetWindowLongPtrW, LWA_ALPHA, SW_SHOWNOACTIVATE, SetLayeredWindowAttributes,
-        SetWindowLongPtrW, ShowWindow, WS_EX_LAYERED,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::{LWA_ALPHA, SetLayeredWindowAttributes};
 
-    /// Opaque, or on screen but fully transparent (a layered window at alpha 0, shown without
-    /// taking focus). Opaque drops the layered style, which costs a copy per frame.
-    pub fn set_opacity<R: Runtime>(window: &WebviewWindow<R>, opaque: bool) {
+    /// Staged: shown at alpha 0. Click-through (`set_ignore_cursor_events`) already made the
+    /// window layered, and Tauri keeps that style while it is set. Unstaged: alpha 255, before
+    /// click-through goes and with it the layered style.
+    pub fn stage<R: Runtime>(window: &WebviewWindow<R>, staged: bool) {
         let hwnd = match window.hwnd() {
             Ok(hwnd) => hwnd,
             Err(e) => return log::error!("no HWND for {}: {e}", window.label()),
         };
-        let layered = WS_EX_LAYERED.0 as isize;
+        let alpha = if staged { 0 } else { 255 };
         // SAFETY: Tauri returns the live HWND of this window, and we are on its thread.
-        unsafe {
-            let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-            if opaque {
-                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style & !layered);
-                return;
-            }
-            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | layered);
-            if let Err(e) = SetLayeredWindowAttributes(hwnd, COLORREF(0), 0, LWA_ALPHA) {
+        if let Err(e) = unsafe { SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA) } {
+            // Unstaging a window that was never staged fails (it is not layered): nothing to do.
+            // Staging failed: it stays hidden and shows opaque on the paint, as before.
+            if staged {
                 log::warn!("could not make {} transparent: {e}", window.label());
-                return;
             }
-            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            return;
+        }
+        if staged && let Err(e) = window.show() {
+            log::warn!("could not show {} for its paint: {e}", window.label());
         }
     }
 }
@@ -777,8 +775,6 @@ pub(crate) fn overlay_painted<R: Runtime>(
         return;
     };
     if paint.hidden {
-        // Out of the way of the Save dialog; shown with the others if it is cancelled.
-        let _ = set_shown(&window, false);
         return;
     }
     let app = window.app_handle();
