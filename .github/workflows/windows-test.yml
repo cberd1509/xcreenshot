@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: Branch, tag or commit to build (it needs .github/actions/setup)
+        description: Branch, tag or commit to build
         required: true
         default: main
 
@@ -32,20 +32,22 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
-      - uses: ./.github/actions/setup
+      # No caches here: a build of an arbitrary ref must never write a cache that main's
+      # workflows would restore. Slower, but isolated.
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - run: pnpm install --frozen-lockfile
+        shell: bash
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          workspaces: src-tauri
-          key: windows-test
 
       - name: Build
         shell: bash
         run: |
-          # The cache can bring back an installer from an earlier build.
-          rm -rf src-tauri/target/release/bundle/nsis
           pnpm tauri build --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
       - name: Name the installer
