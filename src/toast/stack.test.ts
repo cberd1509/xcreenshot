@@ -23,6 +23,7 @@ describe('toast stack', () => {
     const [toast] = push([], saved(4), 0)
     expect(toast).toEqual({
       id: 4,
+      seq: 4,
       kind: 'saved',
       detail: 'shot.png',
       count: 1,
@@ -51,6 +52,19 @@ describe('toast stack', () => {
     ])
     expect(stack[1]).toMatchObject({ detail: '640 × 1064', fades: 200 + SHOWN })
     expect(push(stack, copied(4), 300)[1].count).toBe(3)
+  })
+
+  it('keeps the order of the actions when an older toast arrives late', () => {
+    // The page got 3 and 4 before the ones it missed while loading.
+    let stack = push(push([], saved(3), 0), copied(4, 640), 0)
+    stack = push(stack, shared(2), 0)
+    expect(stack.map((t) => t.kind)).toEqual(['shared', 'saved', 'copied'])
+    // An older copy only counts: the newer size stays.
+    stack = push(stack, copied(1), 0)
+    expect(stack[2]).toMatchObject({ seq: 4, detail: '640 × 1064', count: 2 })
+    // Older than all three: it goes past the top.
+    const late = push(stack, { seq: 0, kind: 'saved', file: 'old.png' }, SHOWN)
+    expect(late.map((t) => t.seq)).toEqual([2, 3, 4])
   })
 
   it('does not count on a toast already fading', () => {

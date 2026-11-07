@@ -13,7 +13,7 @@ mod sound;
 /// Public to the crate so `generate_handler!` can reach the commands.
 pub(crate) mod window;
 
-pub use window::{Toasts, hide_for_capture, prewarm, show};
+pub use window::{Toasts, hide_for_capture, on_page_load, prewarm, show};
 
 use crate::capture::Bounds;
 use std::path::Path;
@@ -108,11 +108,31 @@ impl Queue {
             self.on_screen = true;
             return Some(shown);
         }
+        self.keep(shown);
+        None
+    }
+
+    /// Keeps `shown` for the page's next [`Queue::ready`], with the newest few.
+    fn keep(&mut self, shown: Shown) {
         self.pending.push(shown);
         if self.pending.len() > PENDING {
             self.pending.remove(0);
         }
-        None
+    }
+
+    /// `shown` could not reach the page: it waits for the page to ask again, and the window is
+    /// off screen meanwhile.
+    pub fn undelivered(&mut self, shown: Shown) {
+        self.ready = false;
+        self.on_screen = false;
+        self.keep(shown);
+    }
+
+    /// The page is loading (again): toasts wait until it listens. Returns whether the window
+    /// was on screen; it goes off until then.
+    pub fn reloading(&mut self) -> bool {
+        self.ready = false;
+        std::mem::take(&mut self.on_screen)
     }
 
     /// The page is listening: the toasts it missed. If there are any, the window is on screen.
@@ -245,6 +265,30 @@ mod tests {
         q.push(copied(2));
         assert!(!q.idle(1), "toast 2 is not shown yet");
         assert!(q.idle(2));
+    }
+
+    #[test]
+    fn a_toast_the_page_did_not_get_waits_for_it_to_ask_again() {
+        let mut q = Queue::default();
+        q.ready();
+        let lost = q.push(copied(1)).unwrap();
+        q.undelivered(lost.clone());
+        assert!(!q.idle(1), "off screen");
+        assert_eq!(q.push(copied(2)), None, "the page is not listening");
+        let missed: Vec<u64> = q.ready().iter().map(|s| s.seq).collect();
+        assert_eq!(missed, [1, 2]);
+        assert!(q.idle(2));
+    }
+
+    #[test]
+    fn a_reloading_page_gets_the_toasts_sent_meanwhile() {
+        let mut q = Queue::default();
+        q.ready();
+        q.push(copied(1));
+        assert!(q.reloading(), "it was on screen");
+        assert!(!q.reloading());
+        assert_eq!(q.push(copied(2)), None);
+        assert_eq!(q.ready().len(), 1);
     }
 
     #[test]

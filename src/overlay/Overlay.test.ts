@@ -125,6 +125,18 @@ async function quick(props: { magnifier?: boolean } = {}) {
   return view
 }
 const bar = () => screen.queryByRole('toolbar', { name: 'Quick copy' })
+const bars = () => screen.queryAllByRole('toolbar', { name: 'Quick copy' })
+
+/** Two displays' pages, both drawn with quick copy on. */
+async function twoDisplays() {
+  frame = () => rgba(info.width, info.height)
+  render(Overlay)
+  render(Overlay)
+  await waitFor(() => expect(called('overlay_ready')).toHaveLength(2))
+  await emit('overlay:show', { ...info, quickCopy: true })
+  await waitFor(() => expect(called('overlay_painted')).toHaveLength(2))
+  expect(bars()).toHaveLength(2)
+}
 
 const layer = () => screen.getByTestId('annotations')
 /** The annotation shapes on the Konva stage. */
@@ -1243,7 +1255,7 @@ describe('Overlay', () => {
       expect(called('overlay_copy')).toHaveLength(0)
     })
 
-    it('remembers the region of a save in a quick copy capture', async () => {
+    it('remembers nothing in a quick copy capture, a save included', async () => {
       vi.spyOn(console, 'error').mockImplementation(() => {})
       finished = (cmd) => {
         if (cmd === 'overlay_copy') throw new Error('busy')
@@ -1254,7 +1266,12 @@ describe('Overlay', () => {
       await waitFor(() => expect(called('overlay_copy')).toHaveLength(1))
       await userEvent.keyboard(ctrl('s'))
       await waitFor(() =>
-        expect(output('overlay_save', 0)).toEqual({ session: 9, rect: rect200, blurs: [] }),
+        expect(output('overlay_save', 0)).toEqual({
+          session: 9,
+          rect: rect200,
+          blurs: [],
+          remember: false,
+        }),
       )
     })
 
@@ -1268,16 +1285,41 @@ describe('Overlay', () => {
     it('leaves the bar alone when pressed', async () => {
       await quick()
       fireEvent.pointerDown(bar()!, point({ x: 500, y: 680 }))
+      fireEvent.pointerMove(overlay(), point({ x: 600, y: 600 }))
+      fireEvent.pointerUp(overlay(), point({ x: 600, y: 600 }))
+      await tick()
       expect(selection()).toBeNull()
+      expect(called('overlay_copy')).toHaveLength(0)
     })
 
-    it('annotates this time only, on every display', async () => {
-      const annotating: unknown[] = []
-      await listen('overlay:annotate', (e) => annotating.push(e.payload))
+    it('takes no second drag while a quick copy is on its way', async () => {
+      let copied!: () => void
+      const copying = new Promise<void>((resolve) => {
+        copied = resolve
+      })
+      finished = (cmd) => (cmd === 'overlay_copy' ? copying : null)
+      await quick()
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      await waitFor(() => expect(called('overlay_copy')).toHaveLength(1))
+      drag({ x: 300, y: 300 }, { x: 400, y: 400 })
+      expect(rect()).toEqual([10, 10, 100, 50])
+      copied()
+      await tick()
+      expect(called('overlay_copy')).toHaveLength(1)
+    })
+
+    it('annotates this time on every display', async () => {
+      await twoDisplays()
+      const [annotate] = screen.getAllByRole('button', { name: 'Annotate this time' })
+      await userEvent.click(annotate)
+      await waitFor(() => expect(bars()).toHaveLength(0))
+      expect(screen.getAllByTestId('hint')).toHaveLength(2)
+    })
+
+    it('annotates this time only, as usual', async () => {
       await quick()
       await userEvent.click(screen.getByRole('button', { name: 'Annotate this time' }))
       await waitFor(() => expect(bar()).toBeNull())
-      expect(annotating).toEqual([{ session: 9 }])
       expect(hint()).toEqual(['Drag select area', 'Esc cancel'])
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       await waitFor(() => expect(stages).toHaveLength(1))
@@ -1286,11 +1328,12 @@ describe('Overlay', () => {
     })
 
     it('follows another display, but not an older capture', async () => {
-      await quick()
+      await twoDisplays()
       await emit('overlay:annotate', { session: 8 })
-      expect(bar()).toBeInTheDocument()
+      await tick()
+      expect(bars()).toHaveLength(2)
       await emit('overlay:annotate', { session: 9 })
-      await waitFor(() => expect(bar()).toBeNull())
+      await waitFor(() => expect(bars()).toHaveLength(0))
     })
 
     it('turns quick copy off and goes on as usual', async () => {

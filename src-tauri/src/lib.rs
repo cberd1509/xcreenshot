@@ -114,10 +114,11 @@ pub fn run() {
         ])
         // The capture shortcut is paused while Settings records a new one: take it back if
         // that page reloads or its window closes mid-recording.
-        .on_page_load(|webview, _| {
+        .on_page_load(|webview, payload| {
             if webview.label() == SETTINGS_WINDOW {
                 shortcut::resume_capture(webview.app_handle());
             }
+            toast::on_page_load(webview, payload);
         })
         .on_window_event(|window, event| {
             if window.label() == SETTINGS_WINDOW && matches!(event, tauri::WindowEvent::Destroyed) {

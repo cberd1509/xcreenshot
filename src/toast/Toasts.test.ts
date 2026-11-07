@@ -97,7 +97,8 @@ describe('Toasts', () => {
     await settle()
     answer!([copied(1), { seq: 2, kind: 'saved', file: 'a.png' }])
     await settle()
-    expect(texts()).toEqual(['Saved a.png', 'Copied 1260 × 1064'])
+    // In the order of the actions: the missed copy came first.
+    expect(texts()).toEqual(['Copied 1260 × 1064', 'Saved a.png'])
   })
 
   it('shows Shared alone when the service is not known', async () => {

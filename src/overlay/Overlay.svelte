@@ -286,8 +286,8 @@
     try {
       const session = current
       const marks = await annotator?.exportAnnotations(rect, scale)
-      // A quick copy's region is not remembered.
-      const remember = !(quick && command === 'overlay_copy')
+      // Nothing in a quick copy capture is remembered (Ctrl+S works there too).
+      const remember = !quick
       const { body, headers } = outputRequest(session, rect, marks, { anchor, remember })
       await invoke(command, body, { headers })
     } catch (e) {
@@ -322,6 +322,8 @@
 
   function onpointerdown(e: PointerEvent) {
     if (e.button !== 0 || idle) return
+    // A quick copy is on its way: one drag, one copy, so a second drag can't race it.
+    if (quick && busy) return
     const start = at(e)
     pointer = start
     const handle = (e.target as Element).closest<HTMLElement>('[data-handle]')?.dataset.handle

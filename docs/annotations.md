@@ -188,8 +188,10 @@ Share (#19) will send the same request.
 ## Toasts
 
 A copy, save or share that worked shows a toast ("Copied · W × H", "Saved · file name", "Shared ·
-service") at the bottom of the display the capture was on, with the system screenshot sound
-(`src-tauri/src/toast/`). One window holds them: built on the first toast, it never takes focus
-or clicks, and hides once the last toast has faded. The page (`src/toast/`) stacks them: each
-fades about 1.2 s after it shows, the same action again while its toast is up counts on it (×2,
-×3), and at most three show, the older ones smaller and dimmer.
+service") at the bottom of the display the capture was on (`src-tauri/src/toast/`). On macOS it
+plays the system screenshot sound; Windows has none, so it is silent there. One window holds
+the toasts: built hidden at startup, it never takes focus or clicks, and shows only while a
+toast is up. Toasts sent while its page loads, or that fail to reach it, wait until the page
+asks for them. The page (`src/toast/`) stacks them in the order of the actions: each fades
+about 1.2 s after it shows, the same action again while its toast is up counts on it (×2, ×3),
+and at most three show, the older ones smaller and dimmer.

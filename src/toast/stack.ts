@@ -13,6 +13,8 @@ export type Kind = ToastEvent['kind']
 export type Toast = {
   /** Keys the toast on the page; a repeat keeps it. */
   id: number
+  /** The number of the newest action it shows. */
+  seq: number
   kind: Kind
   detail: string
   /** How many times the action ran while this toast was up. */
@@ -47,19 +49,26 @@ export function detail(event: ToastEvent): string {
 export const up = (toast: Toast, now: number) => now < toast.fades
 
 /**
- * Adds a toast at the bottom. The same action while its toast is still up counts on that toast
- * instead, which moves to the bottom with the new detail. The oldest go past `MOST`.
+ * Adds a toast in the order of the actions (Rust's numbers): at the bottom, unless it arrived
+ * late. The same action while its toast is still up counts on that toast instead, which moves
+ * with the new detail; an older one only counts. The oldest go past `MOST`.
  */
 export function push(stack: Toast[], event: ToastEvent, now: number): Toast[] {
   const same = stack.find((t) => t.kind === event.kind && up(t, now))
+  if (same && event.seq < same.seq)
+    return stack.map((t) => (t === same ? { ...t, count: t.count + 1 } : t))
   const toast: Toast = {
     id: same?.id ?? event.seq,
+    seq: event.seq,
     kind: event.kind,
     detail: detail(event),
     count: (same?.count ?? 0) + 1,
     fades: now + SHOWN,
   }
-  return [...stack.filter((t) => t !== same), toast].slice(-MOST)
+  const rest = stack.filter((t) => t !== same)
+  const after = rest.findIndex((t) => t.seq > event.seq)
+  rest.splice(after === -1 ? rest.length : after, 0, toast)
+  return rest.slice(-MOST)
 }
 
 /** The stack without the toasts done fading at `now`. */

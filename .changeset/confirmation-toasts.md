@@ -2,4 +2,4 @@
 'xcreenshot': minor
 ---
 
-A short toast with the screenshot sound confirms every copy, save and share.
+A short toast confirms every copy, save and share, with the screenshot sound on macOS.

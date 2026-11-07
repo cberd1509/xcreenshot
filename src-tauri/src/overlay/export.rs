@@ -207,15 +207,13 @@ async fn copy_with<R: Runtime>(
         remember(region);
     }
     // Only if nothing happened meanwhile: a save started (even cancelled) keeps the overlay.
-    // The toast only with the close: not over a Save dialog, nor under a newer capture.
+    // The copy worked either way, so it gets its toast, unless its capture is over (Esc
+    // meanwhile): a newer capture's overlay would cover it.
     let anchor = window.clone();
     on_main(window.app_handle(), move |app| {
-        let mut closing = false;
-        close_if(app, |phase| {
-            closing = phase.copy_may_close(session, saves);
-            closing
-        });
-        if closing {
+        let current = phase(app).session() == Some(session);
+        close_if(app, |phase| phase.copy_may_close(session, saves));
+        if current {
             toast::show(&anchor, Toast::Copied { width, height });
         }
     });
@@ -886,9 +884,29 @@ mod tests {
             Ok(())
         });
         assert_eq!(copy(h, session, px(0, 0, 2, 2), clipboard), Ok(()));
-        // The overlay stays: the user moved on from that copy. No toast either.
+        // The overlay stays: the user moved on from that copy. It still worked, so it says so.
         std::thread::sleep(std::time::Duration::from_millis(50));
         assert!(is_open(h, session));
+        let copied = Toast::Copied {
+            width: 2,
+            height: 2,
+        };
+        assert_eq!(toasts(h), [copied]);
+    }
+
+    #[test]
+    fn a_copy_whose_capture_ended_meanwhile_shows_no_toast() {
+        let app = app();
+        let h = app.handle();
+        let session = shown(h, &[1]);
+        // Esc closes the overlay while the clipboard works.
+        let handle = h.clone();
+        let clipboard: Clipboard = Box::new(move |_: &RgbaImage, _| {
+            *phase(&handle) = super::super::Phase::Idle;
+            Ok(())
+        });
+        assert_eq!(copy(h, session, px(0, 0, 2, 2), clipboard), Ok(()));
+        std::thread::sleep(std::time::Duration::from_millis(50));
         assert!(toasts(h).is_empty());
     }
 

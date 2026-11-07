@@ -9,8 +9,10 @@ use super::{LABEL, Queue, SIZE, Shown, Toast, place, sound};
 use crate::capture::Bounds;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use tauri::utils::config::BackgroundThrottlingPolicy;
+use tauri::webview::{PageLoadEvent, PageLoadPayload};
 use tauri::{
-    AppHandle, Emitter, Manager, Runtime, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    AppHandle, Emitter, Manager, Runtime, State, Webview, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder,
 };
 
 const SHOW_EVENT: &str = "toast:show";
@@ -34,7 +36,6 @@ pub fn show<R: Runtime>(anchor: &WebviewWindow<R>, toast: Toast) {
     let Some(toasts) = app.try_state::<Toasts>() else {
         return;
     };
-    sound::play();
     let window = match window(app) {
         Ok(window) => window,
         Err(e) => return log::error!("could not open the toast window: {e}"),
@@ -45,12 +46,36 @@ pub fn show<R: Runtime>(anchor: &WebviewWindow<R>, toast: Toast) {
         log::warn!("could not place the toasts: {e}");
     }
     // `None`: the page is still loading; it asks for the toast when ready.
-    let Some(shown) = toasts.queue().push(toast) else {
+    let sent = toasts.queue().push(toast);
+    // Only with a toast on its way.
+    sound::play();
+    let Some(shown) = sent else {
         return;
     };
     present(&window);
-    if let Err(e) = app.emit_to(LABEL, SHOW_EVENT, shown) {
+    if let Err(e) = app.emit_to(LABEL, SHOW_EVENT, &shown) {
         log::warn!("could not show the toast: {e}");
+        toasts.queue().undelivered(shown);
+        conceal(&window);
+    }
+}
+
+/// Wired to every page load: when the toast page starts loading (again), toasts wait until it
+/// listens, so none is sent to a page that can't get it.
+pub fn on_page_load<R: Runtime>(webview: &Webview<R>, payload: &PageLoadPayload<'_>) {
+    if webview.label() == LABEL && payload.event() == PageLoadEvent::Started {
+        reloading(webview.app_handle());
+    }
+}
+
+fn reloading<R: Runtime>(app: &AppHandle<R>) {
+    let Some(toasts) = app.try_state::<Toasts>() else {
+        return;
+    };
+    if toasts.queue().reloading()
+        && let Some(window) = app.get_webview_window(LABEL)
+    {
+        conceal(&window);
     }
 }
 
@@ -342,6 +367,26 @@ mod tests {
         show(&overlay, copied(2));
         toast_idle(window, h.state(), 2);
         assert!(!h.state::<Toasts>().queue().clear(), "hidden");
+    }
+
+    #[test]
+    fn a_reloading_page_gets_the_next_toast_when_it_asks() {
+        let app = app();
+        let h = app.handle();
+        let seen = record(h);
+        let overlay = anchor(h);
+        reloading(h);
+        show(&overlay, copied(1));
+        let window = h.get_webview_window(LABEL).unwrap();
+        toast_ready(window.clone(), h.state());
+        reloading(h);
+        show(&overlay, copied(2));
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "not sent to a loading page"
+        );
+        let missed = toast_ready(window, h.state());
+        assert_eq!(missed.iter().map(|s| s.seq).collect::<Vec<_>>(), [2]);
     }
 
     #[test]
