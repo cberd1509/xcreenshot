@@ -11,14 +11,15 @@ export type OutputRequest = { body: Uint8Array; headers: Record<string, string> 
 
 /**
  * The request to copy, save or share `rect` (physical px) of `session`, with the annotations
- * exported for that rect, if any. The header has `layer` only when the body has its pixels, and
- * `anchor` (the Share button, logical px) only for a share.
+ * exported for that rect, if any. The header has `layer` only when the body has its pixels,
+ * `anchor` (the Share button, logical px) only for a share, and `remember: false` only when the
+ * region must not be remembered (a quick copy).
  */
 export function outputRequest(
   session: number,
   rect: Rect,
   out?: AnnotationExport | null,
-  anchor?: Rect,
+  { anchor, remember = true }: { anchor?: Rect; remember?: boolean } = {},
 ): OutputRequest {
   const layer = out?.layer
   const head = {
@@ -27,6 +28,7 @@ export function outputRequest(
     blurs: out?.blurs ?? [],
     ...(layer && { layer: { x: layer.x, y: layer.y, width: layer.width, height: layer.height } }),
     ...(anchor && { anchor }),
+    ...(!remember && { remember }),
   }
   const body = layer
     ? new Uint8Array(layer.rgba.buffer, layer.rgba.byteOffset, layer.rgba.byteLength)

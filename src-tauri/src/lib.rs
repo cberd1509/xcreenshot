@@ -20,6 +20,7 @@ mod settings;
 /// Public so the overlay (and later commands) can call it; see `docs/share.md`.
 pub mod share;
 mod shortcut;
+mod toast;
 mod updates;
 mod windows;
 
@@ -77,6 +78,7 @@ pub fn run() {
     builder
         .manage(overlay::Overlay::default())
         .manage(notice::Notices::default())
+        .manage(toast::Toasts::default())
         .manage(shortcut::Registered::default())
         .manage(actions::MenuShows::default())
         .manage(overlay::global_escape::<tauri::Wry>())
@@ -107,13 +109,16 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             login::open_login_items,
             about::open_repo,
+            toast::window::toast_ready,
+            toast::window::toast_idle,
         ])
         // The capture shortcut is paused while Settings records a new one: take it back if
         // that page reloads or its window closes mid-recording.
-        .on_page_load(|webview, _| {
+        .on_page_load(|webview, payload| {
             if webview.label() == SETTINGS_WINDOW {
                 shortcut::resume_capture(webview.app_handle());
             }
+            toast::on_page_load(webview, payload);
         })
         .on_window_event(|window, event| {
             if window.label() == SETTINGS_WINDOW && matches!(event, tauri::WindowEvent::Destroyed) {
@@ -133,6 +138,7 @@ pub fn run() {
                 });
             }
             overlay::prewarm(app.handle());
+            toast::prewarm(app.handle());
             permission::on_startup(app.handle());
             updates::start(app.handle(), offer_update);
             share::init(app.handle());
@@ -259,7 +265,8 @@ fn handle(app: &AppHandle, action: Action) {
 }
 
 /// The Settings webview is created on demand and destroyed on close. The only webviews kept
-/// while idle are the hidden overlay windows, prewarmed so the hotkey is fast.
+/// while idle are the hidden overlay windows, prewarmed so the hotkey is fast, and the toast
+/// window, prewarmed so the first toast builds nothing between captures.
 fn open_settings(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     windows::show_window(app, SETTINGS_WINDOW, WebviewUrl::default(), |b| {
         b.title("xcreenshot Settings")

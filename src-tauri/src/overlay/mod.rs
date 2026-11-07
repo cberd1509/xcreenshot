@@ -109,6 +109,8 @@ pub struct FrameInfo {
     pub escape_shortcut: bool,
     /// The remembered region on this display, in logical px: the page starts with it selected.
     pub region: Option<LogicalRect>,
+    /// Quick copy is on: the page copies as soon as the drag ends.
+    pub quick_copy: bool,
 }
 
 impl FrameInfo {
@@ -247,7 +249,8 @@ impl Phase {
     /// the cursor; it gets keyboard focus if it was captured, unless a display starts with a
     /// remembered region from `regions`, which then does. `regions` is `None` when not every
     /// display was captured: the key would name another arrangement, so nothing is restored or
-    /// remembered. `escape_shortcut` tells the pages whether Rust owns Esc.
+    /// remembered. `escape_shortcut` tells the pages whether Rust owns Esc, and `quick_copy`
+    /// whether the drag copies at once.
     pub fn open(
         &mut self,
         session: u64,
@@ -255,6 +258,7 @@ impl Phase {
         focus: Option<u32>,
         escape_shortcut: bool,
         regions: Option<&[Region]>,
+        quick_copy: bool,
     ) -> Option<Vec<(u32, FrameInfo)>> {
         let Phase::Capturing {
             session: id,
@@ -282,6 +286,7 @@ impl Phase {
                     logical_height: f.logical.height,
                     escape_shortcut,
                     region: regions.and_then(|r| region::find(r, &arrangement, &monitor)),
+                    quick_copy,
                 };
                 Slot {
                     display: f.id,
@@ -594,6 +599,7 @@ pub(crate) mod tests {
             focus,
             true,
             Some(&[]),
+            false,
         )
         .unwrap();
         p
@@ -641,7 +647,7 @@ pub(crate) mod tests {
         assert!(p.begin(1, Instant::now()));
         assert!(!p.begin(2, Instant::now()), "pressed while capturing");
         assert_eq!(p.session(), Some(1));
-        p.open(1, vec![frame(1, 4, 2)], None, true, Some(&[]))
+        p.open(1, vec![frame(1, 4, 2)], None, true, Some(&[]), false)
             .unwrap();
         assert!(!p.begin(3, Instant::now()), "pressed while open");
         assert_eq!(p.session(), Some(1));
@@ -656,7 +662,7 @@ pub(crate) mod tests {
         assert!(p.begin(1, Instant::now()));
         assert_eq!(p.front(), Some(Front::Unknown));
         p.set_front(Front::Us);
-        p.open(1, vec![frame(1, 4, 2)], None, true, Some(&[]))
+        p.open(1, vec![frame(1, 4, 2)], None, true, Some(&[]), false)
             .unwrap();
         assert_eq!(p.front(), Some(Front::Us));
         assert_eq!(p.end(), Some(Front::Us));
@@ -668,10 +674,13 @@ pub(crate) mod tests {
         let mut p = Phase::default();
         assert!(p.begin(1, Instant::now()));
         p = Phase::Idle; // Esc during the capture
-        assert_eq!(p.open(1, vec![frame(1, 4, 2)], None, true, Some(&[])), None);
+        assert_eq!(
+            p.open(1, vec![frame(1, 4, 2)], None, true, Some(&[]), false),
+            None
+        );
         assert!(p.begin(2, Instant::now()));
         assert_eq!(
-            p.open(1, vec![frame(1, 4, 2)], None, true, Some(&[])),
+            p.open(1, vec![frame(1, 4, 2)], None, true, Some(&[]), false),
             None,
             "older capture"
         );
@@ -689,6 +698,7 @@ pub(crate) mod tests {
                 None,
                 true,
                 Some(&[]),
+                false,
             )
             .unwrap();
         let info = |width, height| FrameInfo {
@@ -699,6 +709,7 @@ pub(crate) mod tests {
             logical_height: height / 2,
             escape_shortcut: true,
             region: None,
+            quick_copy: false,
         };
         assert_eq!(shows, [(1, info(4, 2)), (2, info(6, 8))]);
         assert_eq!(p.pending_frame(2), Some(info(6, 8)));
@@ -708,7 +719,7 @@ pub(crate) mod tests {
             json,
             serde_json::json!({
                 "session": 4, "width": 4, "height": 2, "logicalWidth": 2, "logicalHeight": 1,
-                "escapeShortcut": true, "region": null
+                "escapeShortcut": true, "region": null, "quickCopy": false
             })
         );
     }
@@ -733,6 +744,7 @@ pub(crate) mod tests {
                 Some(1),
                 true,
                 Some(std::slice::from_ref(&on_two)),
+                false,
             )
             .unwrap();
         assert_eq!(shows[0].1.region, None, "other displays start empty");
@@ -752,7 +764,9 @@ pub(crate) mod tests {
         };
         let mut p = Phase::default();
         p.begin(2, Instant::now());
-        let shows = p.open(2, frames(), Some(1), true, Some(&[other])).unwrap();
+        let shows = p
+            .open(2, frames(), Some(1), true, Some(&[other]), false)
+            .unwrap();
         assert!(shows.iter().all(|(_, info)| info.region.is_none()));
         let paint = p.painted(2, 1).unwrap();
         assert_eq!((paint.focus, paint.fallback), (Some(1), None));
@@ -760,7 +774,7 @@ pub(crate) mod tests {
         // A display was not captured: nothing restored, and nothing to remember.
         let mut p = Phase::default();
         p.begin(3, Instant::now());
-        let shows = p.open(3, frames(), Some(1), true, None).unwrap();
+        let shows = p.open(3, frames(), Some(1), true, None, false).unwrap();
         assert!(shows.iter().all(|(_, info)| info.region.is_none()));
         assert_eq!(p.region(3, 2, px(0, 0, 1, 1)), None);
     }
@@ -983,7 +997,7 @@ pub(crate) mod tests {
         assert!(!p.wants_escape());
         p.begin(1, Instant::now());
         assert!(p.wants_escape());
-        p.open(1, vec![frame(1, 4, 2)], None, false, Some(&[]))
+        p.open(1, vec![frame(1, 4, 2)], None, false, Some(&[]), false)
             .unwrap();
         assert!(!p.wants_escape(), "the pages forward Esc");
         assert!(open(None).wants_escape());

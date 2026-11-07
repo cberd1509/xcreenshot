@@ -31,8 +31,22 @@ describe('outputRequest', () => {
 
   it('sends the Share button rect for a share', () => {
     const anchor = { x: 40, y: 300, width: 80, height: 36 }
-    const r = outputRequest(3, rect, null, anchor)
+    const r = outputRequest(3, rect, null, { anchor })
     expect(header(r)).toEqual({ session: 3, rect, blurs: [], anchor })
+  })
+
+  it('says when the region must not be remembered', () => {
+    expect(header(outputRequest(3, rect, null, { remember: false }))).toEqual({
+      session: 3,
+      rect,
+      blurs: [],
+      remember: false,
+    })
+    expect(header(outputRequest(3, rect, null, { remember: true }))).toEqual({
+      session: 3,
+      rect,
+      blurs: [],
+    })
   })
 
   it('sends blurs with no layer', () => {

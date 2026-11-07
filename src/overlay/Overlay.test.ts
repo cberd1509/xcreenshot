@@ -116,6 +116,28 @@ async function shown(props: { magnifier?: boolean } = {}) {
   return view
 }
 
+/** Mounts and draws the 2x frame with quick copy on. */
+async function quick(props: { magnifier?: boolean } = {}) {
+  frame = () => rgba(info.width, info.height)
+  const view = await mount(props)
+  await emit('overlay:show', { ...info, quickCopy: true })
+  await waitFor(() => expect(called('overlay_painted')).toHaveLength(1))
+  return view
+}
+const bar = () => screen.queryByRole('toolbar', { name: 'Quick copy' })
+const bars = () => screen.queryAllByRole('toolbar', { name: 'Quick copy' })
+
+/** Two displays' pages, both drawn with quick copy on. */
+async function twoDisplays() {
+  frame = () => rgba(info.width, info.height)
+  render(Overlay)
+  render(Overlay)
+  await waitFor(() => expect(called('overlay_ready')).toHaveLength(2))
+  await emit('overlay:show', { ...info, quickCopy: true })
+  await waitFor(() => expect(called('overlay_painted')).toHaveLength(2))
+  expect(bars()).toHaveLength(2)
+}
+
 const layer = () => screen.getByTestId('annotations')
 /** The annotation shapes on the Konva stage. */
 const shapes = () => stages[0].children[0].children.filter((n) => n.className !== 'Transformer')
@@ -1174,6 +1196,188 @@ describe('Overlay', () => {
       await waitFor(() => expect(settings.magnifier).toBe(true))
       expect(called('set_capture_option')[0].args).toEqual({ key: 'magnifier', on: true })
       resetSettings()
+    })
+  })
+
+  describe('quick copy', () => {
+    beforeEach(() => {
+      stages.length = 0
+    })
+
+    it('shows the Quick copy bar instead of the key hint', async () => {
+      await quick()
+      expect(bar()).toHaveTextContent(
+        'Quick copy · drag to copy Annotate this time Turn off Esc cancel',
+      )
+      expect(screen.queryByTestId('hint')).toBeNull()
+    })
+
+    it('copies as soon as the drag ends, and says it is a quick copy', async () => {
+      await quick()
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      await waitFor(() =>
+        expect(output('overlay_copy', 0)).toEqual({
+          session: 9,
+          rect: rect200,
+          blurs: [],
+          remember: false,
+        }),
+      )
+      expect(called('overlay_copy')).toHaveLength(1)
+      // No toolbar or annotations meanwhile.
+      expect(stages).toHaveLength(0)
+      expect(bar()).toBeInTheDocument()
+    })
+
+    it('copies a drag let go while Space moves it', async () => {
+      await quick()
+      fireEvent.pointerDown(overlay(), point({ x: 10, y: 10 }))
+      fireEvent.pointerMove(overlay(), point({ x: 60, y: 40 }))
+      await fireEvent.keyDown(window, { key: ' ' })
+      fireEvent.pointerMove(overlay(), point({ x: 80, y: 50 }))
+      fireEvent.pointerUp(overlay(), point({ x: 80, y: 50 }))
+      await waitFor(() => expect(called('overlay_copy')).toHaveLength(1))
+      expect(output('overlay_copy', 0)).toMatchObject({ remember: false })
+    })
+
+    it('copies nothing for a click, a cancelled drag or a move', async () => {
+      await quick()
+      fireEvent.pointerDown(overlay(), point({ x: 10, y: 10 }))
+      fireEvent.pointerUp(overlay(), point({ x: 10, y: 10 }))
+      fireEvent.pointerDown(overlay(), point({ x: 10, y: 10 }))
+      fireEvent.pointerMove(overlay(), point({ x: 110, y: 60 }))
+      fireEvent.pointerCancel(overlay(), point({ x: 110, y: 60 }))
+      expect(selection()).not.toBeNull()
+      fireEvent.pointerDown(overlay(), point({ x: 20, y: 20 }))
+      fireEvent.pointerMove(overlay(), point({ x: 30, y: 30 }))
+      fireEvent.pointerUp(overlay(), point({ x: 30, y: 30 }))
+      await tick()
+      expect(called('overlay_copy')).toHaveLength(0)
+    })
+
+    it('remembers nothing in a quick copy capture, a save included', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      finished = (cmd) => {
+        if (cmd === 'overlay_copy') throw new Error('busy')
+        return null
+      }
+      await quick()
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      await waitFor(() => expect(called('overlay_copy')).toHaveLength(1))
+      await userEvent.keyboard(ctrl('s'))
+      await waitFor(() =>
+        expect(output('overlay_save', 0)).toEqual({
+          session: 9,
+          rect: rect200,
+          blurs: [],
+          remember: false,
+        }),
+      )
+    })
+
+    it('keeps the magnifier', async () => {
+      await quick({ magnifier: true })
+      fireEvent.pointerDown(overlay(), point({ x: 10, y: 10 }))
+      fireEvent.pointerMove(overlay(), point({ x: 20, y: 30 }))
+      expect(screen.getByTestId('magnifier')).toHaveTextContent('40, 60')
+    })
+
+    it('leaves the bar alone when pressed', async () => {
+      await quick()
+      fireEvent.pointerDown(bar()!, point({ x: 500, y: 680 }))
+      fireEvent.pointerMove(overlay(), point({ x: 600, y: 600 }))
+      fireEvent.pointerUp(overlay(), point({ x: 600, y: 600 }))
+      await tick()
+      expect(selection()).toBeNull()
+      expect(called('overlay_copy')).toHaveLength(0)
+    })
+
+    it('takes no second drag while a quick copy is on its way', async () => {
+      let copied!: () => void
+      const copying = new Promise<void>((resolve) => {
+        copied = resolve
+      })
+      finished = (cmd) => (cmd === 'overlay_copy' ? copying : null)
+      await quick()
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      await waitFor(() => expect(called('overlay_copy')).toHaveLength(1))
+      drag({ x: 300, y: 300 }, { x: 400, y: 400 })
+      expect(rect()).toEqual([10, 10, 100, 50])
+      copied()
+      await tick()
+      expect(called('overlay_copy')).toHaveLength(1)
+    })
+
+    it('annotates this time on every display', async () => {
+      await twoDisplays()
+      const [annotate] = screen.getAllByRole('button', { name: 'Annotate this time' })
+      await userEvent.click(annotate)
+      await waitFor(() => expect(bars()).toHaveLength(0))
+      expect(screen.getAllByTestId('hint')).toHaveLength(2)
+    })
+
+    it('annotates this time only, as usual', async () => {
+      await quick()
+      await userEvent.click(screen.getByRole('button', { name: 'Annotate this time' }))
+      await waitFor(() => expect(bar()).toBeNull())
+      expect(hint()).toEqual(['Drag select area', 'Esc cancel'])
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      await waitFor(() => expect(stages).toHaveLength(1))
+      expect(called('overlay_copy')).toHaveLength(0)
+      expect(called('set_capture_option')).toHaveLength(0)
+    })
+
+    it('follows another display, but not an older capture', async () => {
+      await twoDisplays()
+      await emit('overlay:annotate', { session: 8 })
+      await tick()
+      expect(bars()).toHaveLength(2)
+      await emit('overlay:annotate', { session: 9 })
+      await waitFor(() => expect(bars()).toHaveLength(0))
+    })
+
+    it('turns quick copy off and goes on as usual', async () => {
+      await quick()
+      await userEvent.click(screen.getByRole('button', { name: 'Turn off' }))
+      await waitFor(() => expect(bar()).toBeNull())
+      expect(called('set_capture_option')[0].args).toEqual({ key: 'quickCopy', on: false })
+      expect(screen.getByTestId('hint')).toBeInTheDocument()
+      resetSettings()
+    })
+
+    it('says where to turn it back on, on hover and keyboard focus', async () => {
+      await quick()
+      const tip = 'You can turn it back on in Settings.'
+      expect(screen.queryByText(tip)).toBeNull()
+      await userEvent.tab()
+      expect(screen.getByRole('button', { name: 'Annotate this time' })).toHaveFocus()
+      await userEvent.tab()
+      expect(screen.getByRole('button', { name: 'Turn off' })).toHaveFocus()
+      const content = { selector: '[data-slot=tooltip-content]' }
+      expect(await screen.findByText(tip, content)).toBeInTheDocument()
+      // Enter presses the focused button only: it does not copy.
+      await userEvent.keyboard('{Enter}')
+      await waitFor(() => expect(bar()).toBeNull())
+      expect(called('overlay_copy')).toHaveLength(0)
+      resetSettings()
+    })
+
+    it('says it on hover too', async () => {
+      await quick()
+      await userEvent.hover(screen.getByRole('button', { name: 'Turn off' }))
+      const tip = 'You can turn it back on in Settings.'
+      expect(
+        await screen.findByText(tip, { selector: '[data-slot=tooltip-content]' }),
+      ).toBeVisible()
+    })
+
+    it('is off again for the next capture', async () => {
+      await quick()
+      await emit('overlay:closed')
+      await emit('overlay:show', { ...info, session: 10 })
+      await waitFor(() => expect(called('overlay_painted')).toHaveLength(2))
+      expect(bar()).toBeNull()
+      expect(screen.getByTestId('hint')).toBeInTheDocument()
     })
   })
 })

@@ -16,6 +16,7 @@ const saved: Settings = {
   shortcut: 'Alt+Shift+F5',
   rememberRegion: false,
   magnifier: true,
+  quickCopy: true,
   openAtLogin: false,
   checkForUpdates: false,
 }
@@ -102,9 +103,11 @@ describe('settings', () => {
   })
 
   it('changes capture options through the narrower command the overlay may use', async () => {
+    await setSetting('quickCopy', false)
     await setSetting('magnifier', false)
     await setSetting('rememberRegion', true)
     expect(calls).toEqual([
+      { cmd: 'set_capture_option', args: { key: 'quickCopy', on: false } },
       { cmd: 'set_capture_option', args: { key: 'magnifier', on: false } },
       { cmd: 'set_capture_option', args: { key: 'rememberRegion', on: true } },
     ])

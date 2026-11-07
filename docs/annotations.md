@@ -166,9 +166,10 @@ invoke('overlay_copy' | 'overlay_save' | 'overlay_share', body, {
 
 - `body` is the layer's `rgba` as a `Uint8Array` (empty without a layer). It reaches Rust as
   `InvokeBody::Raw`, never as JSON, and Rust reads the pixels in place.
-- `json` is `{ session, rect, layer?: { x, y, width, height }, blurs, anchor? }`. `rect` is the
-  selection in physical px; `layer` is there only when the body has its pixels. `anchor` is the
-  Share button's rect in logical px, for a share only (see `docs/share.md`).
+- `json` is `{ session, rect, layer?: { x, y, width, height }, blurs, anchor?, remember? }`.
+  `rect` is the selection in physical px; `layer` is there only when the body has its pixels.
+  `anchor` is the Share button's rect in logical px, for a share only (see `docs/share.md`).
+  `remember: false` keeps the region from being remembered: a quick copy sends it.
 
 `overlay/export.rs` parses the request (the body must be exactly `width × height × 4` bytes, and
 there may be at most 256 blurs, each clipped to the selection) and crops the frame. Then `output/compose.rs`:
@@ -183,3 +184,14 @@ Then the PNG is encoded and copied or saved. Composing a full Retina screen (302
 layer over all of it and a 1000×600 blur takes about 24 ms in a release build.
 
 Share (#19) will send the same request.
+
+## Toasts
+
+A copy, save or share that worked shows a toast ("Copied · W × H", "Saved · file name", "Shared ·
+service") at the bottom of the display the capture was on (`src-tauri/src/toast/`). On macOS it
+plays the system screenshot sound; Windows has none, so it is silent there. One window holds
+the toasts: built hidden at startup, it never takes focus or clicks, and shows only while a
+toast is up. Toasts sent while its page loads, or that fail to reach it, wait until the page
+asks for them. The page (`src/toast/`) stacks them in the order of the actions: each fades
+about 1.2 s after it shows, the same action again while its toast is up counts on it (×2, ×3),
+and at most three show, the older ones smaller and dimmer.

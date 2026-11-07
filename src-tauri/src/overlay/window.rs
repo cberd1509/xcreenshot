@@ -16,7 +16,7 @@
 use super::{FrameInfo, Phase, captured_all, diff, display_at, display_id, label, ms_since};
 use crate::capture::{self, Bounds, CaptureError, Display, DisplayFrame};
 use crate::focus;
-use crate::region::{self, Region};
+use crate::region::{self, Start};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -103,8 +103,8 @@ pub(crate) trait Screen: Send + 'static {
     fn capture(&self, ids: &[u32]) -> Result<Vec<DisplayFrame>, CaptureError>;
     /// The cursor in the displays' OS units (points on macOS, pixels on Windows).
     fn cursor<R: Runtime>(&self, app: &AppHandle<R>) -> Option<(f64, f64)>;
-    /// The remembered regions, or `None` while the setting is off (see `region::load`).
-    fn regions<R: Runtime>(&self, app: &AppHandle<R>) -> Option<Vec<Region>>;
+    /// The remembered regions and whether quick copy is on (see `region::load`).
+    fn start<R: Runtime>(&self, app: &AppHandle<R>) -> Start;
     /// Pays the OS's one-time capture setup now. Does nothing unless capture is already
     /// allowed, so it never asks for permission.
     fn warm_up(&self);
@@ -141,7 +141,7 @@ impl Screen for Os {
         Some((p.x / scale, p.y / scale))
     }
 
-    fn regions<R: Runtime>(&self, app: &AppHandle<R>) -> Option<Vec<Region>> {
+    fn start<R: Runtime>(&self, app: &AppHandle<R>) -> Start {
         region::load(app)
     }
 
@@ -201,9 +201,10 @@ fn start_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) -> Option<u64
     // Before any overlay window takes focus.
     let front = focus::frontmost(app);
     phase(app).set_front(front);
-    // Before the capture, so a notice isn't in the frame; with none open it costs nothing. The
-    // overlay is always on top: a notice waits until it closes.
+    // Before the capture, so a notice or a toast isn't in the frame; with none open it costs
+    // nothing. The overlay is always on top: a notice waits until it closes.
     crate::notice::hide_for_capture(app);
+    crate::toast::hide_for_capture(app);
     // Before the capture, so the pages learn whether Rust owns Esc.
     let escape_shortcut = sync_escape(app);
     let worker = app.clone();
@@ -213,17 +214,19 @@ fn start_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) -> Option<u64
         let focus = screen
             .cursor(&worker)
             .and_then(|(x, y)| display_at(&listed, x, y));
-        // Read last, just before the session opens, so it follows the current setting. Not if
-        // a display failed: see `Phase::open`.
-        let complete = frames.as_ref().is_ok_and(|f| captured_all(&listed, f));
-        let regions = complete.then(|| screen.regions(&worker)).flatten();
+        // Read last, just before the session opens, so it follows the current setting. No
+        // regions if a display failed: see `Phase::open`.
+        let mut start = screen.start(&worker);
+        if !frames.as_ref().is_ok_and(|f| captured_all(&listed, f)) {
+            start.regions = None;
+        }
         finish(
             &worker,
             session,
             frames,
             focus,
             escape_shortcut,
-            regions.as_deref(),
+            start,
             WATCHDOG,
         );
     });
@@ -242,7 +245,7 @@ fn finish<R: Runtime>(
     frames: Result<Vec<DisplayFrame>, CaptureError>,
     focus: Option<u32>,
     escape_shortcut: bool,
-    regions: Option<&[Region]>,
+    start: Start,
     watchdog: Duration,
 ) {
     let frames = match frames {
@@ -253,7 +256,16 @@ fn finish<R: Runtime>(
         }
     };
     // `None`: Esc closed the overlay during the capture.
-    let Some(shows) = phase(app).open(session, frames, focus, escape_shortcut, regions) else {
+    let regions = start.regions.as_deref();
+    let opened = phase(app).open(
+        session,
+        frames,
+        focus,
+        escape_shortcut,
+        regions,
+        start.quick_copy,
+    );
+    let Some(shows) = opened else {
         return;
     };
     on_main(app, |app| {
@@ -506,7 +518,8 @@ fn place<R: Runtime>(app: &AppHandle<R>, displays: &[Display]) -> tauri::Result<
     Ok(())
 }
 
-fn position<R: Runtime>(window: &WebviewWindow<R>, b: Bounds) -> tauri::Result<()> {
+/// Moves and sizes `window` to `b`, in its display's OS units (see `capture::Display`).
+pub(crate) fn position<R: Runtime>(window: &WebviewWindow<R>, b: Bounds) -> tauri::Result<()> {
     if cfg!(target_os = "windows") {
         // Pixels. Move first: Windows rescales a window that moves to a monitor with another DPI.
         window.set_position(PhysicalPosition::new(b.x, b.y))?;
@@ -714,7 +727,7 @@ pub(crate) mod tests {
         permitted: bool,
         ids: Vec<u32>,
         release: mpsc::Receiver<bool>,
-        regions: Vec<Region>,
+        start: Start,
         warmed: Option<Box<dyn Fn() + Send>>,
     }
 
@@ -748,8 +761,8 @@ pub(crate) mod tests {
             None
         }
 
-        fn regions<R: Runtime>(&self, _: &AppHandle<R>) -> Option<Vec<Region>> {
-            Some(self.regions.clone())
+        fn start<R: Runtime>(&self, _: &AppHandle<R>) -> Start {
+            self.start.clone()
         }
 
         fn warm_up(&self) {
@@ -767,7 +780,10 @@ pub(crate) mod tests {
                 permitted,
                 ids,
                 release,
-                regions: Vec::new(),
+                start: Start {
+                    regions: Some(Vec::new()),
+                    quick_copy: false,
+                },
                 warmed: None,
             },
             tx,
@@ -777,6 +793,7 @@ pub(crate) mod tests {
     pub(crate) fn app() -> tauri::App<MockRuntime> {
         mock_builder()
             .manage(Overlay::default())
+            .manage(crate::toast::Toasts::default())
             .build(mock_context(noop_assets()))
             .unwrap()
     }
@@ -799,6 +816,7 @@ pub(crate) mod tests {
         }));
         mock_builder()
             .manage(Overlay::default())
+            .manage(crate::toast::Toasts::default())
             .manage(HeldEscape::default())
             .manage(key)
             .build(mock_context(noop_assets()))
@@ -958,7 +976,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_remembered_region_opens_selected_on_its_display() {
-        use crate::region::{Monitor, arrangement, tests::rect};
+        use crate::region::{Monitor, Region, arrangement, tests::rect};
         let app = app();
         let h = app.handle();
         let monitors = [Monitor::of(&frame(1, 4, 2)), Monitor::of(&frame(2, 4, 2))];
@@ -968,7 +986,7 @@ pub(crate) mod tests {
             rect: rect(0.5, 0.0, 1.0, 1.0),
         };
         let (mut screen, release) = fake(true, &[1, 2]);
-        screen.regions = vec![remembered];
+        screen.start.regions = Some(vec![remembered]);
         let session = start_with(h, screen).unwrap();
         release.send(true).unwrap();
         wait_until("the session to open", || is_open(h, session));
@@ -980,12 +998,32 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn quick_copy_reaches_the_pages() {
+        let app = app();
+        let h = app.handle();
+        let (mut screen, release) = fake(true, &[1]);
+        screen.start.quick_copy = true;
+        let session = start_with(h, screen).unwrap();
+        release.send(true).unwrap();
+        wait_until("the session to open", || is_open(h, session));
+        assert!(phase(h).pending_frame(1).unwrap().quick_copy);
+    }
+
+    #[test]
     fn a_failure_from_an_older_capture_is_ignored() {
         let app = app();
         let h = app.handle();
         let session = open(h, &[1]);
         let failed = Err(CaptureError::NoDisplays);
-        finish(h, session + 100, failed, None, true, None, WATCHDOG);
+        finish(
+            h,
+            session + 100,
+            failed,
+            None,
+            true,
+            Start::default(),
+            WATCHDOG,
+        );
         assert!(is_open(h, session));
     }
 

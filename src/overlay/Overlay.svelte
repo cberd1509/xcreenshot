@@ -30,6 +30,7 @@
   import { control, keyLabels, shortcut, typing } from './keys'
   import { TOAST } from './panel'
   import Magnifier from './Magnifier.svelte'
+  import QuickBar from './QuickBar.svelte'
   import Selection from './Selection.svelte'
   import SizeBadge from './SizeBadge.svelte'
 
@@ -44,6 +45,8 @@
     escapeShortcut: boolean
     /** The remembered region on this display (logical px), selected from the start. */
     region: Rect | null
+    /** Quick copy is on: the drag copies at once. */
+    quickCopy: boolean
   }
   /** Sent with `overlay:escape`; answered with the same token. */
   type EscapeEvent = { session: number; token: number }
@@ -55,6 +58,8 @@
    * one never undoes a newer selection; `session` keeps one capture's events out of the next.
    */
   type Selected = { label: string; active: boolean; session: number; stamp: number }
+  /** Broadcast to every overlay page: this capture goes on without quick copy. */
+  const ANNOTATE = 'overlay:annotate'
 
   type Drag =
     /** `paused`: Space was pressed before anything was drawn; the start follows the pointer. */
@@ -105,6 +110,8 @@
   let seen = 0
   /** The selection is the remembered region, untouched: Esc closes rather than clears it. */
   let restored = $state(false)
+  /** Quick copy, for this capture: the drag copies at once and there is no toolbar. */
+  let quick = $state(false)
 
   /**
    * Whether annotations show in the selection. Only then does a press outside it keep them
@@ -180,6 +187,7 @@
     const drawing = generation
     escapeShortcut = info.escapeShortcut
     reset()
+    quick = info.quickCopy
     try {
       const data = await invoke<ArrayBuffer | Uint8Array<ArrayBuffer>>('overlay_frame', {
         session: info.session,
@@ -278,7 +286,9 @@
     try {
       const session = current
       const marks = await annotator?.exportAnnotations(rect, scale)
-      const { body, headers } = outputRequest(session, rect, marks, anchor)
+      // Nothing in a quick copy capture is remembered (Ctrl+S works there too).
+      const remember = !quick
+      const { body, headers } = outputRequest(session, rect, marks, { anchor, remember })
       await invoke(command, body, { headers })
     } catch (e) {
       console.error(`${command} failed`, e)
@@ -312,6 +322,8 @@
 
   function onpointerdown(e: PointerEvent) {
     if (e.button !== 0 || idle) return
+    // A quick copy is on its way: one drag, one copy, so a second drag can't race it.
+    if (quick && busy) return
     const start = at(e)
     pointer = start
     const handle = (e.target as Element).closest<HTMLElement>('[data-handle]')?.dataset.handle
@@ -364,7 +376,21 @@
   }
 
   function onpointerup() {
+    // A draw moved with Space held is still a draw.
+    const drew = drag?.kind === 'draw' || (drag?.kind === 'move' && drag.resume?.kind === 'draw')
     drag = null
+    // Quick copy: letting go of the drag copies, as Copy does. A click selects nothing.
+    if (quick && drew && physical) void finish('overlay_copy', physical)
+  }
+
+  /** Leaves quick copy for the rest of this capture, on every display. */
+  function annotate() {
+    void emit(ANNOTATE, { session: current })
+  }
+
+  function turnOff() {
+    setCaptureOption('quickCopy', false)
+    annotate()
   }
 
   /** Space held during a draw or resize: the selection moves, as a move drag, until let go. */
@@ -457,6 +483,9 @@
         seen = payload.stamp
         if (payload.label !== view.label && payload.active) reset()
       }),
+      listen<{ session: number }>(ANNOTATE, ({ payload }) => {
+        if (payload.session === current) quick = false
+      }),
     ])
     // Asked only once the listeners are registered, so a frame sent while this window was
     // loading is never missed.
@@ -480,12 +509,13 @@
   {onpointerdown}
   {onpointermove}
   {onpointerup}
-  onpointercancel={onpointerup}
+  onpointercancel={() => (drag = null)}
 >
   <canvas bind:this={canvas} width="0" height="0"></canvas>
+  <!-- Quick copy has no toolbar or annotations: the drag ends the capture. -->
   <Annotator
     bind:this={annotator}
-    {selection}
+    selection={quick ? null : selection}
     {display}
     {scale}
     source={canvas}
@@ -539,11 +569,15 @@
     <div class={TOAST} role="alert">{notice}</div>
   {/if}
   {#if !idle}
-    <div class="hint" data-testid="hint">
-      {#each hints as [key, action] (key)}
-        <span><b>{key}</b> {action}</span>
-      {/each}
-    </div>
+    {#if quick}
+      <QuickBar {annotate} {turnOff} />
+    {:else}
+      <div class="hint" data-testid="hint">
+        {#each hints as [key, action] (key)}
+          <span><b>{key}</b> {action}</span>
+        {/each}
+      </div>
+    {/if}
   {/if}
 </div>
 
