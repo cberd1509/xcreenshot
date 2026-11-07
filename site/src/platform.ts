@@ -6,7 +6,6 @@ export interface NavigatorLike {
   userAgentData?: { platform?: string }
   platform?: string
   userAgent?: string
-  maxTouchPoints?: number
 }
 
 const STORAGE_KEY = 'xcreenshot-os'
@@ -14,14 +13,12 @@ const STORAGE_KEY = 'xcreenshot-os'
 const isOs = (value: unknown): value is Os => value === 'mac' || value === 'other'
 
 /**
- * Mac unless the browser says otherwise; Windows, Linux, iPhones and iPads all get the "other"
- * page. iPads report a Mac, so a touch screen rules it out.
+ * "other" (the Windows page) only when the browser says Windows; Macs, Linux, iPhones, iPads and
+ * unknown systems get the Mac page. `\bwin` matches Win32, Win64 and Windows but not Darwin.
  */
 export function detectOs(nav: NavigatorLike | undefined): Os {
   const hint = [nav?.userAgentData?.platform, nav?.platform, nav?.userAgent].find(Boolean)
-  if (!hint) return 'mac'
-  const mac = /mac/i.test(hint) && !/iphone|ipad|ipod/i.test(hint)
-  return mac && (nav?.maxTouchPoints ?? 0) <= 1 ? 'mac' : 'other'
+  return hint && /\bwin/i.test(hint) ? 'other' : 'mac'
 }
 
 /** The version the visitor picked, if storage allows it. */
@@ -62,41 +59,31 @@ const TAB_KEYS: Record<string, (i: number, n: number) => number> = {
 }
 
 /**
- * Shows the remembered or detected version, and wires the controls that switch it: the
- * `data-os-toggle` links flip it, and the `data-os-tab` tabs pick one (arrow keys move between
- * them). Every choice is remembered.
+ * Shows the remembered or detected version and wires the `data-os-tab` tabs that pick one. Every
+ * tablist on the page (the hero's and Install's) shows the same choice, and the arrow keys move
+ * within the tablist they're pressed in. Every choice is remembered.
  */
 export function setUpOs(root: ParentNode, nav: NavigatorLike, storage: () => Storage): Os {
-  let os = readChoice(storage) ?? detectOs(nav)
-  const choose = (next: Os) => {
-    os = next
-    saveChoice(storage, os)
-    applyOs(root, os)
-  }
+  const os = readChoice(storage) ?? detectOs(nav)
   applyOs(root, os)
 
-  const toggles = [...root.querySelectorAll<HTMLElement>('[data-os-toggle]')]
-  for (const toggle of toggles) {
-    toggle.addEventListener('click', () => {
-      choose(os === 'mac' ? 'other' : 'mac')
-      // The clicked link is now hidden: keep focus on the one that took its place.
-      toggles.find((el) => !el.closest('[hidden]'))?.focus()
-    })
-  }
-
-  const tabs = [...root.querySelectorAll<HTMLElement>('[data-os-tab]')]
-  tabs.forEach((tab, i) => {
+  for (const tab of root.querySelectorAll<HTMLElement>('[data-os-tab]')) {
     const value = tab.dataset.osTab
-    if (!isOs(value)) return
-    tab.addEventListener('click', () => choose(value))
+    if (!isOs(value)) continue
+    tab.addEventListener('click', () => {
+      saveChoice(storage, value)
+      applyOs(root, value)
+    })
     tab.addEventListener('keydown', (event) => {
       const move = TAB_KEYS[event.key]
       if (!move) return
       event.preventDefault()
-      const next = tabs[move(i, tabs.length)]
+      const list = tab.closest('[role="tablist"]') ?? root
+      const tabs = [...list.querySelectorAll<HTMLElement>('[data-os-tab]')]
+      const next = tabs[move(tabs.indexOf(tab), tabs.length)]
       next.focus()
       next.click()
     })
-  })
+  }
   return os
 }

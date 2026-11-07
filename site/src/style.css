@@ -58,7 +58,6 @@ a:visited {
 
 /* Links in running text, and nav links on hover. */
 .strong,
-.switch,
 .footer a,
 .nav a:hover {
   text-decoration: underline;
@@ -162,6 +161,18 @@ h2 strong {
   flex-wrap: wrap;
   gap: 10px;
   justify-content: center;
+}
+
+/* One platform's buttons and version line, under the platform switch. */
+.platform {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+/* The platform switch sits above the buttons, where they started before it. */
+.hero .tabs {
   margin-top: 8px;
 }
 
@@ -202,16 +213,6 @@ h2 strong {
 .meta {
   font-size: 13px;
   color: var(--muted);
-}
-
-.switch {
-  padding: 0;
-  border: 0;
-  background: none;
-  font: inherit;
-  font-weight: 600;
-  color: var(--fg);
-  cursor: pointer;
 }
 
 .window {
@@ -412,9 +413,11 @@ kbd.small {
   align-items: center;
 }
 
+/* Exactly the scaled window (880 × 800 at 0.68), right-aligned: no empty space around it. */
 .shot {
-  flex: 999 1 480px;
+  flex: 0 1 598px;
   min-width: 0;
+  margin-left: auto;
   overflow: hidden;
   border-radius: 12px;
   border: 1px solid var(--rule);
