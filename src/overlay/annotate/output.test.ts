@@ -31,8 +31,22 @@ describe('outputRequest', () => {
 
   it('sends the Share button rect for a share', () => {
     const anchor = { x: 40, y: 300, width: 80, height: 36 }
-    const r = outputRequest(3, rect, null, anchor)
+    const r = outputRequest(3, rect, null, { anchor })
     expect(header(r)).toEqual({ session: 3, rect, blurs: [], anchor })
+  })
+
+  it('marks a quick copy', () => {
+    expect(header(outputRequest(3, rect, null, { quick: true }))).toEqual({
+      session: 3,
+      rect,
+      blurs: [],
+      quick: true,
+    })
+    expect(header(outputRequest(3, rect, null, { quick: false }))).toEqual({
+      session: 3,
+      rect,
+      blurs: [],
+    })
   })
 
   it('sends blurs with no layer', () => {

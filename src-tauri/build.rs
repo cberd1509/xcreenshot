@@ -25,6 +25,8 @@ fn main() {
         "login_item_needs_approval",
         "open_login_items",
         "open_repo",
+        "toast_ready",
+        "toast_idle",
     ];
     let mut attributes = tauri_build::Attributes::new()
         .app_manifest(tauri_build::AppManifest::new().commands(commands));

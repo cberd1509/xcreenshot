@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-toast-ready"
+description = "Enables the toast_ready command without any pre-configured scope."
+commands.allow = ["toast_ready"]
+
+[[permission]]
+identifier = "deny-toast-ready"
+description = "Denies the toast_ready command without any pre-configured scope."
+commands.deny = ["toast_ready"]

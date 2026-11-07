@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "toast",
+  "description": "Toast window: get the toasts, ask for the ones sent while it loaded, say when the last one faded",
+  "windows": ["toast"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-toast-ready",
+    "allow-toast-idle"
+  ]
+}

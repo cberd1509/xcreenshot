@@ -31,6 +31,7 @@ pub struct Settings {
     pub shortcut: String,
     pub remember_region: bool,
     pub magnifier: bool,
+    pub quick_copy: bool,
     pub open_at_login: bool,
     pub check_for_updates: bool,
     /// Goes up with every saved change. Pages ignore a snapshot older than the one they show.
@@ -43,6 +44,7 @@ impl Settings {
             shortcut: p.shortcut.clone(),
             remember_region: p.remember_region,
             magnifier: p.magnifier,
+            quick_copy: p.quick_copy,
             open_at_login: p.open_at_login,
             check_for_updates: p.check_for_updates,
             version,
@@ -58,6 +60,7 @@ enum Change {
     Shortcut(Option<String>),
     RememberRegion(bool),
     Magnifier(bool),
+    QuickCopy(bool),
     OpenAtLogin(bool),
     CheckForUpdates(bool),
 }
@@ -105,6 +108,7 @@ impl Change {
                 }
             }
             Change::Magnifier(on) => prefs.magnifier = on,
+            Change::QuickCopy(on) => prefs.quick_copy = on,
             Change::OpenAtLogin(on) => login::set(os.login, prefs, on)?,
             Change::CheckForUpdates(on) => prefs.check_for_updates = on,
         }
@@ -227,7 +231,8 @@ pub async fn set_pref<R: Runtime>(
     set_with(&app, app.global_shortcut(), &key, value).map_err(Into::into)
 }
 
-/// The overlay's ⋯ menu: only Remember region and Magnifier.
+/// The overlay's own switches: Remember region and Magnifier (its ⋯ menu), and Quick copy (its
+/// Turn off button).
 #[tauri::command]
 pub async fn set_capture_option<R: Runtime>(
     app: AppHandle<R>,
@@ -240,7 +245,7 @@ pub async fn set_capture_option<R: Runtime>(
 
 fn capture_option(key: &str) -> Result<(), &'static str> {
     match key {
-        "rememberRegion" | "magnifier" => Ok(()),
+        "rememberRegion" | "magnifier" | "quickCopy" => Ok(()),
         _ => Err(UNKNOWN),
     }
 }
@@ -304,6 +309,7 @@ mod tests {
             Change::RememberRegion(false)
         );
         assert_eq!(change("magnifier", json!(true)), Change::Magnifier(true));
+        assert_eq!(change("quickCopy", json!(true)), Change::QuickCopy(true));
         assert_eq!(
             change("openAtLogin", json!(false)),
             Change::OpenAtLogin(false)
@@ -315,6 +321,7 @@ mod tests {
         for (key, value) in [
             ("magnifier", json!("yes")),
             ("magnifier", json!(null)),
+            ("quickCopy", json!(0)),
             ("shortcut", json!(1)),
             ("lastSaveDir", json!("/tmp")),
             ("loginItemAdded", json!(true)),
@@ -328,6 +335,7 @@ mod tests {
     fn the_overlay_can_change_only_the_capture_options() {
         assert_eq!(capture_option("rememberRegion"), Ok(()));
         assert_eq!(capture_option("magnifier"), Ok(()));
+        assert_eq!(capture_option("quickCopy"), Ok(()));
         for key in ["shortcut", "openAtLogin", "checkForUpdates", "nope"] {
             assert_eq!(capture_option(key), Err(UNKNOWN), "{key}");
         }
@@ -383,8 +391,10 @@ mod tests {
             .apply(&mut p, "checkForUpdates", json!(false))
             .unwrap();
         fakes.apply(&mut p, "openAtLogin", json!(false)).unwrap();
+        fakes.apply(&mut p, "quickCopy", json!(true)).unwrap();
         let s = Settings::new(&p, 0);
         assert!(!s.remember_region && s.magnifier && !s.check_for_updates && !s.open_at_login);
+        assert!(s.quick_copy);
         fakes.apply(&mut p, "openAtLogin", json!(true)).unwrap();
         assert!(fakes.login.on.get() && p.open_at_login && p.login_item_added);
     }

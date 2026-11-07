@@ -196,6 +196,16 @@ describe('Settings window', () => {
     expect(magnifier).toBeChecked()
   })
 
+  it('has Quick copy in Capture, off by default', async () => {
+    render(App)
+    const quick = screen.getByRole('switch', { name: 'Quick copy' })
+    expect(screen.getByText('Copy as soon as you finish dragging.')).toBeInTheDocument()
+    expect(quick).not.toBeChecked()
+    await userEvent.click(quick)
+    expect(saved.quickCopy).toBe(true)
+    expect(quick).toBeChecked()
+  })
+
   it('keeps a switch as it was and says why when saving fails', async () => {
     refuse = "Couldn't change the login item."
     render(App)

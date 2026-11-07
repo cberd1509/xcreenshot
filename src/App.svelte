@@ -43,6 +43,11 @@
           description: 'Start with your last selection.',
         },
         { key: 'magnifier', title: 'Magnifier', description: 'Zoom in to select exact pixels.' },
+        {
+          key: 'quickCopy',
+          title: 'Quick copy',
+          description: 'Copy as soon as you finish dragging.',
+        },
       ],
     },
     { id: 'about', label: 'About', toggles: [] },

@@ -10,6 +10,8 @@ export type Settings = {
   shortcut: string
   rememberRegion: boolean
   magnifier: boolean
+  /** Copy as soon as the drag ends, with no toolbar. */
+  quickCopy: boolean
   openAtLogin: boolean
   checkForUpdates: boolean
 }
@@ -26,6 +28,7 @@ export function fallbackSettings(): Settings {
     shortcut: '',
     rememberRegion: true,
     magnifier: false,
+    quickCopy: false,
     openAtLogin: true,
     checkForUpdates: true,
   }
@@ -59,7 +62,7 @@ export async function syncSettings(): Promise<void> {
 }
 
 /** The options the overlay may change too (through its own, narrower command). */
-const captureOptions = new Set<keyof Settings>(['rememberRegion', 'magnifier'])
+const captureOptions = new Set<keyof Settings>(['rememberRegion', 'magnifier', 'quickCopy'])
 
 /**
  * Changes one setting; `null` resets the shortcut to the default. Rejects with a message to
@@ -76,11 +79,11 @@ export async function setSetting<K extends keyof Settings>(
   )
 }
 
-/** An option the overlay's ⋯ menu can change. */
-export type CaptureOption = 'rememberRegion' | 'magnifier'
+/** An option the overlay can change: in its ⋯ menu, and Quick copy's Turn off. */
+export type CaptureOption = 'rememberRegion' | 'magnifier' | 'quickCopy'
 
-/** The overlay's ⋯ menu toggles: like `setSetting`, but a failure is only logged (the menu
- * keeps showing the saved value). */
+/** The overlay's toggles: like `setSetting`, but a failure is only logged (the overlay keeps
+ * showing the saved value). */
 export function setCaptureOption(key: CaptureOption, on: boolean): void {
   setSetting(key, on).catch((e: unknown) => console.error(`saving ${key} failed`, e))
 }

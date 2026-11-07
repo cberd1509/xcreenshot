@@ -188,11 +188,34 @@ impl Order {
     }
 }
 
-/// The saved regions, read when the overlay opens, or `None` while the setting is off (then
-/// the session remembers nothing either). Never waits for a change being saved.
-pub fn load<R: Runtime>(app: &AppHandle<R>) -> Option<Vec<Region>> {
-    let prefs = prefs::peek(app);
-    prefs.remember_region.then_some(prefs.regions)
+/// What a capture starts with, read when the overlay opens.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Start {
+    /// The saved regions to start from, or `None` while Remember region is off (then the
+    /// session remembers nothing either).
+    pub regions: Option<Vec<Region>>,
+    /// Quick copy is on: the drag copies at once. The capture starts with no region then.
+    pub quick_copy: bool,
+}
+
+impl Start {
+    pub fn of(prefs: Prefs) -> Self {
+        // With quick copy on, nothing is restored, but a capture annotated this time may still
+        // be remembered.
+        let regions = match prefs.quick_copy {
+            true => Vec::new(),
+            false => prefs.regions,
+        };
+        Self {
+            regions: prefs.remember_region.then_some(regions),
+            quick_copy: prefs.quick_copy,
+        }
+    }
+}
+
+/// What the next capture starts with. Never waits for a change being saved.
+pub fn load<R: Runtime>(app: &AppHandle<R>) -> Start {
+    Start::of(prefs::peek(app))
 }
 
 /// Saves `region`, numbered `seq` by [`ORDER`] (see [`remember`]). Writes the file, so call it
@@ -386,6 +409,28 @@ pub(crate) mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn a_capture_starts_from_the_saved_regions_unless_off_or_quick() {
+        let saved = vec![region("a", monitor(1))];
+        let prefs = |remember_region, quick_copy| Prefs {
+            remember_region,
+            quick_copy,
+            regions: saved.clone(),
+            ..Prefs::default()
+        };
+        let start = |regions, quick_copy| Start {
+            regions,
+            quick_copy,
+        };
+        assert_eq!(
+            Start::of(prefs(true, false)),
+            start(Some(saved.clone()), false)
+        );
+        assert_eq!(Start::of(prefs(false, false)), start(None, false));
+        assert_eq!(Start::of(prefs(true, true)), start(Some(Vec::new()), true));
+        assert_eq!(Start::of(prefs(false, true)), start(None, true));
     }
 
     #[test]

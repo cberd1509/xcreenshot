@@ -21,7 +21,8 @@
 //! tests.
 //!
 //! A copy, save or share that worked remembers the selection (see `region`), after the
-//! clipboard write, the file or the choice of a service, on another thread.
+//! clipboard write, the file or the choice of a service, on another thread; a quick copy does
+//! not. Then it shows a toast (see `toast`).
 
 use super::display_id;
 use super::window::{
@@ -33,6 +34,7 @@ use crate::output::{self, Clipboard, Target};
 use crate::prefs;
 use crate::region::{self, Region};
 use crate::share::{self, OnDone, ShareError, ShareOutcome};
+use crate::toast::{self, Toast};
 use chrono::NaiveDateTime;
 use image::{ImageBuffer, RgbaImage};
 use serde::Deserialize;
@@ -51,7 +53,8 @@ pub const HEADER: &str = "x-xcreenshot-output";
 pub const MAX_BLURS: usize = 256;
 
 /// The JSON in [`HEADER`]. `layer` is where the body's pixels go, relative to `rect`; it is
-/// there only when the body has them. `anchor` is the Share button, for a share.
+/// there only when the body has them. `anchor` is the Share button, for a share; `quick` marks
+/// a quick copy capture.
 #[derive(Debug, Deserialize)]
 struct Head {
     session: u64,
@@ -62,6 +65,8 @@ struct Head {
     blurs: Vec<PixelRect>,
     #[serde(default)]
     anchor: Option<share::Rect>,
+    #[serde(default)]
+    quick: bool,
 }
 
 /// A copy, save or share request: the session, the selection in native px, and its
@@ -73,6 +78,8 @@ pub(crate) struct Output<'a> {
     pub rect: PixelRect,
     pub marks: Marks<'a>,
     pub anchor: Option<share::Rect>,
+    /// A quick copy: the drag copied at once. Its region is not remembered.
+    pub quick: bool,
 }
 
 fn invalid(e: impl std::fmt::Display) -> CaptureError {
@@ -130,6 +137,7 @@ pub(crate) fn parse<'a>(
         rect: head.rect,
         marks: Marks { layer, blurs },
         anchor: head.anchor,
+        quick: head.quick,
     })
 }
 
@@ -195,8 +203,10 @@ async fn copy_with<R: Runtime>(
         remember(region);
     }
     // Only if nothing happened meanwhile: a save started (even cancelled) keeps the overlay.
+    let anchor = window.clone();
     on_main(window.app_handle(), move |app| {
         close_if(app, |phase| phase.copy_may_close(session, saves));
+        toast::show(&anchor, Toast::Copied { width, height });
     });
     Ok(())
 }
@@ -227,12 +237,16 @@ fn selected_frame<R: Runtime>(
     let mut phase = state.phase();
     let saves = phase.saves(session)?;
     let (frame, density) = phase.image(session, display)?;
+    let region = match out.quick {
+        true => None,
+        false => phase.region(session, display, out.rect),
+    };
     Some(Selected {
         display,
         saves,
         frame,
         density,
-        region: phase.region(session, display, out.rect),
+        region,
     })
 }
 
@@ -332,12 +346,14 @@ async fn save_with<R: Runtime>(
     // Always written once a path is picked: the crop is already taken. The windows are hidden
     // meanwhile, so writing before closing costs nothing visible, and a failure can bring the
     // overlay back to say so.
+    let saved = Toast::saved(&path);
     let written = write_when_encoded(encoding, path.clone(), saver, &mut steps).await;
     let failed = written.is_err();
     // Before the close, which lets a waiting update restart the app.
     if let Some(region) = region.filter(|_| !failed) {
         remember(region);
     }
+    let anchor = window.clone();
     on_main(&app, move |app| {
         let Some(displays) = phase(app).end_save(session) else {
             return;
@@ -345,8 +361,8 @@ async fn save_with<R: Runtime>(
         if failed {
             reshow(app, &displays, display);
         } else {
-            // The "Saved" confirmation (#99) goes here, as the overlay closes.
             close(app);
+            toast::show(&anchor, saved);
         }
     });
     written.inspect_err(|e| log::error!("{e} ({steps})"))?;
@@ -552,6 +568,8 @@ fn shared<R: Runtime>(
                 }
                 // The sheet left the window lowered, so the service's UI shows over it.
                 share::restore_level(window);
+                let service = Some(service).filter(|s| !s.is_empty());
+                toast::show(window, Toast::Shared { service });
             }
         }
         ShareOutcome::Cancelled => {
@@ -712,6 +730,20 @@ mod tests {
         assert_eq!(copy(h, session, px(1, 0, 2, 2), c), Ok(()));
         assert_eq!(*images.lock().unwrap(), [expected(1, 0, 2, 2)]);
         assert!(is_idle(h));
+        let copied = Toast::Copied {
+            width: 2,
+            height: 2,
+        };
+        assert_eq!(toasts(h), [copied]);
+    }
+
+    /// The toasts shown so far, as the toast page gets them when it loads.
+    fn toasts(h: &Handle) -> Vec<Toast> {
+        let Some(window) = h.get_webview_window(toast::LABEL) else {
+            return Vec::new();
+        };
+        let shown = toast::window::toast_ready(window, h.state());
+        shown.into_iter().map(|s| s.toast).collect()
     }
 
     /// The macOS clipboard as `os_clipboard` builds it, on a private pasteboard: the copied
@@ -763,6 +795,26 @@ mod tests {
     }
 
     #[test]
+    fn a_quick_copy_does_not_remember_its_region() {
+        let app = app();
+        let h = app.handle();
+        let session = shown(h, &[1]);
+        let state = h.state::<Overlay>();
+        let out = Output {
+            quick: true,
+            ..plain(session, px(1, 0, 2, 2))
+        };
+        let (c, images) = clipboard(false);
+        let (remember, regions) = remembering();
+        let w = window(h, 1);
+        let copied = copy_with(&w, &state, &out, c, remember);
+        assert_eq!(tauri::async_runtime::block_on(copied), Ok(()));
+        assert_eq!(*images.lock().unwrap(), [expected(1, 0, 2, 2)]);
+        assert!(regions.lock().unwrap().is_empty());
+        wait_until("the overlay to close", || is_idle(h));
+    }
+
+    #[test]
     fn copy_clamps_to_the_display_and_rejects_an_empty_rect() {
         let app = app();
         let h = app.handle();
@@ -805,6 +857,7 @@ mod tests {
         let r = copy(h, session, px(0, 0, 2, 2), c);
         assert_eq!(r, Err(CaptureError::Clipboard("busy".into())));
         assert!(is_open(h, session));
+        assert!(toasts(h).is_empty());
     }
 
     #[test]
@@ -908,6 +961,7 @@ mod tests {
             rect,
             marks: Marks::default(),
             anchor: None,
+            quick: false,
         }
     }
 
@@ -985,6 +1039,7 @@ mod tests {
         drop(regions);
         wait_until("the overlay to close", || is_idle(h));
         assert!(!esc_held(h));
+        assert_eq!(toasts(h), [Toast::saved(&path)]);
     }
 
     #[test]
@@ -1356,6 +1411,8 @@ mod tests {
         answer(&seen, ShareOutcome::Chosen("AirDrop".into()));
         assert!(is_idle(h));
         assert!(on_screen(h).is_empty());
+        let service = Some("AirDrop".to_owned());
+        assert_eq!(toasts(h), [Toast::Shared { service }]);
         assert!(!esc_held(h));
         let regions = regions.lock().unwrap();
         assert_eq!(regions.len(), 1, "the region is remembered");
@@ -1376,6 +1433,7 @@ mod tests {
         assert!(esc_held(h), "Esc is the overlay's again");
         assert_eq!(on_screen(h), [1, 2]);
         assert!(regions.lock().unwrap().is_empty(), "nothing was shared");
+        assert!(toasts(h).is_empty());
         // The selection is still usable.
         let (c, images) = clipboard(false);
         copy(h, session, px(0, 0, 1, 1), c).unwrap();
@@ -1527,6 +1585,8 @@ mod tests {
         // An empty body may come as JSON.
         let json = InvokeBody::Json(serde_json::Value::Null);
         assert_eq!(parse(&json, &h).unwrap(), plain(3, px(1, 2, 3, 4)));
+        let quick = r#"{"session":3,"rect":{"x":1,"y":2,"width":3,"height":4},"quick":true}"#;
+        assert!(parse(&body, &headers(quick)).unwrap().quick);
     }
 
     #[test]

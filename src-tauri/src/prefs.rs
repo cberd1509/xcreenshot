@@ -37,6 +37,9 @@ pub struct Prefs {
     pub remember_region: bool,
     #[serde(default, deserialize_with = "lenient")]
     pub magnifier: bool,
+    /// Copy as soon as the drag ends, with no toolbar (see `overlay`).
+    #[serde(default, deserialize_with = "lenient")]
+    pub quick_copy: bool,
     #[serde(default = "on", deserialize_with = "lenient_on")]
     pub open_at_login: bool,
     /// Automatic update checks. On by default; the updater reads it before each check.
@@ -64,6 +67,7 @@ impl Default for Prefs {
             shortcut: default_shortcut(),
             remember_region: on(),
             magnifier: false,
+            quick_copy: false,
             open_at_login: on(),
             check_for_updates: on(),
             login_item_added: false,
@@ -411,6 +415,7 @@ pub(crate) mod tests {
             json!({ "checkForUpdates": "no" }),
             json!({ "checkForUpdates": null }),
             json!({ "shortcut": 1, "rememberRegion": "yes", "magnifier": null }),
+            json!({ "quickCopy": "yes" }),
             json!({ "shortcut": "Control+Nope", "openAtLogin": 0, "checkForUpdates": [] }),
             json!({ "shortcut": "S", "loginItemAdded": "no" }),
             json!({ "printScreenNoticeShown": 1 }),
@@ -436,6 +441,7 @@ pub(crate) mod tests {
         let p = Prefs::default();
         assert_eq!(p.shortcut, shortcut::DEFAULT);
         assert!(p.remember_region && !p.magnifier && p.open_at_login && p.check_for_updates);
+        assert!(!p.quick_copy);
         assert!(!p.login_item_added && !p.launch_agent_removed && !p.print_screen_notice_shown);
     }
 
@@ -466,6 +472,7 @@ pub(crate) mod tests {
             shortcut: "Alt+Shift+F5".into(),
             remember_region: false,
             magnifier: true,
+            quick_copy: true,
             open_at_login: false,
             check_for_updates: false,
             login_item_added: true,
