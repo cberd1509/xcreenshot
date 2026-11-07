@@ -1,9 +1,10 @@
 // @vitest-environment node
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
+  UNSIGNED_MARKER,
   UNSIGNED_WARNING,
   WINDOWS_NOTE,
   addWindows,
@@ -79,9 +80,13 @@ describe('releaseNotes', () => {
   })
 
   it('marks unsigned notes the way the publish check looks for them', () => {
-    // release.yml's updater-urls job tells unsigned releases apart by this text.
-    expect(releaseNotes('- a', true)).toContain('Unsigned test build')
-    expect(releaseNotes('- a', false)).not.toContain('Unsigned test build')
+    expect(releaseNotes('- a', true)).toContain(UNSIGNED_MARKER)
+    expect(releaseNotes('- a', false)).not.toContain(UNSIGNED_MARKER)
+    const workflow = readFileSync(
+      new URL('../.github/workflows/release.yml', import.meta.url),
+      'utf8',
+    )
+    expect(workflow).toContain(`*"${UNSIGNED_MARKER}"*`)
   })
 
   it('tells Windows users how to get past SmartScreen', () => {

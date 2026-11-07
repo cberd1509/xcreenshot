@@ -9,7 +9,11 @@
 import { readFileSync } from 'node:fs'
 import { basename } from 'node:path'
 
+/** Hidden in the notes of unsigned builds; release.yml's updater-urls job looks for it. */
+export const UNSIGNED_MARKER = '<!-- xcreenshot:unsigned -->'
+
 export const UNSIGNED_WARNING =
+  `${UNSIGNED_MARKER}\n` +
   '> [!WARNING]\n' +
   '> Unsigned test build: on first open use System Settings › Privacy & Security › Open Anyway.\n' +
   '> The in-app updater does not offer this build.'

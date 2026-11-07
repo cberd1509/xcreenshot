@@ -103,8 +103,11 @@ jobs:
       contents: write
     outputs:
       signed: ${{ steps.secrets.outputs.signed }}
+      release-id: ${{ steps.draft.outputs.id }}
     env:
       VERSION: ${{ needs.plan.outputs.version }}
+      # windows-upload drops "(adding Windows)" once the installer is in.
+      DRAFT_TITLE: xcreenshot __VERSION__ (adding Windows)
       DMG: src-tauri/target/universal-apple-darwin/release/bundle/dmg/xcreenshot_${{ needs.plan.outputs.version }}_universal.dmg
       APP: src-tauri/target/universal-apple-darwin/release/bundle/macos/xcreenshot.app
       GH_TOKEN: ${{ github.token }}
@@ -210,8 +213,7 @@ jobs:
           tauriScript: pnpm tauri
           args: --target universal-apple-darwin --bundles app,dmg
           tagName: v__VERSION__
-          # windows-upload finds its draft by this title and drops the suffix once Windows is in.
-          releaseName: xcreenshot __VERSION__ (adding Windows, run ${{ github.run_id }})
+          releaseName: ${{ env.DRAFT_TITLE }}
           releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: true
           uploadUpdaterJson: ${{ steps.secrets.outputs.signed == 'true' }}
@@ -240,8 +242,7 @@ jobs:
           tauriScript: pnpm tauri
           args: --target universal-apple-darwin --bundles app,dmg
           tagName: v__VERSION__
-          # windows-upload finds its draft by this title and drops the suffix once Windows is in.
-          releaseName: xcreenshot __VERSION__ (adding Windows, run ${{ github.run_id }})
+          releaseName: ${{ env.DRAFT_TITLE }}
           releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: true
           uploadUpdaterJson: ${{ steps.secrets.outputs.signed == 'true' }}
@@ -264,6 +265,15 @@ jobs:
             --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait
           xcrun stapler staple "$DMG"
           gh release upload "v$VERSION" "$DMG" --clobber
+
+      # windows-upload works only on this exact release, so a newer run's draft is never touched.
+      - name: Record the draft
+        id: draft
+        run: |
+          id=$(gh api "repos/$GH_REPO/releases?per_page=100" \
+            --jq "[.[] | select(.draft and .tag_name == \"v$VERSION\")][0].id // empty")
+          [ -n "$id" ] || { echo "::error::No v$VERSION draft after the build."; exit 1; }
+          echo "id=$id" >> "$GITHUB_OUTPUT"
 
       # Don't leave a half-built draft (e.g. a DMG that failed notarization) for someone to publish.
       # Only drafts this run may have created; a published release is never deleted.
@@ -343,17 +353,11 @@ jobs:
           # Long enough to re-run a failed windows-upload without rebuilding.
           retention-days: 30
 
-  # Runs no code from the build: it adds the installer and its .sig to the draft the macOS job
-  # created, then merges the Windows entries into that job's latest.json. Running after both
-  # builds keeps one writer per file. The macOS job titles the draft
-  # "xcreenshot <version> (adding Windows, run <run id>)" and this job sets it to
-  # "xcreenshot <version>" once it's done, so the draft says when it's ready to publish.
-  # If Windows fails or the run is cancelled, the draft and its notarized DMG stay with that title,
-  # and the run fails. "Re-run failed jobs" finishes it: the uploads clobber and add-windows
-  # overwrites the same entries, so running it twice is safe.
-  # Before every write it checks that the release is still a draft with this run's title, so it
-  # never touches a published release or a newer run's draft. A publish in the second between
-  # that check and the write can still race; docs/releasing.md says to wait for the title.
+  # Runs no code from the build: adds the installer, its .sig and the Windows latest.json entries
+  # to this run's macOS draft (by release id), then drops "(adding Windows)" from its title.
+  # If Windows fails the draft stays and the run fails; "Re-run failed jobs" finishes it, and
+  # re-running is safe. Before every write it checks the release is still this run's draft.
+  # See docs/releasing.md.
   windows-upload:
     name: Add Windows to the v${{ needs.plan.outputs.version }} draft
     needs: [plan, build, windows]
@@ -364,6 +368,7 @@ jobs:
     env:
       VERSION: ${{ needs.plan.outputs.version }}
       SIGNED: ${{ needs.build.outputs.signed }}
+      RELEASE_ID: ${{ needs.build.outputs.release-id }}
       WINDOWS: ${{ needs.windows.result }}
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -386,30 +391,30 @@ jobs:
           path: out
 
       # Unsigned macOS test builds have no latest.json, so the updater offers neither platform.
+      # The merge happens first so the writes come together, each right after a check.
       - name: Add Windows to the draft and latest.json
         id: add
         run: |
-          # The title tauri-action gave the draft in this run (run ids survive re-runs).
-          pending="xcreenshot $VERSION (adding Windows, run $GITHUB_RUN_ID)"
+          # Is release $RELEASE_ID still a draft? Stops the job if not. A failed API call (other
+          # than 404) is left to the "Re-run the failed jobs" advice.
           own_draft() {
-            local state
-            state=$(gh release view "v$VERSION" --json isDraft,name \
-              --jq '"\(.isDraft)|\(.name)"' 2> /dev/null) || state=""
-            [ "$state" = "true|$pending" ] && return 0
-            if [ "$state" = "true|xcreenshot $VERSION" ]; then
-              echo "::notice::The v$VERSION draft already has Windows; nothing to do."; exit 0
+            local draft err="$RUNNER_TEMP/gh.err"
+            draft=$(gh api "repos/$GH_REPO/releases/$RELEASE_ID" --jq .draft 2> "$err") || true
+            [ "$draft" = true ] && return 0
+            if [ "$draft" = false ]; then
+              echo "stop=true" >> "$GITHUB_OUTPUT"
+              echo "::error::v$VERSION was published ${1:-before Windows was added}; see docs/releasing.md."
+            elif grep -q 'HTTP 404' "$err"; then
+              echo "stop=true" >> "$GITHUB_OUTPUT"
+              echo "::error::This run's v$VERSION draft is gone (a newer run replaced it?)."
+            else
+              cat "$err" >&2
             fi
-            echo "stop=true" >> "$GITHUB_OUTPUT"
-            case "$state" in
-              "") echo "::error::There is no v$VERSION release; run Release again." ;;
-              true\|*) echo "::error::The v$VERSION draft is from another run (${state#true|})." ;;
-              *) echo "::error::v$VERSION was published before Windows was added; see docs/releasing.md." ;;
-            esac
             exit 1
           }
           exe="out/xcreenshot_${VERSION}_x64-setup.exe"
+          files=("$exe" "$exe.sig")
           own_draft
-          gh release upload "v$VERSION" "$exe" "$exe.sig" --clobber
           if [ "$SIGNED" = true ]; then
             dir="$RUNNER_TEMP/updater"
             mkdir -p "$dir/merged"
@@ -418,11 +423,14 @@ jobs:
               "v$VERSION" > "$dir/merged/latest.json"
             jq -e '.platforms | has("darwin-aarch64") and has("windows-x86_64")' \
               "$dir/merged/latest.json" > /dev/null
-            own_draft
-            gh release upload "v$VERSION" "$dir/merged/latest.json" --clobber
+            files+=("$dir/merged/latest.json")
           fi
           own_draft
+          gh release upload "v$VERSION" "${files[@]}" --clobber
+          own_draft
           gh release edit "v$VERSION" --title "xcreenshot $VERSION"
+          # A publish during the writes isn't caught by the checks above; at least report it.
+          own_draft "while Windows was being added: check its latest.json"
 
       - name: Explain what to do
         if: failure() && steps.add.outputs.stop != 'true'
@@ -452,19 +460,20 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
-      # Unsigned macOS test builds have no latest.json, and their notes start with the unsigned
-      # warning (scripts/release.ts). A signed release without one fails: nothing would update.
+      # Unsigned macOS test builds have no latest.json, and their notes carry UNSIGNED_MARKER
+      # (scripts/release.ts). A signed release without one fails: nothing would update.
       - env:
           BODY: ${{ github.event.release.body }}
         run: |
           dir="$RUNNER_TEMP/updater"
           mkdir -p "$dir"
           if ! gh release view "$TAG" --json assets --jq '.assets[].name' | grep -qx latest.json; then
-            if [[ "$BODY" == *"Unsigned test build"* ]]; then
+            if [[ "$BODY" == *"<!-- xcreenshot:unsigned -->"* ]]; then
               echo "No latest.json on $TAG (unsigned build), nothing to rewrite."; exit 0
             fi
+            # Reported here, failed after the Windows check so both problems show.
             echo "::error::$TAG is a signed release with no latest.json; see docs/releasing.md."
-            exit 1
+            echo "NO_MANIFEST=1" >> "$GITHUB_ENV"; exit 0
           fi
           gh release download "$TAG" --pattern latest.json --dir "$dir"
           gh api "repos/$GH_REPO/releases/$RELEASE_ID/assets?per_page=100" \
@@ -488,3 +497,4 @@ jobs:
             echo "::error::$TAG's latest.json has no Windows entry; see docs/releasing.md."
             exit 1
           fi
+          [ -z "${NO_MANIFEST:-}" ]
