@@ -12,7 +12,7 @@ Don't edit these files by hand. Change the canvas, then sync it: ask Claude to "
 | `WindowSelect.dc.html` | Capture overlay, ready to drag (with magnifier) |
 | `Desktop.dc.html` | Mock desktop behind the overlay mockups (not a screen) |
 | `Settings.dc.html` | Settings window |
-| `Onboarding.dc.html` | First run: Screen Recording permission |
+| `Onboarding.dc.html` | First run: Screen Recording permission (macOS) and the shortcut |
 | `QuickCopy.dc.html` | Overlay with quick copy on |
 | `Toast.dc.html` | Confirmation toasts (copy, save, share) |
 | `Tray.dc.html` | Menu bar menu |

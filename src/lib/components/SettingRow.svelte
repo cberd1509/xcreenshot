@@ -1,15 +1,19 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
+  import { cn } from '$lib/utils'
 
   let {
     title,
     description,
     for: htmlFor,
+    descriptionClass,
     children,
     below,
   }: {
     title: string
     description?: string
+    /** Extra classes for the description, such as its line height. */
+    descriptionClass?: string
     for?: string
     children: Snippet
     /** Lines under the row, such as an error. */
@@ -26,7 +30,7 @@
         <div class="text-sm/[normal] font-medium">{title}</div>
       {/if}
       {#if description}
-        <div class="text-[13px] text-muted-foreground">{description}</div>
+        <div class={cn('text-[13px] text-muted-foreground', descriptionClass)}>{description}</div>
       {/if}
     </div>
     {@render children()}

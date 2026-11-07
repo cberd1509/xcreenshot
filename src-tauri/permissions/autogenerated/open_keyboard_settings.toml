@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-open-keyboard-settings"
+description = "Enables the open_keyboard_settings command without any pre-configured scope."
+commands.allow = ["open_keyboard_settings"]
+
+[[permission]]
+identifier = "deny-open-keyboard-settings"
+description = "Denies the open_keyboard_settings command without any pre-configured scope."
+commands.deny = ["open_keyboard_settings"]

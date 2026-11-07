@@ -92,6 +92,26 @@ describe('ShortcutRecorder', () => {
     expect(button('Reset to default')).toBeInTheDocument()
   })
 
+  it('offers no reset without onreset; Esc still cancels and errors still show', async () => {
+    render(ShortcutRecorder, {
+      title: 'Take a screenshot',
+      description: 'Works from any app. Click to change it.',
+      accelerator: 'Alt+F5',
+      onchange,
+    })
+    expect(screen.queryByRole('button', { name: 'Reset to default' })).toBeNull()
+    await change()
+    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull()
+    await down('Escape')
+    await tick()
+    expect(calls).toEqual([PAUSE, RESUME])
+    onchange.mockRejectedValueOnce('That shortcut is in use by another app.')
+    await change()
+    await down('KeyD', { altKey: true })
+    await up('KeyD', { altKey: true })
+    expect(screen.getByRole('alert')).toHaveTextContent('That shortcut is in use by another app.')
+  })
+
   it('ignores keys until Change is pressed', async () => {
     setup()
     await down('KeyD', { altKey: true })

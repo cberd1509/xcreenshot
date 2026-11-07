@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-onboarding-tried"
+description = "Enables the onboarding_tried command without any pre-configured scope."
+commands.allow = ["onboarding_tried"]
+
+[[permission]]
+identifier = "deny-onboarding-tried"
+description = "Denies the onboarding_tried command without any pre-configured scope."
+commands.deny = ["onboarding_tried"]

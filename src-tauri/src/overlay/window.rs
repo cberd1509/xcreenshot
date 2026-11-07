@@ -31,6 +31,8 @@ use tauri_plugin_global_shortcut::{GlobalShortcut, ShortcutState};
 const SHOW_EVENT: &str = "overlay:show";
 /// The overlay closed: the pages free their frames and selections.
 const CLOSED_EVENT: &str = "overlay:closed";
+/// Sent to every page when a capture ends (copy, save, share or Esc).
+pub const CAPTURE_CLOSED: &str = "capture:closed";
 /// Esc, forwarded to every overlay page.
 const ESCAPE_EVENT: &str = "overlay:escape";
 const ESCAPE: &str = "Escape";
@@ -97,7 +99,7 @@ pub(super) fn shown<R: Runtime>(app: &AppHandle<R>) -> Vec<u32> {
 
 /// The OS side of a capture: permission, listing displays and grabbing them. Faked in tests.
 pub(crate) trait Screen: Send + 'static {
-    /// Whether capture is allowed. If not, opens the permission window.
+    /// Whether capture is allowed. If not, opens the onboarding window with the steps.
     fn permitted<R: Runtime>(&self, app: &AppHandle<R>) -> bool;
     fn displays(&self) -> Result<Vec<Display>, CaptureError>;
     fn capture(&self, ids: &[u32]) -> Result<Vec<DisplayFrame>, CaptureError>;
@@ -118,7 +120,7 @@ impl Screen for Os {
         if capture::has_permission() {
             return true;
         }
-        crate::permission::show(app);
+        crate::onboarding::show(app);
         false
     }
 
@@ -345,12 +347,13 @@ fn end_if<R: Runtime>(
     app: &AppHandle<R>,
     ok: impl FnOnce(&mut Phase) -> bool,
 ) -> Option<focus::Front> {
-    let before = {
+    let (before, shown) = {
         let mut phase = phase(app);
         if !ok(&mut phase) {
             return None;
         }
-        phase.end()
+        let shown = matches!(*phase, Phase::Open(_));
+        (phase.end(), shown)
     };
     sync_escape(app);
     hide(app);
@@ -366,6 +369,11 @@ fn end_if<R: Runtime>(
     // A notice hidden for the capture comes back after a share too; only giving focus back
     // (in `close_if`) is skipped. First, so a notice shown again counts as an open window.
     crate::notice::show_after_capture(app);
+    // For any page that waits for a capture to end (onboarding's "Try it"). Only a capture
+    // that was shown counts, not one that failed while capturing.
+    if shown && let Err(e) = app.emit(CAPTURE_CLOSED, ()) {
+        log::warn!("could not send {CAPTURE_CLOSED}: {e}");
+    }
     // Last, so a waiting update restart sees the overlay gone.
     app.state::<Overlay>().idle.notify_waiters();
     before
@@ -968,9 +976,16 @@ pub(crate) mod tests {
     fn a_failed_capture_closes_the_overlay() {
         let app = app();
         let h = app.handle();
+        let ended = std::sync::Arc::new(AtomicU64::new(0));
+        let count = ended.clone();
+        tauri::Listener::listen_any(h, CAPTURE_CLOSED, move |_| {
+            count.fetch_add(1, Ordering::Relaxed);
+        });
         let (_, release) = press(h, &[1]);
         release.send(false).unwrap();
         wait_until("the overlay to close", || is_idle(h));
+        let failed = ended.load(Ordering::Relaxed);
+        assert_eq!(failed, 0, "nothing was shown, so nothing was tried");
         open(h, &[1]);
     }
 
@@ -1099,11 +1114,22 @@ pub(crate) mod tests {
     fn close_session_leaves_a_newer_session_alone() {
         let app = app();
         let h = app.handle();
+        let ended = std::sync::Arc::new(AtomicU64::new(0));
+        let count = ended.clone();
+        tauri::Listener::listen_any(h, CAPTURE_CLOSED, move |_| {
+            count.fetch_add(1, Ordering::Relaxed);
+        });
         let session = open(h, &[1]);
         close_session(h, session + 1);
         assert!(is_open(h, session));
+        assert_eq!(ended.load(Ordering::Relaxed), 0);
         close_session(h, session);
         assert!(is_idle(h));
+        let sent = ended.load(Ordering::Relaxed);
+        assert_eq!(sent, 1, "sent by the close that ended it");
+        close(h);
+        let again = ended.load(Ordering::Relaxed);
+        assert_eq!(again, 1, "not again when nothing was open");
     }
 
     #[test]

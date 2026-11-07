@@ -1,39 +1,11 @@
-//! Screen Recording permission (macOS): the window with the steps to allow it.
+//! Screen Recording permission (macOS): the commands behind the onboarding window's steps.
 //!
-//! Without the permission, the first launch and the hotkey open this window instead of the
-//! overlay. The page re-checks the permission itself while it is open. Other platforms always
-//! have permission, so the window never opens there.
+//! Without the permission, the first launch and the hotkey open that window (see `onboarding`)
+//! instead of the overlay. The page re-checks the permission itself while it is open. Other
+//! platforms always have permission.
 
 use crate::capture;
-use crate::windows::show_window;
-use tauri::{AppHandle, Runtime, WebviewUrl};
-
-pub const WINDOW: &str = "permission";
-
-/// First launch (or permission removed): show how to allow Screen Recording.
-pub fn on_startup<R: Runtime>(app: &AppHandle<R>) {
-    show_unless(app, capture::has_permission());
-}
-
-fn show_unless<R: Runtime>(app: &AppHandle<R>, granted: bool) {
-    if !granted {
-        show(app);
-    }
-}
-
-/// Opens (or focuses) the steps window.
-pub fn show<R: Runtime>(app: &AppHandle<R>) {
-    let url = WebviewUrl::App("permission.html".into());
-    let shown = show_window(app, WINDOW, url, |b| {
-        b.title("xcreenshot")
-            .inner_size(560.0, 640.0)
-            .resizable(false)
-            .center()
-    });
-    if let Err(e) = shown {
-        log::error!("could not open the permission window: {e}");
-    }
-}
+use tauri::{AppHandle, Runtime};
 
 /// Whether capture is allowed now. The page polls it while open.
 #[tauri::command]
@@ -90,19 +62,10 @@ pub fn restart_app<R: Runtime>(app: AppHandle<R>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tauri::Manager;
-    use tauri::test::{mock_builder, mock_context, noop_assets};
 
     #[test]
-    fn startup_shows_the_window_only_without_permission() {
-        let app = mock_builder().build(mock_context(noop_assets())).unwrap();
-        show_unless(app.handle(), true);
-        assert!(app.get_webview_window(WINDOW).is_none());
-        show_unless(app.handle(), false);
-        assert!(app.get_webview_window(WINDOW).is_some());
-        // Runs the real check; either way at most one window.
-        on_startup(app.handle());
-        assert_eq!(app.webview_windows().len(), 1);
+    fn the_page_sees_the_real_permission() {
+        assert_eq!(permission_granted(), capture::has_permission());
     }
 
     #[test]
@@ -124,14 +87,5 @@ mod tests {
         let major: isize = version.trim().split('.').next().unwrap().parse().unwrap();
         assert_eq!(macos_major(), major);
         assert_eq!(permission_pane(), pane_name(major));
-    }
-
-    #[test]
-    fn show_opens_one_window() {
-        let app = mock_builder().build(mock_context(noop_assets())).unwrap();
-        show(app.handle());
-        show(app.handle());
-        assert_eq!(app.webview_windows().len(), 1);
-        assert!(app.get_webview_window(WINDOW).is_some());
     }
 }

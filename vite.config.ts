@@ -30,7 +30,7 @@ export default defineConfig({
       input: {
         main: fileURLToPath(new URL('./index.html', import.meta.url)),
         overlay: fileURLToPath(new URL('./overlay.html', import.meta.url)),
-        permission: fileURLToPath(new URL('./permission.html', import.meta.url)),
+        onboarding: fileURLToPath(new URL('./onboarding.html', import.meta.url)),
         notice: fileURLToPath(new URL('./notice.html', import.meta.url)),
         toast: fileURLToPath(new URL('./toast.html', import.meta.url)),
       },
@@ -51,7 +51,7 @@ export default defineConfig({
         'src/test/**',
         'src/main.ts',
         'src/overlay/main.ts',
-        'src/permission/main.ts',
+        'src/onboarding/main.ts',
         'site/src/main.ts',
         'src/notice/main.ts',
         'src/toast/main.ts',

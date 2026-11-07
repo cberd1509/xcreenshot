@@ -9,6 +9,7 @@ mod login;
 #[cfg(all(target_os = "macos", not(test)))]
 mod macos;
 mod notice;
+mod onboarding;
 /// Public for `examples/save.rs`.
 pub mod output;
 mod overlay;
@@ -99,6 +100,10 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             permission::open_permission_settings,
             permission::restart_app,
+            onboarding::onboarding_print_screen,
+            onboarding::onboarding_tried,
+            #[cfg(target_os = "windows")]
+            onboarding::open_keyboard_settings,
             shortcut::capture_shortcut,
             shortcut::pause_capture_shortcut,
             shortcut::resume_capture_shortcut,
@@ -112,17 +117,15 @@ pub fn run() {
             toast::window::toast_ready,
             toast::window::toast_idle,
         ])
-        // The capture shortcut is paused while Settings records a new one: take it back if
-        // that page reloads or its window closes mid-recording.
+        // A page recording a new shortcut pauses the capture shortcut: take it back if that
+        // page reloads or its window closes mid-recording.
         .on_page_load(|webview, payload| {
-            if webview.label() == SETTINGS_WINDOW {
-                shortcut::resume_capture(webview.app_handle());
-            }
+            shortcut::page_gone(webview.app_handle(), webview.label());
             toast::on_page_load(webview, payload);
         })
         .on_window_event(|window, event| {
-            if window.label() == SETTINGS_WINDOW && matches!(event, tauri::WindowEvent::Destroyed) {
-                shortcut::resume_capture(window.app_handle());
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                shortcut::page_gone(window.app_handle(), window.label());
             }
         })
         .setup(|app| {
@@ -132,14 +135,17 @@ pub fn run() {
 
             let (capture_shortcut, print_screen_moved) = settings::init(app.handle());
             build_tray(app.handle(), &capture_shortcut)?;
-            if let Some(reason) = print_screen_moved {
+            // First, so the hotkey is fast from the start.
+            overlay::prewarm(app.handle());
+            toast::prewarm(app.handle());
+            let onboarding_shown = onboarding::on_startup(app.handle());
+            if let Some(reason) =
+                print_screen_moved.filter(|r| onboarding::needs_notice(*r, onboarding_shown))
+            {
                 print_screen::tell(app.handle(), reason, |app| {
                     windows::open_from(app, Source::PrintScreenNotice, open_settings)
                 });
             }
-            overlay::prewarm(app.handle());
-            toast::prewarm(app.handle());
-            permission::on_startup(app.handle());
             updates::start(app.handle(), offer_update);
             share::init(app.handle());
             #[cfg(debug_assertions)]
