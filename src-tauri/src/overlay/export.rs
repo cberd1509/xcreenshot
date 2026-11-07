@@ -809,6 +809,11 @@ mod tests {
     fn a_quick_copy_does_not_remember_its_region() {
         let app = app();
         let h = app.handle();
+        let ended = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = ended.clone();
+        tauri::Listener::listen_any(h, super::super::window::CAPTURE_CLOSED, move |_| {
+            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        });
         let session = shown(h, &[1]);
         let state = h.state::<Overlay>();
         let out = Output {
@@ -823,6 +828,12 @@ mod tests {
         assert_eq!(*images.lock().unwrap(), [expected(1, 0, 2, 2)]);
         assert!(regions.lock().unwrap().is_empty());
         wait_until("the overlay to close", || is_idle(h));
+        // Onboarding's "Try it" hears a quick copy end, once.
+        wait_until("capture:closed", || {
+            ended.load(std::sync::atomic::Ordering::Relaxed) == 1
+        });
+        close(h);
+        assert_eq!(ended.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 
     #[test]
