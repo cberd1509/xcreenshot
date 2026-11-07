@@ -1,4 +1,4 @@
-//! Where focus goes when the overlay closes. The capture records the app that was in front
+//! Where focus goes when the overlay or a notice closes. Each records the app that was in front
 //! ([`frontmost`]); closing hands focus back to it ([`hand_back`]). The decisions are
 //! [`handback`] and [`Focus::hand_back`]; the AppKit calls live in `macos.rs`, behind [`Apps`]
 //! so tests can see which ran. Only macOS manages a [`Focus`]; elsewhere the system moves focus
@@ -17,7 +17,7 @@ pub struct AppId {
     pub launched: Option<f64>,
 }
 
-/// The app that was in front when the capture started.
+/// The app that was in front when the capture started or the notice opened.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Front {
     /// xcreenshot itself (the capture started from Settings, say).
@@ -39,7 +39,7 @@ impl Front {
     }
 }
 
-/// What to do with focus once the overlay windows are hidden.
+/// What to do with focus once the overlay or a notice is hidden.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Handback {
     /// Leave it with our open window (Settings): the user started there.
@@ -72,7 +72,7 @@ pub trait Apps: Send + Sync {
     fn hide(&self);
 }
 
-/// Hands focus back after a capture; managed by the app on macOS.
+/// Hands focus back after a capture or a notice; managed by the app on macOS.
 pub struct Focus(Box<dyn Apps>);
 
 impl Focus {
@@ -104,18 +104,19 @@ impl Focus {
     }
 }
 
-/// The app in front right now. Read on the hotkey, before the overlay takes focus. Main
-/// thread only.
+/// The app in front right now. Read on the hotkey or as a notice opens, before its window takes
+/// focus. Main thread only.
 pub fn frontmost<R: Runtime>(app: &AppHandle<R>) -> Front {
     app.try_state::<Focus>().map_or(Front::Unknown, |focus| {
         Front::of(focus.0.frontmost(), std::process::id())
     })
 }
 
-/// Gives focus back after a capture, once the overlay windows are hidden. Main thread only.
-pub fn hand_back<R: Runtime>(app: &AppHandle<R>, before: Front) {
+/// Gives focus back after a capture or a notice, once its windows are hidden; `closing` is a
+/// window still closing, which doesn't count as open. Main thread only.
+pub fn hand_back<R: Runtime>(app: &AppHandle<R>, before: Front, closing: Option<&str>) {
     if let Some(focus) = app.try_state::<Focus>() {
-        focus.hand_back(before, windows::window_open(app, None));
+        focus.hand_back(before, windows::window_open(app, closing));
     }
 }
 

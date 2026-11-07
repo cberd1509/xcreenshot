@@ -6,6 +6,7 @@
 //! content ([`notice`]) and sends back the button clicked ([`notice_answer`]). Every question
 //! gets a window of its own, so a closing window never takes a newer question with it.
 
+use crate::focus::{self, Front};
 use crate::print_screen::Reason;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -45,6 +46,8 @@ struct Pending {
     answer: oneshot::Sender<bool>,
     /// Hidden while a capture is open.
     hidden: bool,
+    /// The app in front as the notice opened, to give focus back to once it's answered.
+    front: Front,
 }
 
 /// The open notices, by window label.
@@ -67,6 +70,7 @@ pub async fn ask<R: Runtime>(app: &AppHandle<R>, notice: Notice) -> Option<bool>
         notice,
         answer,
         hidden: false,
+        front: Front::Unknown,
     };
     app.state::<Notices>().lock().insert(label.clone(), pending);
     let handle = app.clone();
@@ -91,7 +95,10 @@ fn open<R: Runtime>(
     label: &str,
     (width, height): (f64, f64),
 ) -> tauri::Result<()> {
-    let busy = crate::overlay::is_busy(app);
+    // During a capture the overlay is in front: the app before it is the one to go back to.
+    let capture = crate::overlay::front(app);
+    let busy = capture.is_some();
+    let front = capture.unwrap_or_else(|| focus::frontmost(app));
     let url = WebviewUrl::App("notice.html".into());
     let builder = WebviewWindowBuilder::new(app, label, url)
         .title("xcreenshot")
@@ -121,11 +128,11 @@ fn open<R: Runtime>(
             forget(&handle, &closed);
         }
     });
-    if busy {
-        if let Some(pending) = app.state::<Notices>().lock().get_mut(label) {
-            pending.hidden = true;
-        }
-    } else if let Err(e) = window.set_focus() {
+    if let Some(pending) = app.state::<Notices>().lock().get_mut(label) {
+        pending.hidden = busy;
+        pending.front = front;
+    }
+    if !busy && let Err(e) = window.set_focus() {
         // Still on screen and usable: a click focuses it.
         log::warn!("could not focus {label}: {e}");
     }
@@ -184,8 +191,9 @@ pub(crate) fn notice<R: Runtime>(window: WebviewWindow<R>) -> Option<Notice> {
     open.get(window.label()).map(|p| p.notice.clone())
 }
 
-/// A button was clicked (`primary`: the main one): closes the window, then answers. An error
-/// means the window is still open and unanswered; clicking again tries again.
+/// A button was clicked (`primary`: the main one): closes the window, answers, then gives focus
+/// back to the app in front when it opened. An error means the window is still open and
+/// unanswered; clicking again tries again.
 #[tauri::command]
 pub(crate) fn notice_answer<R: Runtime>(
     window: WebviewWindow<R>,
@@ -193,10 +201,16 @@ pub(crate) fn notice_answer<R: Runtime>(
 ) -> Result<(), String> {
     window.close().map_err(|e| e.to_string())?;
     let pending = window.state::<Notices>().lock().remove(window.label());
-    if let Some(pending) = pending {
-        let _ = pending.answer.send(primary);
+    // Already answered: the first click gave focus back.
+    let Some(pending) = pending else {
+        return Ok(());
+    };
+    let _ = pending.answer.send(primary);
+    // A capture started meanwhile owns focus and hands it back when it closes.
+    let app = window.app_handle();
+    if !crate::overlay::is_busy(app) {
+        focus::hand_back(app, pending.front, Some(window.label()));
     }
-    crate::windows::yield_focus(window.app_handle(), Some(window.label()));
     Ok(())
 }
 
@@ -375,5 +389,93 @@ pub(crate) mod tests {
         let app = overlay::app();
         hide_for_capture(app.handle());
         show_after_capture(app.handle());
+    }
+
+    mod focus {
+        use super::*;
+        use crate::focus::tests::{Fake, SAFARI};
+        use crate::focus::{AppId, Focus};
+
+        const MAIL: AppId = AppId {
+            pid: 8,
+            launched: Some(2.0),
+        };
+
+        /// [`app`] with `fake` for the platform's apps and Settings open.
+        fn app_with(fake: &Fake) -> tauri::App<MockRuntime> {
+            let app = app();
+            app.manage(Focus::new(fake.clone()));
+            WebviewWindowBuilder::new(app.handle(), "settings", WebviewUrl::default())
+                .build()
+                .unwrap();
+            app
+        }
+
+        /// The focus calls made answering a notice asked while `front` was in front.
+        fn answering_with(front: Option<AppId>) -> Vec<String> {
+            let fake = Fake::new(front);
+            let app = app_with(&fake);
+            let (task, window) = asking(app.handle(), update());
+            notice_answer(window.clone(), true).unwrap();
+            assert_eq!(block_on(task).unwrap(), Some(true));
+            let calls = fake.calls();
+            // A second click has nothing to hand back.
+            notice_answer(window, true).unwrap();
+            assert_eq!(fake.calls(), calls);
+            calls
+        }
+
+        #[test]
+        fn with_settings_behind_another_app_focus_returns_to_that_app() {
+            assert_eq!(answering_with(Some(SAFARI)), ["activate 7"]);
+        }
+
+        #[test]
+        fn a_notice_that_came_up_over_xcreenshot_keeps_it_in_front() {
+            let us = AppId {
+                pid: std::process::id() as i32,
+                ..SAFARI
+            };
+            assert!(answering_with(Some(us)).is_empty());
+        }
+
+        #[test]
+        fn an_unknown_previous_app_hides_xcreenshot() {
+            assert_eq!(answering_with(None), ["hide"]);
+        }
+
+        #[test]
+        fn an_answer_during_a_capture_leaves_focus_to_the_capture() {
+            let fake = Fake::new(Some(SAFARI));
+            let app = app_with(&fake);
+            let h = app.handle();
+            let (task, window) = asking(h, update());
+            let session = overlay::open(h, &[1]);
+            notice_answer(window, true).unwrap();
+            assert_eq!(block_on(task).unwrap(), Some(true));
+            assert!(fake.calls().is_empty(), "the capture keeps focus");
+            crate::overlay::window::close_session(h, session);
+            assert_eq!(fake.calls(), ["activate 7"], "only the capture hands back");
+        }
+
+        #[test]
+        fn a_notice_asked_during_a_capture_returns_to_the_app_before_it() {
+            // AppKit says Safari now, but Mail was in front at the hotkey.
+            let fake = Fake {
+                running: vec![SAFARI, MAIL],
+                ..Fake::new(Some(SAFARI))
+            };
+            let app = app_with(&fake);
+            let h = app.handle();
+            let (session, release) = overlay::press(h, &[1]);
+            crate::overlay::window::phase(h).set_front(Front::Other(MAIL));
+            let (task, window) = asking(h, update());
+            release.send(true).unwrap();
+            wait_until("the session to open", || overlay::is_open(h, session));
+            crate::overlay::window::close_session(h, session);
+            notice_answer(window, false).unwrap();
+            assert_eq!(block_on(task).unwrap(), Some(false));
+            assert_eq!(fake.calls(), ["activate 8", "activate 8"]);
+        }
     }
 }
