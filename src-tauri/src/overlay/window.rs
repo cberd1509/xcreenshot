@@ -58,7 +58,7 @@ impl Overlay {
     }
 }
 
-pub(super) fn phase<R: Runtime>(app: &AppHandle<R>) -> MutexGuard<'_, Phase> {
+pub(crate) fn phase<R: Runtime>(app: &AppHandle<R>) -> MutexGuard<'_, Phase> {
     app.state::<Overlay>().inner().phase()
 }
 
@@ -316,7 +316,7 @@ pub fn close_if<R: Runtime>(app: &AppHandle<R>, ok: impl FnOnce(&Phase) -> bool)
 /// close in between. The app stays active: a service chosen in the sheet shows its UI
 /// (AirDrop, Mail…) in this app, and hiding the app would hide it too. Returns whether
 /// `session` was the one sharing. Main thread only.
-pub(super) fn close_for_share<R: Runtime>(app: &AppHandle<R>, session: u64) -> bool {
+pub(crate) fn close_for_share<R: Runtime>(app: &AppHandle<R>, session: u64) -> bool {
     end_if(app, |phase| phase.end_share(session))
 }
 
