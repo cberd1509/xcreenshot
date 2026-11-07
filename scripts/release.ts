@@ -31,8 +31,7 @@ export const WINDOWS_NOTE =
 
 export function releaseNotes(section: string, unsigned: boolean): string {
   const body = section || 'No changelog entry for this version.'
-  const notes = unsigned ? [UNSIGNED_WARNING, WINDOWS_NOTE, body] : [WINDOWS_NOTE, body]
-  return `${notes.join('\n\n')}\n`
+  return `${[...(unsigned ? [UNSIGNED_WARNING] : []), WINDOWS_NOTE, body].join('\n\n')}\n`
 }
 
 export interface UpdaterManifest {
@@ -74,7 +73,7 @@ export function tagDownloadUrls(
 }
 
 /** The updater looks for `windows-x86_64-nsis` first, then `windows-x86_64`, like tauri-action. */
-export const WINDOWS_PLATFORMS = ['windows-x86_64', 'windows-x86_64-nsis']
+const WINDOWS_PLATFORMS = ['windows-x86_64', 'windows-x86_64-nsis']
 
 /**
  * Adds the Windows NSIS installer to the macOS latest.json, pointing at the tag download URL of

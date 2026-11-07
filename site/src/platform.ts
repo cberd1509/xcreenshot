@@ -67,16 +67,15 @@ const TAB_KEYS: Record<string, (i: number, n: number) => number> = {
  * within the tablist they're pressed in. Every choice is remembered.
  */
 export function setUpOs(root: ParentNode, nav: NavigatorLike, storage: () => Storage): Os {
-  let os = readChoice(storage) ?? detectOs(nav)
+  const os = readChoice(storage) ?? detectOs(nav)
   applyOs(root, os)
 
   for (const tab of root.querySelectorAll<HTMLElement>('[data-os-tab]')) {
     const value = tab.dataset.osTab
     if (!isOs(value)) continue
     tab.addEventListener('click', () => {
-      os = value
-      saveChoice(storage, os)
-      applyOs(root, os)
+      saveChoice(storage, value)
+      applyOs(root, value)
     })
     tab.addEventListener('keydown', (event) => {
       const move = TAB_KEYS[event.key]

@@ -302,6 +302,8 @@ jobs:
         with:
           workspaces: src-tauri
           key: release-windows
+          # Dry runs from other branches read the cache but don't fill the quota with their own.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # createUpdaterArtifacts (tauri.conf.json) writes <installer>.exe.sig next to the installer,
       # signed with the same updater key as the macOS build.
