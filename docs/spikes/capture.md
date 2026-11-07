@@ -126,8 +126,9 @@ Levels 1 and 2 are slower than `Fast` and no smaller. Level 3 saves about 6% for
 over the 300 ms budget. So one encoder, `Fast`, serves both copy and save (`encode_png`).
 
 A save encodes the PNG on a worker while the Save dialog is open (#106), so after the dialog
-the overlay waits only for the file write. A cancelled save still finishes that encode, on the
-worker, and drops it. Each save logs its steps (`saved WxH px to …: crop, dialog, encode, write`).
+the overlay waits only for the file write and the saved folder. A cancelled save still finishes
+that encode, on the worker, and drops it. Every save, cancelled or failed too, logs the steps it
+reached: crop, dialog, wait for the PNG, encode, write and remember folder.
 `cargo run --release --example save` times each step on a 3840x2160 selection (a 4K display at
 150%), with no screen needed. On the Mac above, release build:
 

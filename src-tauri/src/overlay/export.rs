@@ -286,7 +286,8 @@ async fn save_with<R: Runtime>(
     let started = Instant::now();
     let image = annotated(&frame, out)?;
     drop(frame);
-    let crop = started.elapsed();
+    let mut steps = Steps::default();
+    steps.done("crop", started);
     if !state.phase().begin_save(session) {
         return Ok(());
     }
@@ -313,17 +314,17 @@ async fn save_with<R: Runtime>(
         .await
         .unwrap_or_else(|e| Err(e.to_string()))
         .map_err(CaptureError::Dialog);
-    let dialog = asked.elapsed();
+    steps.done("dialog", asked);
     let path = match chosen {
         Ok(Some(path)) => path,
         Ok(None) => {
-            log::info!("save cancelled");
+            log::info!("save cancelled ({steps})");
             on_main(&app, move |app| back(app, session, display));
             return Ok(());
         }
         // Not a cancel: the overlay comes back and the page says the save failed.
         Err(e) => {
-            log::error!("{e}");
+            log::error!("{e} ({steps})");
             on_main(&app, move |app| back(app, session, display));
             return Err(e);
         }
@@ -331,7 +332,7 @@ async fn save_with<R: Runtime>(
     // Always written once a path is picked: the crop is already taken. The windows are hidden
     // meanwhile, so writing before closing costs nothing visible, and a failure can bring the
     // overlay back to say so.
-    let written = write_when_encoded(encoding, path.clone(), saver).await;
+    let written = write_when_encoded(encoding, path.clone(), saver, &mut steps).await;
     let failed = written.is_err();
     // Before the close, which lets a waiting update restart the app.
     if let Some(region) = region.filter(|_| !failed) {
@@ -348,13 +349,9 @@ async fn save_with<R: Runtime>(
             close(app);
         }
     });
-    let times = SaveTimes {
-        crop,
-        dialog,
-        ..written.inspect_err(|e| log::error!("{e}"))?
-    };
+    written.inspect_err(|e| log::error!("{e} ({steps})"))?;
     log::info!(
-        "saved {}x{} px to {}: {times}",
+        "saved {}x{} px to {} ({steps})",
         size.0,
         size.1,
         path.display()
@@ -390,64 +387,61 @@ fn choose(
     }
 }
 
-/// Waits for the PNG being encoded on a worker (with how long that took), then writes it and
-/// remembers its folder on a worker. Returns how long the encode, the wait for it and the
-/// write took.
+/// Waits for the PNG being encoded on a worker, then writes it and remembers its folder on
+/// workers, adding each step reached to `steps`, a failed one too.
 async fn write_when_encoded(
     encoding: JoinHandle<Result<(Vec<u8>, Duration), CaptureError>>,
     path: PathBuf,
     saver: Arc<impl Saver>,
-) -> Result<SaveTimes, CaptureError> {
+    steps: &mut Steps,
+) -> Result<(), CaptureError> {
     let started = Instant::now();
-    let (png, encode) = encoding
+    let encoded = encoding
         .await
-        .unwrap_or_else(|e| Err(CaptureError::Encode(e.to_string())))?;
-    let waited = started.elapsed();
-    spawn_blocking(move || {
-        output::write_file(&path, &png)
-            .map_err(|e| CaptureError::Write(format!("{}: {e}", path.display())))?;
-        if let Some(dir) = path.parent() {
-            saver.remember_dir(dir);
-        }
-        Ok(())
+        .unwrap_or_else(|e| Err(CaptureError::Encode(e.to_string())));
+    let waited = steps.done("wait for the PNG", started);
+    let (png, encode) = encoded?;
+    steps.add("encode", encode);
+    let target = path.clone();
+    let wrote = spawn_blocking(move || {
+        output::write_file(&target, &png)
+            .map_err(|e| CaptureError::Write(format!("{}: {e}", target.display())))
     })
     .await
-    .unwrap_or_else(|e| Err(CaptureError::Write(e.to_string())))?;
-    Ok(SaveTimes {
-        encode,
-        waited,
-        write: started.elapsed() - waited,
-        ..SaveTimes::default()
-    })
+    .unwrap_or_else(|e| Err(CaptureError::Write(e.to_string())));
+    let written = steps.done("write", waited);
+    wrote?;
+    if let Some(dir) = path.parent().map(Path::to_owned) {
+        let _ = spawn_blocking(move || saver.remember_dir(&dir)).await;
+        steps.done("remember folder", written);
+    }
+    Ok(())
 }
 
-/// How long each step of a save took, for the log.
+/// The steps of a save so far, in order, with how long each took, for the log.
 #[derive(Default)]
-struct SaveTimes {
-    /// Crop and annotations.
-    crop: Duration,
-    /// The dialog was open, the user's time included.
-    dialog: Duration,
-    /// The PNG, encoded while the dialog was open.
-    encode: Duration,
-    /// Waited for the PNG after the dialog closed: 0 unless it closed before the PNG was done.
-    waited: Duration,
-    /// Writing the file and remembering its folder.
-    write: Duration,
+struct Steps(Vec<(&'static str, Duration)>);
+
+impl Steps {
+    fn add(&mut self, step: &'static str, took: Duration) {
+        self.0.push((step, took));
+    }
+
+    /// Adds `step` as taking from `since` until now, and returns now.
+    fn done(&mut self, step: &'static str, since: Instant) -> Instant {
+        let now = Instant::now();
+        self.add(step, now - since);
+        now
+    }
 }
 
-impl std::fmt::Display for SaveTimes {
+impl std::fmt::Display for Steps {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let ms = |d: Duration| d.as_secs_f64() * 1000.0;
-        write!(
-            f,
-            "crop {:.0} ms, dialog {:.0} ms, encode {:.0} ms (waited {:.0} ms), write {:.0} ms",
-            ms(self.crop),
-            ms(self.dialog),
-            ms(self.encode),
-            ms(self.waited),
-            ms(self.write),
-        )
+        for (i, (step, took)) in self.0.iter().enumerate() {
+            let sep = if i == 0 { "" } else { ", " };
+            write!(f, "{sep}{step} {:.0} ms", took.as_secs_f64() * 1000.0)?;
+        }
+        Ok(())
     }
 }
 
@@ -1058,19 +1052,21 @@ mod tests {
     }
 
     #[test]
-    fn save_times_are_logged_in_milliseconds() {
-        let ms = Duration::from_micros;
-        let times = SaveTimes {
-            crop: ms(9_400),
-            dialog: ms(2_345_600),
-            encode: ms(61_500),
-            waited: Duration::ZERO,
-            write: ms(12_000),
-        };
-        assert_eq!(
-            times.to_string(),
-            "crop 9 ms, dialog 2346 ms, encode 62 ms (waited 0 ms), write 12 ms"
-        );
+    fn save_steps_are_logged_in_order_in_milliseconds() {
+        let mut steps = Steps::default();
+        assert_eq!(steps.to_string(), "");
+        steps.add("crop", Duration::from_micros(9_400));
+        steps.add("dialog", Duration::from_micros(2_345_600));
+        assert_eq!(steps.to_string(), "crop 9 ms, dialog 2346 ms");
+    }
+
+    #[test]
+    fn a_done_step_ends_where_the_next_one_starts() {
+        let mut steps = Steps::default();
+        let start = Instant::now();
+        let first = steps.done("a", start);
+        let second = steps.done("b", first);
+        assert_eq!(steps.0, [("a", first - start), ("b", second - first)]);
     }
 
     #[test]
