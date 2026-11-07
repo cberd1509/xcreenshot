@@ -202,9 +202,14 @@ pub(crate) fn notice_answer<R: Runtime>(
     window.close().map_err(|e| e.to_string())?;
     let pending = window.state::<Notices>().lock().remove(window.label());
     // Already answered: the first click gave focus back.
-    if let Some(pending) = pending {
-        let _ = pending.answer.send(primary);
-        focus::hand_back(window.app_handle(), pending.front, Some(window.label()));
+    let Some(pending) = pending else {
+        return Ok(());
+    };
+    let _ = pending.answer.send(primary);
+    // A capture started meanwhile owns focus and hands it back when it closes.
+    let app = window.app_handle();
+    if !crate::overlay::is_busy(app) {
+        focus::hand_back(app, pending.front, Some(window.label()));
     }
     Ok(())
 }
@@ -437,6 +442,20 @@ pub(crate) mod tests {
         #[test]
         fn an_unknown_previous_app_hides_xcreenshot() {
             assert_eq!(answering_with(None), ["hide"]);
+        }
+
+        #[test]
+        fn an_answer_during_a_capture_leaves_focus_to_the_capture() {
+            let fake = Fake::new(Some(SAFARI));
+            let app = app_with(&fake);
+            let h = app.handle();
+            let (task, window) = asking(h, update());
+            let session = overlay::open(h, &[1]);
+            notice_answer(window, true).unwrap();
+            assert_eq!(block_on(task).unwrap(), Some(true));
+            assert!(fake.calls().is_empty(), "the capture keeps focus");
+            crate::overlay::window::close_session(h, session);
+            assert_eq!(fake.calls(), ["activate 7"], "only the capture hands back");
         }
 
         #[test]
