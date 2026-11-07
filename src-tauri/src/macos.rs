@@ -1,5 +1,4 @@
-//! Shared AppKit helpers. `overlay/window.rs` (`macos::raise`) still has its own copy of the
-//! pointer cast and the level; it should switch to these.
+//! Shared AppKit helpers.
 
 use crate::focus::AppId;
 use objc2::MainThreadMarker;
@@ -9,9 +8,7 @@ use objc2_app_kit::{
 };
 use tauri::{Runtime, WebviewWindow};
 
-/// The overlay's window level: above the menu bar, the Dock and pop-up menus. Only the share
-/// debug path uses it until the overlay switches over.
-#[cfg_attr(not(debug_assertions), allow(dead_code))]
+/// The overlay's window level: above the menu bar, the Dock and pop-up menus.
 pub(crate) const SCREEN_SAVER_LEVEL: isize = NSScreenSaverWindowLevel;
 
 /// The window's `NSWindow`. Only use it on the main thread.

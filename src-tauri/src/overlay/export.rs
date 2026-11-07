@@ -1072,7 +1072,7 @@ mod tests {
         let (session, release) = press(h, &[1]);
         release.send(true).unwrap();
         wait_until("the session to open", || is_open(h, session));
-        overlay_painted(window(h, 1), h.state(), session);
+        overlay_painted(window(h, 1), h.state(), session, true);
         let saver = Arc::new(FakeSaver::default());
         save(h, session, px(0, 0, 2, 2), &saver, Path::new("/d")).unwrap();
         assert!(is_open(h, session));
@@ -1096,11 +1096,11 @@ mod tests {
         let app = app_with_escape();
         let h = app.handle();
         let session = open(h, &[1, 2]);
-        overlay_painted(window(h, 1), h.state(), session);
+        overlay_painted(window(h, 1), h.state(), session, true);
         let mut saver = FakeSaver::default();
         let handle = h.clone();
         saver.during = Some(Box::new(move || {
-            overlay_painted(window(&handle, 2), handle.state(), session);
+            overlay_painted(window(&handle, 2), handle.state(), session, true);
             on_screen(&handle).is_empty()
         }));
         let saver = Arc::new(saver);
@@ -1128,7 +1128,7 @@ mod tests {
             "not painted"
         );
         assert!(saver.asked.lock().unwrap().is_empty());
-        overlay_painted(window(h, 1), h.state(), session);
+        overlay_painted(window(h, 1), h.state(), session, true);
         let empty = save(h, session, px(0, 0, 0, 0), &saver, d);
         assert_eq!(empty, Err(CaptureError::EmptySelection));
         assert!(is_open(h, session));
@@ -1374,7 +1374,7 @@ mod tests {
         let not_shown = share_out(h, &anchored(session, px(0, 0, 1, 1)), show, forget());
         assert_eq!(not_shown, Ok(()), "not painted");
         assert_eq!(shown_sheets(&seen), 0);
-        overlay_painted(window(h, 1), h.state(), session);
+        overlay_painted(window(h, 1), h.state(), session, true);
         let (show, seen) = sheet(false);
         let other = share_out(h, &anchored(session + 1, px(0, 0, 1, 1)), show, forget());
         assert_eq!(other, Ok(()), "other session");

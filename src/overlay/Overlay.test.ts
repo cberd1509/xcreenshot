@@ -5,6 +5,7 @@ import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetSettings, settings } from '$lib/settings.svelte'
 import { box, fakeContext } from '../test/canvas'
+import { fakeFrames } from '../test/frames'
 import { stages } from '../test/konva'
 import { OUTPUT_HEADER } from './annotate/output'
 import type { Rect } from './geometry'
@@ -188,7 +189,7 @@ describe('Overlay', () => {
     await emit('overlay:show', small(3))
     await waitFor(() => expect(called('overlay_painted')).toHaveLength(1))
     expect(called('overlay_frame')[0].args).toEqual({ session: 3 })
-    expect(called('overlay_painted')[0].args).toEqual({ session: 3 })
+    expect(called('overlay_painted')[0].args).toEqual({ session: 3, rendered: true })
     const canvas = container.querySelector('canvas')!
     expect([canvas.width, canvas.height]).toEqual([4, 2])
     const [image, x, y] = context.putImageData.mock.calls[0]
@@ -234,7 +235,7 @@ describe('Overlay', () => {
     await waitFor(() => expect(called('overlay_painted')).toHaveLength(1))
     respond(rgba(4, 2))
     await tick()
-    expect(called('overlay_painted').map((c) => c.args)).toEqual([{ session: 2 }])
+    expect(called('overlay_painted').map((c) => c.args)).toEqual([{ session: 2, rendered: true }])
   })
 
   it('does not paint a frame that arrives after the overlay closed', async () => {
@@ -248,6 +249,32 @@ describe('Overlay', () => {
     await tick()
     expect(called('overlay_painted')).toHaveLength(0)
     expect(container.querySelector('canvas')!.width).toBe(0)
+  })
+
+  it('reports the paint only once the frame is rendered, and not after a close', async () => {
+    const frames = fakeFrames()
+    try {
+      await mount()
+      await emit('overlay:show', small(1))
+      await waitFor(() => expect(frames.pending()).toBe(1))
+      frames.next()
+      await tick()
+      expect(called('overlay_painted'), 'drawn, not yet rendered').toHaveLength(0)
+      frames.next()
+      await waitFor(() => expect(called('overlay_painted')).toHaveLength(1))
+
+      // Closed while waiting for the next session's frame to render: Rust is not told.
+      await emit('overlay:closed')
+      await emit('overlay:show', small(2))
+      await waitFor(() => expect(frames.pending()).toBe(1))
+      await emit('overlay:closed')
+      frames.next()
+      frames.next()
+      await tick()
+      expect(called('overlay_painted')).toHaveLength(1)
+    } finally {
+      frames.restore()
+    }
   })
 
   it('closes the overlay when the frame cannot be drawn', async () => {
