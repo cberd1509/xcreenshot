@@ -7,7 +7,8 @@
 //!   thread, then closes the overlay.
 //! - **Save** (⌘S / Ctrl+S) hides the overlay windows, which sit above the Save dialog, and
 //!   releases Esc to the dialog. The session stays, and nothing can close it until the save
-//!   ends. Once a path is picked the file is always written. Then the overlay closes; if the
+//!   ends. The PNG is encoded on a worker while the dialog is open, so once a path is picked
+//!   only the write is left; the file is always written. Then the overlay closes; if the
 //!   write failed, or the dialog was cancelled, the windows come back with the selection
 //!   intact, so the user can try again, copy, change the selection or press Esc.
 //!
@@ -37,8 +38,8 @@ use image::{ImageBuffer, RgbaImage};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
-use tauri::async_runtime::spawn_blocking;
+use std::time::{Duration, Instant};
+use tauri::async_runtime::{JoinHandle, spawn_blocking};
 use tauri::http::HeaderMap;
 use tauri::ipc::{InvokeBody, Request};
 use tauri::{AppHandle, Manager, Runtime, State, WebviewWindow};
@@ -282,8 +283,11 @@ async fn save_with<R: Runtime>(
         return Ok(());
     };
     // Checked before anything hides, so an empty selection just stays.
+    let started = Instant::now();
     let image = annotated(&frame, out)?;
     drop(frame);
+    let mut steps = Steps::default();
+    steps.done("crop", started);
     if !state.phase().begin_save(session) {
         return Ok(());
     }
@@ -296,22 +300,31 @@ async fn save_with<R: Runtime>(
             log::warn!("could not release Esc for the Save dialog");
         }
     });
+    // Encoded while the dialog is open, so a picked path waits only for the write. A cancel
+    // lets the encode finish and drops the PNG: one wasted encode, on a worker.
+    let size = image.dimensions();
+    let encoding = spawn_blocking(move || {
+        let started = Instant::now();
+        capture::encode_png(&image, density).map(|png| (png, started.elapsed()))
+    });
     let saver = Arc::new(saver);
     let asker = Arc::clone(&saver);
+    let asked = Instant::now();
     let chosen = spawn_blocking(move || choose(&*asker, now, default_dir))
         .await
         .unwrap_or_else(|e| Err(e.to_string()))
         .map_err(CaptureError::Dialog);
+    steps.done("dialog", asked);
     let path = match chosen {
         Ok(Some(path)) => path,
         Ok(None) => {
-            log::info!("save cancelled");
+            log::info!("save cancelled ({steps})");
             on_main(&app, move |app| back(app, session, display));
             return Ok(());
         }
         // Not a cancel: the overlay comes back and the page says the save failed.
         Err(e) => {
-            log::error!("{e}");
+            log::error!("{e} ({steps})");
             on_main(&app, move |app| back(app, session, display));
             return Err(e);
         }
@@ -319,10 +332,9 @@ async fn save_with<R: Runtime>(
     // Always written once a path is picked: the crop is already taken. The windows are hidden
     // meanwhile, so writing before closing costs nothing visible, and a failure can bring the
     // overlay back to say so.
-    let written = spawn_blocking(move || write(&image, density, &path, &*saver))
-        .await
-        .unwrap_or_else(|e| Err(CaptureError::Write(e.to_string())));
+    let written = write_when_encoded(encoding, path.clone(), saver, &mut steps).await;
     let failed = written.is_err();
+    // Before the close, which lets a waiting update restart the app.
     if let Some(region) = region.filter(|_| !failed) {
         remember(region);
     }
@@ -333,10 +345,18 @@ async fn save_with<R: Runtime>(
         if failed {
             reshow(app, &displays, display);
         } else {
+            // The "Saved" confirmation (#99) goes here, as the overlay closes.
             close(app);
         }
     });
-    written.inspect_err(|e| log::error!("{e}"))
+    written.inspect_err(|e| log::error!("{e} ({steps})"))?;
+    log::info!(
+        "saved {}x{} px to {} ({steps})",
+        size.0,
+        size.1,
+        path.display()
+    );
+    Ok(())
 }
 
 /// Shows the Save dialog until the user picks a path we may write, or cancels. If `.png` had
@@ -367,21 +387,62 @@ fn choose(
     }
 }
 
-/// Encodes and writes the PNG, then remembers its folder.
-fn write(
-    image: &RgbaImage,
-    density: Density,
-    path: &Path,
-    saver: &impl Saver,
+/// Waits for the PNG being encoded on a worker, then writes it and remembers its folder on
+/// workers, adding each step reached to `steps`, a failed one too.
+async fn write_when_encoded(
+    encoding: JoinHandle<Result<(Vec<u8>, Duration), CaptureError>>,
+    path: PathBuf,
+    saver: Arc<impl Saver>,
+    steps: &mut Steps,
 ) -> Result<(), CaptureError> {
-    let png = capture::encode_png(image, density)?;
-    output::write_file(path, &png)
-        .map_err(|e| CaptureError::Write(format!("{}: {e}", path.display())))?;
-    log::info!("saved {}", path.display());
-    if let Some(dir) = path.parent() {
-        saver.remember_dir(dir);
+    let started = Instant::now();
+    let encoded = encoding
+        .await
+        .unwrap_or_else(|e| Err(CaptureError::Encode(e.to_string())));
+    let waited = steps.done("wait for the PNG", started);
+    let (png, encode) = encoded?;
+    steps.add("encode", encode);
+    let target = path.clone();
+    let wrote = spawn_blocking(move || {
+        output::write_file(&target, &png)
+            .map_err(|e| CaptureError::Write(format!("{}: {e}", target.display())))
+    })
+    .await
+    .unwrap_or_else(|e| Err(CaptureError::Write(e.to_string())));
+    let written = steps.done("write", waited);
+    wrote?;
+    if let Some(dir) = path.parent().map(Path::to_owned) {
+        let _ = spawn_blocking(move || saver.remember_dir(&dir)).await;
+        steps.done("remember folder", written);
     }
     Ok(())
+}
+
+/// The steps of a save so far, in order, with how long each took, for the log.
+#[derive(Default)]
+struct Steps(Vec<(&'static str, Duration)>);
+
+impl Steps {
+    fn add(&mut self, step: &'static str, took: Duration) {
+        self.0.push((step, took));
+    }
+
+    /// Adds `step` as taking from `since` until now, and returns now.
+    fn done(&mut self, step: &'static str, since: Instant) -> Instant {
+        let now = Instant::now();
+        self.add(step, now - since);
+        now
+    }
+}
+
+impl std::fmt::Display for Steps {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, (step, took)) in self.0.iter().enumerate() {
+            let sep = if i == 0 { "" } else { ", " };
+            write!(f, "{sep}{step} {:.0} ms", took.as_secs_f64() * 1000.0)?;
+        }
+        Ok(())
+    }
 }
 
 /// The Save dialog was cancelled: show the windows again.
@@ -988,6 +1049,24 @@ mod tests {
         ]));
         save(h, session, px(0, 0, 2, 2), &saver, dir.path()).unwrap();
         assert_clean_png(&fs::read(&taken).unwrap(), &expected(0, 0, 2, 2), RETINA);
+    }
+
+    #[test]
+    fn save_steps_are_logged_in_order_in_milliseconds() {
+        let mut steps = Steps::default();
+        assert_eq!(steps.to_string(), "");
+        steps.add("crop", Duration::from_micros(9_400));
+        steps.add("dialog", Duration::from_micros(2_345_600));
+        assert_eq!(steps.to_string(), "crop 9 ms, dialog 2346 ms");
+    }
+
+    #[test]
+    fn a_done_step_ends_where_the_next_one_starts() {
+        let mut steps = Steps::default();
+        let start = Instant::now();
+        let first = steps.done("a", start);
+        let second = steps.done("b", first);
+        assert_eq!(steps.0, [("a", first - start), ("b", second - first)]);
     }
 
     #[test]

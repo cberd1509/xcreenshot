@@ -9,7 +9,8 @@ mod login;
 #[cfg(all(target_os = "macos", not(test)))]
 mod macos;
 mod notice;
-mod output;
+/// Public for `examples/save.rs`.
+pub mod output;
 mod overlay;
 mod permission;
 mod prefs;
