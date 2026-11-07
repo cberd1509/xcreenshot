@@ -20,6 +20,8 @@ use tauri_plugin_global_shortcut::GlobalShortcutExt;
 /// Sent to every page with the new [`Settings`] after a change.
 pub const CHANGED: &str = "prefs:changed";
 const UNKNOWN: &str = "Unknown setting.";
+/// [`replace_shortcut`] found another shortcut saved meanwhile (logged only).
+const CHANGED_MEANWHILE: &str = "the shortcut changed meanwhile";
 
 /// Counts saved changes in this run; see [`Settings::version`].
 static VERSION: AtomicU64 = AtomicU64::new(0);
@@ -272,7 +274,32 @@ pub(crate) fn set_with<R: Runtime>(
     key: &str,
     value: Value,
 ) -> Result<Settings, &'static str> {
-    let change = Change::parse(key, value)?;
+    save_if(app, shortcuts, snipping, Change::parse(key, value)?, |_| {
+        true
+    })
+}
+
+/// Changes the capture shortcut from `from` to `to`, only if it is still `from` (checked and
+/// saved under the prefs lock, so a newer choice is never overwritten).
+pub(crate) fn replace_shortcut<R: Runtime>(
+    app: &AppHandle<R>,
+    shortcuts: &impl Registrar,
+    snipping: print_screen::SnippingTool,
+    from: &str,
+    to: &str,
+) -> Result<Settings, &'static str> {
+    let change = Change::Shortcut(Some(to.to_owned()));
+    save_if(app, shortcuts, snipping, change, |p| p.shortcut == from)
+}
+
+/// Applies and saves `change` if `still` holds for the saved prefs, then sends [`CHANGED`].
+fn save_if<R: Runtime>(
+    app: &AppHandle<R>,
+    shortcuts: &impl Registrar,
+    snipping: print_screen::SnippingTool,
+    change: Change,
+    still: impl FnOnce(&Prefs) -> bool,
+) -> Result<Settings, &'static str> {
     let login = login::item(app);
     let registered = app.state::<Registered>();
     let os = Os {
@@ -282,7 +309,11 @@ pub(crate) fn set_with<R: Runtime>(
         snipping,
     };
     prefs::with_store(app, |store| {
-        let was_on = Prefs::load(store).remember_region;
+        let saved = Prefs::load(store);
+        if !still(&saved) {
+            return Err(CHANGED_MEANWHILE);
+        }
+        let was_on = saved.remember_region;
         let prefs = transact(store, change, &os)?;
         if was_on && !prefs.remember_region {
             crate::region::ORDER.forget();
@@ -825,6 +856,14 @@ mod tests {
             2,
             "no event for a rejected change"
         );
+
+        // Replaced only while it is still the one expected.
+        let stale = replace_shortcut(&h, &shortcuts, OFF, "Alt+Shift+F6", "Alt+D");
+        assert_eq!(stale, Err(CHANGED_MEANWHILE));
+        assert_eq!(shortcuts.held(), ["Alt+Shift+F5"]);
+        let replaced = replace_shortcut(&h, &shortcuts, OFF, "Alt+Shift+F5", "Alt+D").unwrap();
+        assert_eq!(replaced.shortcut, "Alt+D");
+        assert_eq!(shortcuts.held(), ["Alt+D"]);
         let _ = std::fs::remove_dir_all(data);
     }
 }

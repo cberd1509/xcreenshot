@@ -55,9 +55,10 @@ pub struct Prefs {
     /// The user was told PrintScreen went to Snipping Tool (Windows; see `print_screen`).
     #[serde(default, deserialize_with = "lenient")]
     pub print_screen_notice_shown: bool,
-    /// The first-run window was finished (see `onboarding`). `None` in prefs saved before this
-    /// was recorded, an install from before onboarding; a fresh install starts at `false`.
-    #[serde(default, deserialize_with = "lenient")]
+    /// The first-run window was finished (see `onboarding`). `None` (missing) in prefs saved
+    /// before this was recorded, an install from before onboarding; a fresh install starts at
+    /// `false`, and so does an invalid value.
+    #[serde(default, deserialize_with = "lenient_onboarded")]
     pub onboarded: Option<bool>,
     /// The last region per display arrangement, newest first (see `region`).
     #[serde(default, deserialize_with = "lenient")]
@@ -111,6 +112,11 @@ fn lenient_shortcut<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error>
             default_shortcut()
         }
     })
+}
+
+/// A stored `onboarded` that isn't a bool counts as not done (a missing one is `None`).
+fn lenient_onboarded<'de, D: Deserializer<'de>>(d: D) -> Result<Option<bool>, D::Error> {
+    lenient_or(d, || false).map(Some)
 }
 
 fn lenient_or<'de, D: Deserializer<'de>, T: DeserializeOwned>(
@@ -424,7 +430,6 @@ pub(crate) mod tests {
             json!({ "shortcut": "Control+Nope", "openAtLogin": 0, "checkForUpdates": [] }),
             json!({ "shortcut": "S", "loginItemAdded": "no" }),
             json!({ "printScreenNoticeShown": 1 }),
-            json!({ "onboarded": "yes" }),
             json!({}),
             json!({ "unknown": true }),
             json!("not an object"),
@@ -438,6 +443,11 @@ pub(crate) mod tests {
                 ..Prefs::default()
             };
             assert_eq!(Prefs::load(&*s), expected, "{bad}");
+        }
+        // An invalid `onboarded` is not done, unlike a missing one.
+        for bad in [json!("yes"), json!(null), json!(1)] {
+            s.set(KEY, json!({ "onboarded": bad }));
+            assert_eq!(Prefs::load(&*s).onboarded, Some(false), "{bad}");
         }
     }
 

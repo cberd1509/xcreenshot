@@ -37,6 +37,10 @@ let pane: string
 let savedShortcut: string
 /** Settings version Rust is at. */
 let version: number
+/** Rust's answer to `onboarding_tried`: a capture ended before the page listened. */
+let triedEarly: boolean
+/** Answers held back per command, answered in the order given to `answer`. */
+let held: Map<string, ((v: unknown) => void)[]>
 
 const count = (cmd: string) => calls.filter((c) => c === cmd).length
 const button = (name: string) => screen.getByRole('button', { name })
@@ -73,6 +77,8 @@ describe('Onboarding', () => {
     pane = 'Screen & System Audio Recording'
     version = 1
     savedShortcut = SHORTCUT
+    triedEarly = false
+    held = new Map()
     resetSettings()
     mockWindows('onboarding')
     mockIPC(
@@ -80,6 +86,9 @@ describe('Onboarding', () => {
         calls.push(cmd)
         if (cmd === 'onboarding_print_screen') claims.push((args as { claim: boolean }).claim)
         if (failing.has(cmd)) throw new Error('nope')
+        const waiting = held.get(cmd)
+        if (waiting) return new Promise((resolve) => waiting.push(resolve))
+        if (cmd === 'onboarding_tried') return triedEarly
         if (cmd === 'permission_granted') return granted
         if (cmd === 'capture_shortcut') return { accelerator: settings.shortcut, registered }
         if (cmd === 'permission_pane') return pane
@@ -371,6 +380,71 @@ describe('Onboarding', () => {
       // Unknown is not "taken": Try it still shows once allowed.
       granted = true
       await after(1000)
+      expect(tryIt()).toBeInTheDocument()
+    })
+  })
+
+  describe('answers that cross', () => {
+    it('keeps the latest permission check when an older one answers last', async () => {
+      held.set('permission_granted', [])
+      render(Onboarding)
+      await after()
+      await fireEvent.click(button('Open System Settings'))
+      await after()
+      await fireEvent.focus(window) // A second check while the first is out.
+      await after()
+      const [first, second] = held.get('permission_granted')!
+      second(true)
+      await after()
+      expect(permissionStatus()).toHaveTextContent('Screen recording is on.')
+      first(false)
+      await after()
+      expect(permissionStatus()).toHaveTextContent('Screen recording is on.')
+    })
+
+    it('keeps the latest shortcut status when an older one answers last', async () => {
+      granted = true
+      held.set('capture_shortcut', [])
+      await mount()
+      await fireEvent.focus(window)
+      await after()
+      const [first, second] = held.get('capture_shortcut')!
+      second({ accelerator: SHORTCUT, registered: true })
+      await after()
+      first({ accelerator: SHORTCUT, registered: false })
+      await after()
+      expect(screen.queryByRole('alert')).toBeNull()
+      expect(tryIt()).toBeInTheDocument()
+    })
+
+    it('keeps the latest PrtSc check when an older one answers last', async () => {
+      platform.mac = false
+      Object.assign(settings, { shortcut: FALLBACK })
+      held.set('onboarding_print_screen', [])
+      await mount()
+      await fireEvent.focus(window)
+      await after()
+      const [first, second] = held.get('onboarding_print_screen')!
+      second(false)
+      await after()
+      first(true)
+      await after()
+      expect(screen.queryByText('Want to use PrtSc instead?')).toBeNull()
+    })
+
+    it('shows it works for a capture that ended before the page listened', async () => {
+      granted = true
+      triedEarly = true
+      await mount()
+      expect(works()).toBeInTheDocument()
+    })
+
+    it('logs when it cannot ask', async () => {
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+      failing = new Set(['onboarding_tried'])
+      granted = true
+      await mount()
+      expect(error).toHaveBeenCalledWith('onboarding_tried failed', expect.any(Error))
       expect(tryIt()).toBeInTheDocument()
     })
   })

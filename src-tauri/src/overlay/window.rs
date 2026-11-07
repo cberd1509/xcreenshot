@@ -1119,12 +1119,11 @@ pub(crate) mod tests {
         assert_eq!(ended.load(Ordering::Relaxed), 0);
         close_session(h, session);
         assert!(is_idle(h));
+        let sent = ended.load(Ordering::Relaxed);
+        assert_eq!(sent, 1, "sent by the close that ended it");
         close(h);
-        assert_eq!(
-            ended.load(Ordering::Relaxed),
-            1,
-            "once, for the close that ended it"
-        );
+        let again = ended.load(Ordering::Relaxed);
+        assert_eq!(again, 1, "not again when nothing was open");
     }
 
     #[test]

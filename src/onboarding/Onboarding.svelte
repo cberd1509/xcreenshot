@@ -44,20 +44,23 @@
   let openedSettings = false
   let timer: ReturnType<typeof setTimeout> | undefined
   let stopped = false
+  /** Requests started, per check: only the latest one's answer counts, as they can cross. */
+  const latest = { permission: 0, registered: 0, printScreen: 0 }
 
   /** Checks now and plans the next check. Resolves to the permission, or null if it failed. */
   async function check(): Promise<boolean | null> {
     clearTimeout(timer)
+    const id = ++latest.permission
     let now: boolean | null = null
     try {
       now = await invoke<boolean>('permission_granted')
-      granted = now
-      failures = 0
     } catch (e) {
-      failures++
       failed('permission_granted')(e)
     }
-    // A focus check can overlap the timer's; only the last one plans the next.
+    // A focus check can overlap the timer's; only the latest one counts and plans the next.
+    if (id !== latest.permission) return now
+    if (now === null) failures++
+    else [granted, failures] = [now, 0]
     clearTimeout(timer)
     if (!stopped) timer = setTimeout(check, nextDelay(granted, failures))
     return now
@@ -86,8 +89,11 @@
   /** Whether the shortcut is registered; again when it changes or the window gets focus. */
   function loadRegistered() {
     if (!settings.shortcut) return // Not loaded yet.
+    const id = ++latest.registered
     invoke<{ registered: boolean }>('capture_shortcut')
-      .then((s) => (registered = s.registered))
+      .then((s) => {
+        if (id === latest.registered) registered = s.registered
+      })
       .catch(failed('capture_shortcut'))
   }
 
@@ -96,9 +102,12 @@
    * arrives as a settings change. Any other shortcut was picked, so there's nothing to say. */
   function checkPrintScreen() {
     const claim = untrack(() => taken)
+    const id = ++latest.printScreen
     if (isMac || settings.shortcut !== FALLBACK) return void (taken = false)
     invoke<boolean>('onboarding_print_screen', { claim })
-      .then((t) => (taken = t))
+      .then((t) => {
+        if (id === latest.printScreen) taken = t
+      })
       .catch(failed('onboarding_print_screen'))
   }
 
@@ -119,7 +128,11 @@
 
   onMount(() => {
     const unlisten = listen(CAPTURE_CLOSED, () => (tried = true))
-    unlisten.catch(failed('listen'))
+    // Rust remembers a capture that ended before the listener was ready.
+    unlisten
+      .then(() => invoke<boolean>('onboarding_tried'))
+      .then((t) => (tried ||= t))
+      .catch(failed('onboarding_tried'))
     if (isMac) {
       void check()
       invoke<string>('permission_pane')

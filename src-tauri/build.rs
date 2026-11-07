@@ -28,6 +28,7 @@ fn main() {
         "toast_ready",
         "toast_idle",
         "onboarding_print_screen",
+        "onboarding_tried",
         "open_keyboard_settings",
     ];
     let mut attributes = tauri_build::Attributes::new()

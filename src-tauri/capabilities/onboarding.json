@@ -17,6 +17,7 @@
     "allow-pause-capture-shortcut",
     "allow-resume-capture-shortcut",
     "allow-onboarding-print-screen",
+    "allow-onboarding-tried",
     "allow-open-keyboard-settings"
   ]
 }

@@ -101,6 +101,7 @@ pub fn run() {
             permission::open_permission_settings,
             permission::restart_app,
             onboarding::onboarding_print_screen,
+            onboarding::onboarding_tried,
             #[cfg(target_os = "windows")]
             onboarding::open_keyboard_settings,
             shortcut::capture_shortcut,

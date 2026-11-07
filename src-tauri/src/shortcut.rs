@@ -3,6 +3,7 @@
 //! Accelerators use the tauri-plugin-global-shortcut format, e.g. `Control+Shift+Super+S`.
 
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use tauri::{AppHandle, Manager, Runtime, State, Webview};
 use tauri_plugin_global_shortcut::{GlobalShortcut, GlobalShortcutExt, Modifiers, Shortcut};
@@ -76,7 +77,19 @@ pub fn swap(
         return Err(NOT_CHANGED);
     }
     let Err(e) = registrar.register(new) else {
-        registered.set(new, true);
+        // Another page is still recording: it works (it registered), but stays let go until
+        // that page is done.
+        if registered.is_paused() {
+            if let Err(e) = registrar.unregister(new) {
+                log::warn!("could not keep {new} paused: {e}");
+            }
+            registered.lock().shortcut = CaptureShortcut {
+                accelerator: new.to_owned(),
+                registered: true,
+            };
+        } else {
+            registered.set(new, true);
+        }
         return Ok(());
     };
     log::warn!("could not register the capture shortcut {new}: {e}");
@@ -104,8 +117,9 @@ struct Current {
     shortcut: CaptureShortcut,
     /// The registered shortcut's id, so the handler compares without parsing.
     id: Option<u32>,
-    /// The label of the window recording a new shortcut, while it is let go (see [`pause`]).
-    paused_by: Option<String>,
+    /// The pages (window labels) recording a new shortcut; it is let go while any is (see
+    /// [`pause`]).
+    paused_by: BTreeSet<String>,
 }
 
 impl Default for Registered {
@@ -116,40 +130,42 @@ impl Default for Registered {
                 registered: false,
             },
             id: None,
-            paused_by: None,
+            paused_by: BTreeSet::new(),
         }))
     }
 }
 
-/// Lets go of the capture shortcut while a new one is recorded, so pressing it reaches the
-/// recorder instead of starting a capture. [`resume`] takes it back. If it can't be let go,
-/// it stays active and the error is returned.
+/// Lets go of the capture shortcut while the page `by` records a new one, so pressing it
+/// reaches the recorder instead of starting a capture. [`resume`] takes it back once no page
+/// is recording. If it can't be let go, it stays active and the error is returned.
 pub fn pause(
     registrar: &impl Registrar,
     registered: &Registered,
     by: &str,
 ) -> Result<(), &'static str> {
     let _one_at_a_time = transition();
-    let Some(accelerator) = registered.active() else {
+    if let Some(accelerator) = registered.active() {
+        registrar.unregister(&accelerator).map_err(|e| {
+            log::warn!("could not pause the capture shortcut {accelerator}: {e}");
+            NOT_CHANGED
+        })?;
+    } else if !registered.is_paused() {
+        // Not registered (another app has it): nothing to let go.
         return Ok(());
-    };
-    registrar.unregister(&accelerator).map_err(|e| {
-        log::warn!("could not pause the capture shortcut {accelerator}: {e}");
-        NOT_CHANGED
-    })?;
+    }
     let mut current = registered.lock();
-    current.paused_by = Some(by.to_owned());
+    current.paused_by.insert(by.to_owned());
     current.id = None;
     Ok(())
 }
 
-/// Registers the paused capture shortcut again. Does nothing if it isn't paused (a new
-/// shortcut was saved meanwhile, or it was never paused).
-pub fn resume(registrar: &impl Registrar, registered: &Registered) {
+/// The page `by` stopped recording: registers the capture shortcut again once no page is.
+/// Does nothing if `by` didn't pause it.
+pub fn resume(registrar: &impl Registrar, registered: &Registered, by: &str) {
     let _one_at_a_time = transition();
     let accelerator = {
-        let current = registered.lock();
-        if current.paused_by.is_none() {
+        let mut current = registered.lock();
+        if !current.paused_by.remove(by) || !current.paused_by.is_empty() {
             return;
         }
         current.shortcut.accelerator.clone()
@@ -176,7 +192,7 @@ impl Registered {
                 registered,
             },
             id,
-            paused_by: None,
+            paused_by: BTreeSet::new(),
         };
     }
 
@@ -187,13 +203,19 @@ impl Registered {
     /// The accelerator if the app holds it right now (registered and not paused).
     pub fn active(&self) -> Option<String> {
         let current = self.lock();
-        (current.shortcut.registered && current.paused_by.is_none())
+        (current.shortcut.registered && current.paused_by.is_empty())
             .then(|| current.shortcut.accelerator.clone())
     }
 
     /// Whether the page in `label` has the capture shortcut paused.
+    #[cfg(test)]
     pub fn paused_by(&self, label: &str) -> bool {
-        self.lock().paused_by.as_deref() == Some(label)
+        self.lock().paused_by.contains(label)
+    }
+
+    /// Whether a page is recording a new shortcut.
+    fn is_paused(&self) -> bool {
+        !self.lock().paused_by.is_empty()
     }
 
     /// Whether `pressed` is the registered capture shortcut.
@@ -221,24 +243,17 @@ pub fn pause_capture_shortcut<R: Runtime>(
     )?)
 }
 
-/// The recorder stopped recording.
+/// The page's recorder stopped recording.
 #[tauri::command]
-pub fn resume_capture_shortcut<R: Runtime>(app: AppHandle<R>) {
-    resume_capture(&app);
+pub fn resume_capture_shortcut<R: Runtime>(app: AppHandle<R>, webview: Webview<R>) {
+    page_gone(&app, webview.label());
 }
 
-/// Takes the capture shortcut back if it is paused.
-pub fn resume_capture<R: Runtime>(app: &AppHandle<R>) {
-    if let Some(shortcuts) = app.try_state::<GlobalShortcut<R>>() {
-        resume(&*shortcuts, &app.state::<Registered>());
-    }
-}
-
-/// The page in `label` reloaded or its window closed: takes the capture shortcut back if that
-/// page paused it mid-recording, so it always comes back.
+/// The page in `label` stopped recording, reloaded or closed: takes the capture shortcut back
+/// if that page paused it and no other page is recording, so it always comes back.
 pub fn page_gone<R: Runtime>(app: &AppHandle<R>, label: &str) {
-    if app.state::<Registered>().paused_by(label) {
-        resume_capture(app);
+    if let Some(shortcuts) = app.try_state::<GlobalShortcut<R>>() {
+        resume(&*shortcuts, &app.state::<Registered>(), label);
     }
 }
 
@@ -404,9 +419,8 @@ pub(crate) mod tests {
             .manage(Registered::default())
             .build(mock_context(noop_assets()))
             .unwrap();
-        resume_capture(app.handle());
-        assert!(!app.state::<Registered>().get().registered);
         page_gone(app.handle(), "settings");
+        assert!(!app.state::<Registered>().get().registered);
         // Paused by Settings: its page going away asks to take it back.
         let registered = app.state::<Registered>();
         registered.set("Alt+S", true);
@@ -436,21 +450,49 @@ pub(crate) mod tests {
             Ok(()),
             "nothing more to let go"
         );
-        resume(&fake, &registered);
+        resume(&fake, &registered, "settings");
         assert_eq!(fake.held(), ["Alt+S"]);
         assert!(registered.is_capture(&alt_s));
-        resume(&fake, &registered); // Not paused: nothing to do.
+        resume(&fake, &registered, "settings"); // Not paused: nothing to do.
         assert_eq!(fake.held(), ["Alt+S"]);
     }
 
     #[test]
-    fn re_recording_the_same_shortcut_while_paused_registers_it() {
+    fn re_recording_the_same_shortcut_after_resuming_registers_it() {
         let (fake, registered) = (FakeRegistrar::holding("Alt+S"), holding("Alt+S"));
         pause(&fake, &registered, "settings").unwrap();
+        resume(&fake, &registered, "settings");
         assert_eq!(swap(&fake, &registered, "Alt+S"), Ok(()));
         assert_eq!(fake.held(), ["Alt+S"]);
-        resume(&fake, &registered); // Already back: nothing to do.
         assert_eq!(registered.active().as_deref(), Some("Alt+S"));
+    }
+
+    #[test]
+    fn the_shortcut_stays_let_go_while_any_page_records() {
+        let (fake, registered) = (FakeRegistrar::holding("Alt+S"), holding("Alt+S"));
+        pause(&fake, &registered, "settings").unwrap();
+        pause(&fake, &registered, "onboarding").unwrap();
+        assert!(registered.paused_by("onboarding"), "joins the pause");
+        // A page that didn't pause it can't take it back.
+        resume(&fake, &registered, "notice-1");
+        resume(&fake, &registered, "settings");
+        assert!(fake.held().is_empty(), "onboarding still records");
+        assert_eq!(registered.active(), None);
+        // Settings saved a new one meanwhile: it registers, then waits for onboarding.
+        assert_eq!(swap(&fake, &registered, "Alt+D"), Ok(()));
+        assert!(fake.held().is_empty());
+        assert_eq!(registered.get().accelerator, "Alt+D");
+        assert!(!registered.is_capture(&"Alt+D".parse().unwrap()));
+        resume(&fake, &registered, "onboarding");
+        assert_eq!(fake.held(), ["Alt+D"]);
+        assert!(registered.is_capture(&"Alt+D".parse().unwrap()));
+    }
+
+    #[test]
+    fn a_shortcut_another_app_holds_is_not_paused() {
+        let (fake, registered) = (FakeRegistrar::default(), Registered::default());
+        assert_eq!(pause(&fake, &registered, "settings"), Ok(()));
+        assert!(!registered.paused_by("settings"));
     }
 
     #[test]
@@ -459,7 +501,7 @@ pub(crate) mod tests {
         fake.taken.insert("Alt+D".into());
         pause(&fake, &registered, "settings").unwrap();
         assert_eq!(swap(&fake, &registered, "Alt+D"), Err(IN_USE));
-        resume(&fake, &registered);
+        resume(&fake, &registered, "settings");
         assert_eq!(fake.held(), ["Alt+S"]);
         assert_eq!(registered.active().as_deref(), Some("Alt+S"));
     }
@@ -469,7 +511,7 @@ pub(crate) mod tests {
         let (mut fake, registered) = (FakeRegistrar::holding("Alt+S"), holding("Alt+S"));
         pause(&fake, &registered, "settings").unwrap();
         fake.taken.insert("Alt+S".into());
-        resume(&fake, &registered);
+        resume(&fake, &registered, "settings");
         assert!(!registered.get().registered);
     }
 
@@ -479,7 +521,7 @@ pub(crate) mod tests {
         assert_eq!(pause(&fake, &registered, "settings"), Err(NOT_CHANGED));
         assert_eq!(registered.active().as_deref(), Some("Alt+S"));
         assert!(registered.is_capture(&"Alt+S".parse().unwrap()));
-        resume(&fake, &registered); // Not paused: nothing to do.
+        resume(&fake, &registered, "settings"); // Not paused: nothing to do.
         assert!(fake.held().is_empty());
     }
 

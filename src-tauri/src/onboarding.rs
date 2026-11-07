@@ -8,12 +8,14 @@
 //! `Some(false)`. Closing the window once capture works marks it done.
 
 use crate::capture;
+use crate::overlay::window::CAPTURE_CLOSED;
 use crate::prefs::{self, Storage};
 use crate::print_screen::{self, SnippingTool};
 use crate::settings;
 use crate::shortcut::{Registered, Registrar};
 use crate::windows::show_window;
-use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WindowEvent};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::{AppHandle, Listener, Manager, Runtime, WebviewUrl, WebviewWindow, WindowEvent};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 pub const WINDOW: &str = "onboarding";
@@ -69,15 +71,12 @@ fn finish(storage: &impl Storage, granted: bool) {
 }
 
 /// Startup, after the settings are applied: shows the window if needed. Returns whether it
-/// did, so the separate "Shortcut changed" notice can be skipped (this window covers it).
+/// opened, so the separate "Shortcut changed" notice can be skipped (this window covers it).
 pub fn on_startup<R: Runtime>(app: &AppHandle<R>) -> bool {
     let granted = capture::has_permission();
     // No store: nothing can be recorded, so show it.
     let show_it = prefs::with_store(app, |store| Ok(start(store, granted))).unwrap_or(true);
-    if show_it {
-        show(app);
-    }
-    show_it
+    show_it && show(app)
 }
 
 /// Whether to show the "Shortcut changed" notice at startup. The window explains a PrintScreen
@@ -87,19 +86,62 @@ pub fn needs_notice(reason: print_screen::Reason, onboarding_shown: bool) -> boo
     !onboarding_shown || reason != print_screen::Reason::SnippingTool
 }
 
+/// Whether the capture shortcut works now: the permission (macOS) and a registered shortcut.
+fn can_capture<R: Runtime>(app: &AppHandle<R>) -> bool {
+    capture::has_permission()
+        && app
+            .try_state::<Registered>()
+            .is_some_and(|r| r.get().registered)
+}
+
 /// The window was closed (Done, Later or the close button).
 fn closed<R: Runtime>(app: &AppHandle<R>) {
-    let granted = capture::has_permission();
+    let works = can_capture(app);
     if let Err(e) = prefs::with_store(app, |store| {
-        finish(store, granted);
+        finish(store, works);
         Ok(())
     }) {
         log::error!("could not record onboarding: {e}");
     }
 }
 
-/// Opens (or focuses) the window.
-pub fn show<R: Runtime>(app: &AppHandle<R>) {
+/// The window's events: closing it records onboarding.
+fn on_event<R: Runtime>(app: &AppHandle<R>, event: &WindowEvent) {
+    if matches!(event, WindowEvent::Destroyed) {
+        closed(app);
+    }
+}
+
+/// A capture ended while the window was open, kept so the page's "Try it" box can't miss it
+/// while it loads.
+#[derive(Default)]
+pub struct Tried(AtomicBool);
+
+/// Starts following a new window: its close, and captures that end while it is open.
+fn watch<R: Runtime>(app: &AppHandle<R>, window: &WebviewWindow<R>) {
+    if app.manage(Tried::default()) {
+        let handle = app.clone();
+        app.listen_any(CAPTURE_CLOSED, move |_| {
+            if handle.get_webview_window(WINDOW).is_some() {
+                handle.state::<Tried>().0.store(true, Ordering::Relaxed);
+            }
+        });
+    } else {
+        app.state::<Tried>().0.store(false, Ordering::Relaxed);
+    }
+    let handle = app.clone();
+    window.on_window_event(move |event| on_event(&handle, event));
+}
+
+/// Whether a capture ended since the window opened, for a page that just loaded.
+#[tauri::command]
+pub fn onboarding_tried<R: Runtime>(app: AppHandle<R>) -> bool {
+    app.try_state::<Tried>()
+        .is_some_and(|t| t.0.load(Ordering::Relaxed))
+}
+
+/// Opens (or focuses) the window. Returns whether it is open.
+pub fn show<R: Runtime>(app: &AppHandle<R>) -> bool {
     let new = app.get_webview_window(WINDOW).is_none();
     let url = WebviewUrl::App("onboarding.html".into());
     let shown = show_window(app, WINDOW, url, |b| {
@@ -108,24 +150,19 @@ pub fn show<R: Runtime>(app: &AppHandle<R>) {
             .resizable(false)
             .center()
     });
-    match shown {
-        Ok(window) if new => {
-            let handle = app.clone();
-            window.on_window_event(move |event| {
-                if matches!(event, WindowEvent::Destroyed) {
-                    closed(&handle);
-                }
-            });
-        }
-        Ok(_) => {}
-        Err(e) => log::error!("could not open the onboarding window: {e}"),
+    // As soon as it exists, even if showing it failed afterwards.
+    if new && let Some(window) = app.get_webview_window(WINDOW) {
+        watch(app, &window);
     }
+    shown
+        .inspect_err(|e| log::error!("could not open the onboarding window: {e}"))
+        .is_ok()
 }
 
 /// Whether Snipping Tool keeps the shortcut on the fallback (Windows): the window then shows
 /// the steps. With `claim` (the window showed them), switches to PrintScreen once Snipping
-/// Tool lets go; without it, a fallback picked on purpose or kept off PrintScreen by another
-/// app stays.
+/// Tool lets go, if the fallback is still the saved shortcut; without it, a fallback picked on
+/// purpose or kept off PrintScreen by another app stays.
 fn claim_print_screen<R: Runtime>(
     app: &AppHandle<R>,
     shortcuts: &impl Registrar,
@@ -143,8 +180,8 @@ fn claim_print_screen<R: Runtime>(
         return false;
     }
     // Same path as the recorder: checked, saved and sent to every page as `prefs:changed`.
-    let key = serde_json::Value::from("PrintScreen");
-    if let Err(e) = settings::set_with(app, shortcuts, snipping, "shortcut", key) {
+    let (from, to) = (print_screen::FALLBACK, "PrintScreen");
+    if let Err(e) = settings::replace_shortcut(app, shortcuts, snipping, from, to) {
         log::info!("could not switch to PrintScreen: {e}");
     }
     false
@@ -300,15 +337,39 @@ mod tests {
         let granted = capture::has_permission();
         // A fresh install: shown, once.
         assert!(on_startup(h));
-        show(h);
+        assert!(show(h));
         assert_eq!(h.webview_windows().len(), 1);
         assert_eq!(prefs::load(h).onboarded, Some(false));
-        // Closing the window records it (the mock runtime sends no Destroyed event).
-        closed(h);
+        // The window's own event handler (the mock runtime sends none) records the close, and
+        // only a close.
+        on_event(h, &WindowEvent::Focused(false));
+        assert_eq!(prefs::load(h).onboarded, Some(false));
+        on_event(h, &WindowEvent::Destroyed);
+        assert_eq!(
+            prefs::load(h).onboarded,
+            Some(false),
+            "the shortcut isn't registered"
+        );
+        h.state::<Registered>().set("Alt+S", true);
+        on_event(h, &WindowEvent::Destroyed);
         assert_eq!(prefs::load(h).onboarded, Some(granted));
         // Done: shown again only without the permission.
         assert_eq!(on_startup(h), !granted);
         let _ = std::fs::remove_dir_all(h.path().app_data_dir().unwrap());
+    }
+
+    #[test]
+    fn remembers_a_capture_that_ended_while_the_window_was_open() {
+        let app = mock_builder().build(mock_context(noop_assets())).unwrap();
+        let h = app.handle();
+        assert!(!onboarding_tried(h.clone()), "never opened");
+        assert!(show(h));
+        assert!(!onboarding_tried(h.clone()));
+        tauri::Emitter::emit(h, CAPTURE_CLOSED, ()).unwrap();
+        assert!(onboarding_tried(h.clone()));
+        // A new window starts over (the mock runtime can't destroy one, so watch it again).
+        watch(h, &h.get_webview_window(WINDOW).unwrap());
+        assert!(!onboarding_tried(h.clone()));
     }
 
     #[test]
