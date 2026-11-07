@@ -207,15 +207,11 @@ async fn copy_with<R: Runtime>(
         remember(region);
     }
     // Only if nothing happened meanwhile: a save started (even cancelled) keeps the overlay.
-    // The copy worked either way, so it gets its toast, unless its capture is over (Esc
-    // meanwhile): a newer capture's overlay would cover it.
+    // The clipboard changed either way, so the copy always gets its toast.
     let anchor = window.clone();
     on_main(window.app_handle(), move |app| {
-        let current = phase(app).session() == Some(session);
         close_if(app, |phase| phase.copy_may_close(session, saves));
-        if current {
-            toast::show(&anchor, Toast::Copied { width, height });
-        }
+        toast::show(&anchor, Toast::Copied { width, height });
     });
     Ok(())
 }
@@ -895,7 +891,7 @@ mod tests {
     }
 
     #[test]
-    fn a_copy_whose_capture_ended_meanwhile_shows_no_toast() {
+    fn a_copy_whose_capture_ended_meanwhile_still_shows_its_toast() {
         let app = app();
         let h = app.handle();
         let session = shown(h, &[1]);
@@ -907,7 +903,11 @@ mod tests {
         });
         assert_eq!(copy(h, session, px(0, 0, 2, 2), clipboard), Ok(()));
         std::thread::sleep(std::time::Duration::from_millis(50));
-        assert!(toasts(h).is_empty());
+        let copied = Toast::Copied {
+            width: 2,
+            height: 2,
+        };
+        assert_eq!(toasts(h), [copied]);
     }
 
     /// Answers the dialog from `answers` (cancel when they run out) and records what it saw.

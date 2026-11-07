@@ -662,7 +662,7 @@ pub(crate) mod tests {
         assert!(p.begin(1, Instant::now()));
         assert_eq!(p.front(), Some(Front::Unknown));
         p.set_front(Front::Us);
-        p.open(1, vec![frame(1, 4, 2)], None, true, Some(&[]))
+        p.open(1, vec![frame(1, 4, 2)], None, true, Some(&[]), false)
             .unwrap();
         assert_eq!(p.front(), Some(Front::Us));
         assert_eq!(p.end(), Some(Front::Us));
