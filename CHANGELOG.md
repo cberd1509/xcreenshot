@@ -1,5 +1,35 @@
 # xcreenshot
 
+## 0.4.0
+
+### Minor Changes
+
+- [#109](https://github.com/cberd1509/xcreenshot/pull/109) [`7272096`](https://github.com/cberd1509/xcreenshot/commit/7272096dcfd33ff7e1c10d2b8c6ddb12850cd3f1) Thanks [@cberd1509](https://github.com/cberd1509)! - A short toast confirms every copy, save and share, with the screenshot sound on macOS.
+
+- [#115](https://github.com/cberd1509/xcreenshot/pull/115) [`05cd846`](https://github.com/cberd1509/xcreenshot/commit/05cd846c3fd2f2ded5674701b2c488c2ae1cdfd5) Thanks [@cberd1509](https://github.com/cberd1509)! - Onboarding shows your screenshot shortcut, lets you change it and try it, and now appears on Windows too.
+
+- [#96](https://github.com/cberd1509/xcreenshot/pull/96) [`ec7f48a`](https://github.com/cberd1509/xcreenshot/commit/ec7f48ae93ef56b3a5ecc04f71cfeb08f9c6a2f7) Thanks [@cberd1509](https://github.com/cberd1509)! - On macOS, Share in the capture overlay opens the share sheet with your annotated screenshot.
+
+- [#109](https://github.com/cberd1509/xcreenshot/pull/109) [`7272096`](https://github.com/cberd1509/xcreenshot/commit/7272096dcfd33ff7e1c10d2b8c6ddb12850cd3f1) Thanks [@cberd1509](https://github.com/cberd1509)! - Quick copy, in Settings › Capture, copies the area as soon as you finish dragging.
+
+- [#113](https://github.com/cberd1509/xcreenshot/pull/113) [`d3dbce9`](https://github.com/cberd1509/xcreenshot/commit/d3dbce9c072a11e862fda8da9dcbe34de6a5cb01) Thanks [@cberd1509](https://github.com/cberd1509)! - xcreenshot is now available for Windows.
+
+### Patch Changes
+
+- [#97](https://github.com/cberd1509/xcreenshot/pull/97) [`b7e9fd0`](https://github.com/cberd1509/xcreenshot/commit/b7e9fd00001b582f16716bd29b6d6b95d3af1edf) Thanks [@cberd1509](https://github.com/cberd1509)! - Closing a capture with Esc no longer opens Settings.
+
+- [#110](https://github.com/cberd1509/xcreenshot/pull/110) [`323fa4e`](https://github.com/cberd1509/xcreenshot/commit/323fa4e1bbc4556e90dc56a5b28407d13c24a888) Thanks [@cberd1509](https://github.com/cberd1509)! - Save closes the capture sooner: the image is prepared while the Save dialog is open.
+
+- [#111](https://github.com/cberd1509/xcreenshot/pull/111) [`d148625`](https://github.com/cberd1509/xcreenshot/commit/d1486256169c50cde71b4358eec12be2584281e5) Thanks [@cberd1509](https://github.com/cberd1509)! - Answering the Update ready or Shortcut changed notice no longer brings Settings to the front.
+
+- [#95](https://github.com/cberd1509/xcreenshot/pull/95) [`13d9ca3`](https://github.com/cberd1509/xcreenshot/commit/13d9ca3770feb0534c5631cf3268185afbd4ec95) Thanks [@cberd1509](https://github.com/cberd1509)! - The "Update ready" and "Shortcut changed" prompts are now xcreenshot windows that hide while you take a screenshot.
+
+- [#90](https://github.com/cberd1509/xcreenshot/pull/90) [`1036983`](https://github.com/cberd1509/xcreenshot/commit/10369834b3437c1adb161738cad78a82527bd159) Thanks [@cberd1509](https://github.com/cberd1509)! - Settings lists its sections in the same order as the sidebar.
+
+- [#86](https://github.com/cberd1509/xcreenshot/pull/86) [`d2e9b1b`](https://github.com/cberd1509/xcreenshot/commit/d2e9b1b6fa8e5c939213c0e02816f3e3daa7cb3a) Thanks [@cberd1509](https://github.com/cberd1509)! - Every capture starts in Select, so one Esc closes it.
+
+- [#93](https://github.com/cberd1509/xcreenshot/pull/93) [`712aa43`](https://github.com/cberd1509/xcreenshot/commit/712aa4325b08c003bdde6d1fc640667d77b1a772) Thanks [@cberd1509](https://github.com/cberd1509)! - On Windows, copied captures now paste at their on-screen size at any display scaling.
+
 ## 0.3.0
 
 ### Minor Changes
