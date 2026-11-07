@@ -1,0 +1,87 @@
+name: Pages
+
+# Builds the landing page in site/ and publishes it to GitHub Pages. It rebuilds on every
+# published release so the version and the download link stay current.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'assets/icon.svg'
+      - 'src-tauri/icons/128x128@2x.png'
+      - '.github/workflows/pages.yml'
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  # A release event runs on its tag, which the github-pages environment won't deploy from.
+  # Rebuild from the default branch instead.
+  redeploy:
+    name: Rebuild from main
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.event.repository.default_branch }}
+        run: gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
+
+  build:
+    name: Build site
+    if: github.event_name != 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # configure-pages reads the site's settings.
+      pages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - name: Read the latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Only "no release yet" (404) falls back to package.json's version; any other error fails.
+        run: |
+          if gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$RUNNER_TEMP/release.json" \
+            2> "$RUNNER_TEMP/release.err"; then
+            echo "SITE_RELEASE_JSON=$RUNNER_TEMP/release.json" >> "$GITHUB_ENV"
+          elif grep -q 'HTTP 404' "$RUNNER_TEMP/release.err"; then
+            echo "::notice::No published release yet; using package.json's version."
+          else
+            cat "$RUNNER_TEMP/release.err" >&2
+            exit 1
+          fi
+      - run: pnpm site:build
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site/dist
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    # Only this job can publish; the build (and its dependencies) can't.
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+        id: deployment

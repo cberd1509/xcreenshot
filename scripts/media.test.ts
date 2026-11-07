@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
-import { concat, ease, gifArgs, path, size, steps } from './media.ts'
+import { concat, ease, gifArgs, mp4Args, path, size, steps, stillArgs } from './media.ts'
 
 describe('ease', () => {
   it('starts and ends slowly, symmetric around the middle', () => {
@@ -107,6 +107,48 @@ describe('gifArgs', () => {
     expect(filter).toContain('paletteuse=dither=sierra2_4a')
     expect(args.slice(-3)).toEqual(['-loop', '0', 'out.gif'])
     expect(args).toContain('vfr')
+  })
+})
+
+describe('mp4Args', () => {
+  it('encodes H.264 in yuv420p, without audio, ready to stream', () => {
+    const args = mp4Args({ input: 'frames.txt', output: 'demo.mp4', width: 1440, fps: 30, crf: 24 })
+    expect(args.slice(args.indexOf('-f'), args.indexOf('-i') + 2)).toEqual([
+      '-f',
+      'concat',
+      '-safe',
+      '0',
+      '-i',
+      'frames.txt',
+    ])
+    expect(args[args.indexOf('-vf') + 1]).toBe(
+      'fps=30,scale=1440:-2:flags=lanczos:out_range=tv,format=yuv420p',
+    )
+    expect(args[args.indexOf('-c:v') + 1]).toBe('libx264')
+    expect(args[args.indexOf('-crf') + 1]).toBe('24')
+    expect(args).toContain('-an')
+    expect(args.slice(-3)).toEqual(['-movflags', '+faststart', 'demo.mp4'])
+  })
+})
+
+describe('stillArgs', () => {
+  it('saves one scaled frame at a time', () => {
+    const args = stillArgs({ input: 'demo.mp4', output: 'poster.jpg', at: 0, width: 1440 })
+    expect(args.slice(args.indexOf('-ss'), args.indexOf('-ss') + 4)).toEqual([
+      '-ss',
+      '0.000',
+      '-i',
+      'demo.mp4',
+    ])
+    expect(args[args.indexOf('-frames:v') + 1]).toBe('1')
+    expect(args[args.indexOf('-vf') + 1]).toBe('scale=1440:-2:flags=lanczos')
+    expect(args.at(-1)).toBe('poster.jpg')
+  })
+
+  it('crops to a height around the middle', () => {
+    const args = stillArgs({ input: 'a.mp4', output: 'og.jpg', at: 5.25, width: 1200, height: 630 })
+    expect(args).toContain('5.250')
+    expect(args[args.indexOf('-vf') + 1]).toBe('scale=1200:-2:flags=lanczos,crop=1200:630')
   })
 })
 

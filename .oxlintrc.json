@@ -12,6 +12,7 @@
   },
   "ignorePatterns": [
     "dist/**",
+    "site/dist/**",
     "coverage/**",
     "src-tauri/**",
     "src/lib/components/ui/**",
