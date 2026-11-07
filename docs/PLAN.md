@@ -18,7 +18,7 @@
 2. One borderless always-on-top **overlay window per display**, frozen screenshot as background → pixel-exact selection, no flicker.
 3. **Selection**: drag a region (region-only by design; drag around a window or the whole screen to capture those). Optional **remember last region**.
 4. **Inline toolbar** (Konva): pen, line, arrow, rect, ellipse, text, highlighter, blur/pixelate, color, stroke, undo/redo.
-5. **Output**: clipboard (tauri-plugin-clipboard-manager), save (native Save dialog, last folder remembered, auto-generated name, PNG), **share** via custom plugin (NSSharingServicePicker / DataTransferManager).
+5. **Output**: clipboard (a PNG with its density: NSPasteboard on macOS, `output::win_clipboard` on Windows with PNG and `CF_DIBV5`), save (native Save dialog, last folder remembered, auto-generated name, PNG), **share** via custom plugin (NSSharingServicePicker / DataTransferManager).
 6. **Tray + settings**: hotkey recorder, remember-region, magnifier, launch at login, update check toggle, permission onboarding.
 
 ## Privacy

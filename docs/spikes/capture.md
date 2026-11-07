@@ -144,8 +144,14 @@ The whole copy is about 70 ms for a full display, less for a normal selection.
   (`pasteboardFinishedWithDataProvider:`). AppKit needs `clearContents` before `writeObjects`;
   since the item is complete before the clear, only the OS refusing the write itself loses the
   old clipboard. `tauri-plugin-clipboard-manager` is not used on macOS: it takes RGBA and puts only
-  TIFF on the pasteboard. Windows: the plugin's `write_image` (arboard), which writes PNG and
-  `CF_DIBV5`. The overlay page has no clipboard permission.
+  TIFF on the pasteboard. Windows: `output::win_clipboard`, which writes the registered "PNG"
+  format with `pHYs` (96 DPI × scale), then `CF_DIBV5` with the same density in
+  `bV5XPelsPerMeter`/`bV5YPelsPerMeter`. The plugin (arboard) wrote both without a density
+  (#78). Both blocks are made before the clipboard opens, so only the OS refusing the writes
+  loses the old clipboard, and either format alone counts as a copy. The clipboard is opened
+  with a hidden message-only owner window. On every platform copies reach the clipboard in the
+  order they were asked for (`output::order`): an older copy that finishes encoding later is
+  skipped. The overlay page has no clipboard permission.
 - **Save dialog.** `tauri-plugin-dialog` from Rust (`blocking_save_file` on a worker), PNG
   filter, default name `xcreenshot-YYYY-MM-DD-HH.MM.SS.png` in local time. The filter makes the
   dialog add `.png` where the platform does that. If Rust still has to add it and that file

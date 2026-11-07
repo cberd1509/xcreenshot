@@ -1,21 +1,28 @@
-//! What a copy puts on the Windows clipboard, pure: a PNG with its density (`pHYs`) as the
-//! registered "PNG" format, then a `CF_DIBV5` with the same density for apps that only read
-//! bitmaps. Windows makes `CF_DIB` and `CF_BITMAP` from the `CF_DIBV5` when an app asks.
+//! The Windows clipboard: a PNG with its density (`pHYs`) as the registered "PNG" format, then a
+//! `CF_DIBV5` with the same density for apps that only read bitmaps. Windows makes `CF_DIB` and
+//! `CF_BITMAP` from the `CF_DIBV5` when an app asks.
 //!
 //! The clipboard plugin (arboard) writes both without a density, so a capture at 150% pasted
 //! into Word came out 1.5× too large (#78). The bitmap follows arboard's otherwise: bottom-up
 //! rows (Word cannot paste a negative height), BGRA with straight alpha and bit-field masks.
 //!
 //! Unlike macOS's TIFF, the bitmap is made on every copy: making it only when an app asks
-//! would need a clipboard owner window handling `WM_RENDERFORMAT`.
+//! would need the owner window to handle `WM_RENDERFORMAT`.
 //!
-//! The Win32 calls are in [`os`], Windows only.
+//! Everything here is pure and tested: the formats, the order of the clipboard calls
+//! ([`write`], over a [`System`]). [`os`] is the Win32 [`System`], Windows only.
 
 use crate::capture::{CaptureError, Density, encode_png};
 use image::RgbaImage;
+use std::time::Duration;
 
 /// The size of a `BITMAPV5HEADER`.
-pub const HEADER_SIZE: usize = 124;
+const HEADER_SIZE: usize = 124;
+
+/// How often to try opening the clipboard, which another app may hold for a moment, and how
+/// long to wait between tries, like Chromium and arboard.
+const OPEN_ATTEMPTS: u32 = 10;
+const OPEN_WAIT: Duration = Duration::from_millis(5);
 
 /// The formats for one copy.
 pub struct Contents {
@@ -92,110 +99,237 @@ const MASKS: [u32; 4] = [0x00ff_0000, 0x0000_ff00, 0x0000_00ff, 0xff00_0000];
 const LCS_SRGB: u32 = 0x7352_4742;
 const LCS_GM_IMAGES: u32 = 4;
 
-/// Writes the formats to the clipboard. Called off the main thread.
+/// A clipboard format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    Png,
+    DibV5,
+}
+
+/// The clipboard calls [`write`] makes, one each: [`os::Win32`] on Windows, a fake in tests.
+pub trait System {
+    /// System memory holding one format's bytes.
+    type Block;
+    fn alloc(&mut self, bytes: &[u8]) -> Result<Self::Block, CaptureError>;
+    /// Frees a block the clipboard did not take.
+    fn free(&mut self, block: Self::Block);
+    /// One try at opening the clipboard.
+    fn open(&mut self) -> Result<(), CaptureError>;
+    /// Waits before the next try at opening.
+    fn wait(&mut self, time: Duration);
+    /// Removes what is on the clipboard and makes this app its owner.
+    fn empty(&mut self) -> Result<(), CaptureError>;
+    /// Puts `block` on the clipboard as `format`. On success the clipboard owns it; on failure
+    /// it comes back.
+    fn set(
+        &mut self,
+        format: Format,
+        block: Self::Block,
+    ) -> Result<(), (Self::Block, CaptureError)>;
+    fn close(&mut self);
+}
+
+/// Replaces the clipboard's contents with `contents`.
+///
+/// Both blocks are made before the clipboard opens, so other apps wait as little as possible
+/// and a failure to make them leaves the clipboard alone. Opening is tried
+/// [`OPEN_ATTEMPTS`] times; if it fails the old contents stay. Only after that is the clipboard
+/// emptied, and then a copy is lost only if the OS refuses both formats. One format is enough
+/// to paste, so a copy with either counts as done (the other failure is logged).
+pub fn write<S: System>(system: &mut S, contents: &Contents) -> Result<(), CaptureError> {
+    let png = system.alloc(&contents.png)?;
+    let dib = match system.alloc(&contents.dib) {
+        Ok(dib) => dib,
+        Err(e) => {
+            system.free(png);
+            return Err(e);
+        }
+    };
+    let emptied = open(system).and_then(|()| system.empty().inspect_err(|_| system.close()));
+    if let Err(e) = emptied {
+        system.free(png);
+        system.free(dib);
+        return Err(e);
+    }
+    let result = match (
+        set(system, Format::Png, png),
+        set(system, Format::DibV5, dib),
+    ) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(e), Err(_)) => Err(e),
+        (Ok(()), Err(e)) | (Err(e), Ok(())) => {
+            log::warn!("copied with one clipboard format only: {e}");
+            Ok(())
+        }
+    };
+    system.close();
+    result
+}
+
+fn open<S: System>(system: &mut S) -> Result<(), CaptureError> {
+    for _ in 1..OPEN_ATTEMPTS {
+        if system.open().is_ok() {
+            return Ok(());
+        }
+        system.wait(OPEN_WAIT);
+    }
+    system.open()
+}
+
+/// Sets `block`, freeing it if the clipboard did not take it.
+fn set<S: System>(system: &mut S, format: Format, block: S::Block) -> Result<(), CaptureError> {
+    system.set(format, block).map_err(|(block, e)| {
+        system.free(block);
+        e
+    })
+}
+
+/// The Win32 [`System`]. Thin: each method is one call.
 #[cfg(target_os = "windows")]
 pub(crate) mod os {
-    use super::Contents;
+    use super::{Format, System};
     use crate::capture::CaptureError;
+    use std::sync::{Mutex, PoisonError, mpsc};
     use std::time::Duration;
-    use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
+    use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
     use windows::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
     };
     use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
     use windows::Win32::System::Ole::CF_DIBV5;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DispatchMessageW, GetMessageW, HWND_MESSAGE, MSG, WINDOW_EX_STYLE,
+        WINDOW_STYLE,
+    };
     use windows::core::{Error, w};
-
-    /// Another app may hold the clipboard for a moment: try this often, 5 ms apart, like
-    /// Chromium and arboard.
-    const OPEN_ATTEMPTS: u32 = 10;
 
     fn error(what: &str, e: Error) -> CaptureError {
         CaptureError::Clipboard(format!("{what}: {e}"))
     }
 
-    /// Movable global memory holding one format, freed when dropped unless the clipboard took
-    /// it.
-    struct Block(HGLOBAL);
+    /// The clipboard, opened with the app's owner window.
+    pub struct Win32 {
+        owner: HWND,
+        png: u32,
+    }
 
-    impl Block {
-        fn new(bytes: &[u8]) -> Result<Self, CaptureError> {
-            // SAFETY: a new block of `bytes.len()` bytes, filled while locked.
+    impl Win32 {
+        pub fn new() -> Result<Self, CaptureError> {
+            // SAFETY: a static, NUL-terminated name.
+            let png = unsafe { RegisterClipboardFormatW(w!("PNG")) };
+            if png == 0 {
+                return Err(error("could not register PNG", Error::from_thread()));
+            }
+            Ok(Self {
+                owner: owner()?,
+                png,
+            })
+        }
+    }
+
+    /// The clipboard needs an owner window: opened without one, `EmptyClipboard` leaves it
+    /// with no owner and `SetClipboardData` may fail. This is a hidden message-only window,
+    /// made once on its own thread, which keeps it and handles its messages for the life of
+    /// the app (a window goes away with the thread that made it).
+    fn owner() -> Result<HWND, CaptureError> {
+        static OWNER: Mutex<isize> = Mutex::new(0);
+        let mut owner = OWNER.lock().unwrap_or_else(PoisonError::into_inner);
+        if *owner == 0 {
+            let (tx, rx) = mpsc::channel();
+            std::thread::Builder::new()
+                .name("clipboard owner".into())
+                .spawn(move || {
+                    // SAFETY: a message-only window of the system STATIC class.
+                    let window = unsafe {
+                        CreateWindowExW(
+                            WINDOW_EX_STYLE(0),
+                            w!("STATIC"),
+                            w!("xcreenshot clipboard"),
+                            WINDOW_STYLE(0),
+                            0,
+                            0,
+                            0,
+                            0,
+                            Some(HWND_MESSAGE),
+                            None,
+                            None,
+                            None,
+                        )
+                    };
+                    let made = window.is_ok();
+                    let _ = tx.send(window.map(|w| w.0 as isize));
+                    let mut msg = MSG::default();
+                    // SAFETY: this thread's own message queue. 0 is WM_QUIT, -1 an error.
+                    while made && unsafe { GetMessageW(&mut msg, None, 0, 0) }.0 > 0 {
+                        // SAFETY: a message GetMessageW just filled in.
+                        unsafe { DispatchMessageW(&msg) };
+                    }
+                })
+                .map_err(|e| CaptureError::Clipboard(format!("no owner thread: {e}")))?;
+            *owner = rx
+                .recv()
+                .map_err(|e| CaptureError::Clipboard(format!("no owner window: {e}")))?
+                .map_err(|e| error("no owner window", e))?;
+        }
+        Ok(HWND(*owner as *mut core::ffi::c_void))
+    }
+
+    impl System for Win32 {
+        type Block = HGLOBAL;
+
+        fn alloc(&mut self, bytes: &[u8]) -> Result<HGLOBAL, CaptureError> {
+            // SAFETY: a new block of `bytes.len()` bytes, filled while locked, or freed.
             unsafe {
-                let block = Self(
-                    GlobalAlloc(GMEM_MOVEABLE, bytes.len())
-                        .map_err(|e| error("out of memory", e))?,
-                );
-                let at = GlobalLock(block.0);
+                let block = GlobalAlloc(GMEM_MOVEABLE, bytes.len())
+                    .map_err(|e| error("out of memory", e))?;
+                let at = GlobalLock(block);
                 if at.is_null() {
-                    return Err(error("could not lock memory", Error::from_thread()));
+                    let e = Error::from_thread();
+                    let _ = GlobalFree(Some(block));
+                    return Err(error("could not lock memory", e));
                 }
                 std::ptr::copy_nonoverlapping(bytes.as_ptr(), at.cast::<u8>(), bytes.len());
                 // Returns an error once unlocked, which is the expected result.
-                let _ = GlobalUnlock(block.0);
+                let _ = GlobalUnlock(block);
                 Ok(block)
             }
         }
 
-        /// Hands the block to the open clipboard as format `id`.
-        fn set(self, id: u32) -> Result<(), CaptureError> {
-            // SAFETY: the clipboard is open on this thread. On success the system owns the
-            // block; on failure `self` is dropped and frees it.
-            unsafe { SetClipboardData(id, Some(HANDLE(self.0.0))) }
-                .map_err(|e| error("the clipboard refused the image", e))?;
-            std::mem::forget(self);
-            Ok(())
+        fn free(&mut self, block: HGLOBAL) {
+            // SAFETY: a block from `alloc` that the clipboard did not take.
+            let _ = unsafe { GlobalFree(Some(block)) };
         }
-    }
 
-    impl Drop for Block {
-        fn drop(&mut self) {
-            // SAFETY: this block is ours and no longer locked.
-            let _ = unsafe { GlobalFree(Some(self.0)) };
-        }
-    }
-
-    /// The open clipboard, closed when dropped.
-    struct Open;
-
-    impl Open {
-        fn new() -> Result<Self, CaptureError> {
-            for _ in 1..OPEN_ATTEMPTS {
-                // SAFETY: no owner window, as arboard does.
-                if unsafe { OpenClipboard(None) }.is_ok() {
-                    return Ok(Self);
-                }
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            // SAFETY: as above; the last try reports its error.
-            unsafe { OpenClipboard(None) }
-                .map(|()| Self)
+        fn open(&mut self) -> Result<(), CaptureError> {
+            // SAFETY: the owner window lives as long as the app.
+            unsafe { OpenClipboard(Some(self.owner)) }
                 .map_err(|e| error("the clipboard is busy", e))
         }
-    }
 
-    impl Drop for Open {
-        fn drop(&mut self) {
+        fn wait(&mut self, time: Duration) {
+            std::thread::sleep(time);
+        }
+
+        fn empty(&mut self) -> Result<(), CaptureError> {
+            // SAFETY: the clipboard is open on this thread.
+            unsafe { EmptyClipboard() }.map_err(|e| error("could not empty it", e))
+        }
+
+        fn set(&mut self, format: Format, block: HGLOBAL) -> Result<(), (HGLOBAL, CaptureError)> {
+            let id = match format {
+                Format::Png => self.png,
+                Format::DibV5 => u32::from(CF_DIBV5.0),
+            };
+            // SAFETY: the clipboard is open on this thread and `block` is unlocked.
+            unsafe { SetClipboardData(id, Some(HANDLE(block.0))) }
+                .map(|_| ())
+                .map_err(|e| (block, error("the clipboard refused the image", e)))
+        }
+
+        fn close(&mut self) {
             // SAFETY: this thread opened the clipboard.
             let _ = unsafe { CloseClipboard() };
         }
-    }
-
-    /// Replaces the clipboard's contents with `contents`. The memory is filled before the
-    /// clipboard opens, so other apps wait as little as possible.
-    pub fn write(contents: &Contents) -> Result<(), CaptureError> {
-        // SAFETY: a static, NUL-terminated name.
-        let png_id = unsafe { RegisterClipboardFormatW(w!("PNG")) };
-        if png_id == 0 {
-            return Err(error("could not register PNG", Error::from_thread()));
-        }
-        let png = Block::new(&contents.png)?;
-        let dib = Block::new(&contents.dib)?;
-        let _open = Open::new()?;
-        // SAFETY: the clipboard is open on this thread.
-        unsafe { EmptyClipboard() }.map_err(|e| error("could not empty it", e))?;
-        png.set(png_id)?;
-        dib.set(u32::from(CF_DIBV5.0))
     }
 }
 
@@ -278,5 +412,170 @@ mod tests {
     #[test]
     fn an_unencodable_image_fails() {
         assert!(contents(&RgbaImage::new(0, 0), Density::ONE).is_err());
+    }
+
+    /// A clipboard that records each call. Blocks are numbered by `alloc`: the PNG is 0 and
+    /// the bitmap 1.
+    #[derive(Default)]
+    struct Fake {
+        calls: Vec<&'static str>,
+        /// Fails this many opens before one works.
+        busy: u32,
+        fail_alloc: Option<usize>,
+        fail_empty: bool,
+        refuse: Vec<Format>,
+        made: usize,
+        freed: Vec<usize>,
+        taken: Vec<(Format, usize)>,
+    }
+
+    fn failed(what: &str) -> CaptureError {
+        CaptureError::Clipboard(what.into())
+    }
+
+    impl System for Fake {
+        type Block = usize;
+        fn alloc(&mut self, _bytes: &[u8]) -> Result<usize, CaptureError> {
+            if self.fail_alloc == Some(self.made) {
+                return Err(failed("alloc"));
+            }
+            self.made += 1;
+            Ok(self.made - 1)
+        }
+        fn free(&mut self, block: usize) {
+            self.freed.push(block);
+        }
+        fn open(&mut self) -> Result<(), CaptureError> {
+            self.calls.push("open");
+            if self.busy > 0 {
+                self.busy -= 1;
+                return Err(failed("busy"));
+            }
+            Ok(())
+        }
+        fn wait(&mut self, time: Duration) {
+            assert_eq!(time, OPEN_WAIT);
+            self.calls.push("wait");
+        }
+        fn empty(&mut self) -> Result<(), CaptureError> {
+            self.calls.push("empty");
+            if self.fail_empty {
+                return Err(failed("empty"));
+            }
+            Ok(())
+        }
+        fn set(&mut self, format: Format, block: usize) -> Result<(), (usize, CaptureError)> {
+            self.calls.push(match format {
+                Format::Png => "set Png",
+                Format::DibV5 => "set DibV5",
+            });
+            if self.refuse.contains(&format) {
+                return Err((block, failed("refused")));
+            }
+            self.taken.push((format, block));
+            Ok(())
+        }
+        fn close(&mut self) {
+            self.calls.push("close");
+        }
+    }
+
+    impl Fake {
+        fn write(&mut self) -> Result<(), CaptureError> {
+            let contents = Contents {
+                png: vec![1],
+                dib: vec![2],
+            };
+            let result = write(self, &contents);
+            // Every block made is either on the clipboard or freed, once.
+            let mut blocks: Vec<_> = self.taken.iter().map(|&(_, b)| b).collect();
+            blocks.extend(&self.freed);
+            blocks.sort();
+            assert_eq!(blocks, (0..self.made).collect::<Vec<_>>());
+            result
+        }
+    }
+
+    #[test]
+    fn writes_the_png_then_the_bitmap_and_frees_nothing_the_clipboard_took() {
+        let mut fake = Fake::default();
+        fake.write().unwrap();
+        assert_eq!(
+            fake.calls,
+            ["open", "empty", "set Png", "set DibV5", "close"]
+        );
+        assert_eq!(fake.taken, [(Format::Png, 0), (Format::DibV5, 1)]);
+    }
+
+    #[test]
+    fn waits_for_a_busy_clipboard_then_gives_up_without_emptying_it() {
+        let mut fake = Fake {
+            busy: OPEN_ATTEMPTS - 1,
+            ..Fake::default()
+        };
+        fake.write().unwrap();
+        let opens = fake.calls.iter().filter(|&&c| c == "open").count();
+        let waits = fake.calls.iter().filter(|&&c| c == "wait").count();
+        assert_eq!(
+            (opens, waits),
+            (OPEN_ATTEMPTS as usize, OPEN_ATTEMPTS as usize - 1)
+        );
+
+        let mut fake = Fake {
+            busy: OPEN_ATTEMPTS,
+            ..Fake::default()
+        };
+        assert_eq!(fake.write(), Err(failed("busy")));
+        assert!(!fake.calls.iter().any(|&c| c == "empty" || c == "close"));
+        assert_eq!(fake.freed, [0, 1]);
+    }
+
+    #[test]
+    fn a_failed_allocation_never_opens_the_clipboard() {
+        for at in [0, 1] {
+            let mut fake = Fake {
+                fail_alloc: Some(at),
+                ..Fake::default()
+            };
+            assert_eq!(fake.write(), Err(failed("alloc")));
+            assert!(fake.calls.is_empty(), "{at}");
+        }
+    }
+
+    #[test]
+    fn a_failed_empty_frees_both_and_closes() {
+        let mut fake = Fake {
+            fail_empty: true,
+            ..Fake::default()
+        };
+        assert_eq!(fake.write(), Err(failed("empty")));
+        assert_eq!(fake.calls.last().copied(), Some("close"));
+        assert_eq!(fake.freed, [0, 1]);
+    }
+
+    #[test]
+    fn one_format_is_enough_and_the_refused_one_is_freed() {
+        for (refused, kept) in [(Format::DibV5, Format::Png), (Format::Png, Format::DibV5)] {
+            let mut fake = Fake {
+                refuse: vec![refused],
+                ..Fake::default()
+            };
+            fake.write().unwrap();
+            assert_eq!(fake.taken.len(), 1);
+            assert_eq!(fake.taken[0].0, kept);
+            assert_eq!(fake.freed.len(), 1);
+            assert_eq!(fake.calls.last().copied(), Some("close"));
+        }
+    }
+
+    #[test]
+    fn both_formats_refused_fails() {
+        let mut fake = Fake {
+            refuse: vec![Format::Png, Format::DibV5],
+            ..Fake::default()
+        };
+        assert_eq!(fake.write(), Err(failed("refused")));
+        assert_eq!(fake.freed, [0, 1]);
+        assert_eq!(fake.calls.last().copied(), Some("close"));
     }
 }

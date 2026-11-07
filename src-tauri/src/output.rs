@@ -5,7 +5,9 @@
 
 /// Annotations on the copied or saved image.
 pub mod compose;
-/// The Windows clipboard formats.
+/// Copies reach the clipboard in the order they were asked for.
+pub mod order;
+/// The Windows clipboard.
 #[cfg(any(target_os = "windows", test))]
 pub(crate) mod win_clipboard;
 
@@ -117,7 +119,15 @@ pub type Clipboard = Box<dyn Fn(&RgbaImage, Density) -> Result<(), CaptureError>
 /// The real clipboard. macOS: a PNG with its density, plus TIFF on request (`macos::write`),
 /// written on the main thread. Windows: a PNG and a bitmap, both with the density
 /// (`win_clipboard`). Elsewhere: the clipboard plugin, without a density.
+///
+/// The copy is numbered now, when it is asked for, so an older copy never replaces a newer one
+/// (`order`).
 pub fn os_clipboard<R: Runtime>(app: &AppHandle<R>) -> Clipboard {
+    static ORDER: order::CopyOrder = order::CopyOrder::new();
+    order::ordered(&ORDER, platform_clipboard(app))
+}
+
+fn platform_clipboard<R: Runtime>(app: &AppHandle<R>) -> Clipboard {
     #[cfg(target_os = "macos")]
     {
         let app = app.clone();
@@ -137,7 +147,8 @@ pub fn os_clipboard<R: Runtime>(app: &AppHandle<R>) -> Clipboard {
         // Written from this thread: no app handle needed.
         let _ = app;
         Box::new(|image, density| {
-            win_clipboard::os::write(&win_clipboard::contents(image, density)?)
+            let contents = win_clipboard::contents(image, density)?;
+            win_clipboard::write(&mut win_clipboard::os::Win32::new()?, &contents)
         })
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
