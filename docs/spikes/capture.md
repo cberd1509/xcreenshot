@@ -123,8 +123,24 @@ build. `cargo run --release --example capture` prints the crop and the PNG level
 | `Default` | 2.2–2.5 s | 9.7–10.2 MB |
 
 Levels 1 and 2 are slower than `Fast` and no smaller. Level 3 saves about 6% for 8x the time,
-over the 300 ms budget. So one encoder, `Fast`, serves both copy and save (`encode_png`). A
-cancelled save encodes nothing: the PNG is made only once a path is picked.
+over the 300 ms budget. So one encoder, `Fast`, serves both copy and save (`encode_png`).
+
+A save encodes the PNG on a worker while the Save dialog is open (#106), so after the dialog
+the overlay waits only for the file write. A cancelled save still finishes that encode, on the
+worker, and drops it. Each save logs its steps (`saved WxH px to …: crop, dialog, encode, write`).
+`cargo run --release --example save` times each step on a 3840x2160 selection (a 4K display at
+150%), with no screen needed. On the Mac above, release build:
+
+| Save step | Time |
+| --- | --- |
+| Crop and annotations (before the dialog) | ~8 ms |
+| PNG (`Fast`, `Adaptive`), now during the dialog | ~29 ms |
+| File write (temp file, fsync, rename) | ~11 ms |
+| Dialog to close, before (encode, write) | ~40 ms |
+| Dialog to close, now (write) | ~11 ms |
+
+Other filters with `Fast` are faster but bigger: `Paeth` ~18 ms and 17% bigger, `Sub` ~17 ms
+and 29% bigger. With the encode off the save's critical path, `Adaptive` stays.
 
 | Copy step | Time |
 | --- | --- |

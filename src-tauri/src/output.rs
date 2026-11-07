@@ -6,7 +6,7 @@
 /// Annotations on the copied or saved image.
 pub mod compose;
 /// Copies reach the clipboard in the order they were asked for.
-pub mod order;
+pub(crate) mod order;
 /// The Windows clipboard.
 #[cfg(any(target_os = "windows", test))]
 pub(crate) mod win_clipboard;
