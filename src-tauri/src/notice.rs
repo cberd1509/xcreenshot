@@ -201,11 +201,11 @@ pub(crate) fn notice_answer<R: Runtime>(
 ) -> Result<(), String> {
     window.close().map_err(|e| e.to_string())?;
     let pending = window.state::<Notices>().lock().remove(window.label());
-    let front = pending.map_or(Front::Unknown, |pending| {
+    // Already answered: the first click gave focus back.
+    if let Some(pending) = pending {
         let _ = pending.answer.send(primary);
-        pending.front
-    });
-    focus::hand_back(window.app_handle(), front, Some(window.label()));
+        focus::hand_back(window.app_handle(), pending.front, Some(window.label()));
+    }
     Ok(())
 }
 
@@ -398,12 +398,8 @@ pub(crate) mod tests {
 
         /// [`app`] with `fake` for the platform's apps and Settings open.
         fn app_with(fake: &Fake) -> tauri::App<MockRuntime> {
-            let app = mock_builder()
-                .manage(crate::overlay::Overlay::default())
-                .manage(Notices::default())
-                .manage(Focus::new(fake.clone()))
-                .build(mock_context(noop_assets()))
-                .unwrap();
+            let app = app();
+            app.manage(Focus::new(fake.clone()));
             WebviewWindowBuilder::new(app.handle(), "settings", WebviewUrl::default())
                 .build()
                 .unwrap();
@@ -415,9 +411,13 @@ pub(crate) mod tests {
             let fake = Fake::new(front);
             let app = app_with(&fake);
             let (task, window) = asking(app.handle(), update());
-            notice_answer(window, true).unwrap();
+            notice_answer(window.clone(), true).unwrap();
             assert_eq!(block_on(task).unwrap(), Some(true));
-            fake.calls()
+            let calls = fake.calls();
+            // A second click has nothing to hand back.
+            notice_answer(window, true).unwrap();
+            assert_eq!(fake.calls(), calls);
+            calls
         }
 
         #[test]

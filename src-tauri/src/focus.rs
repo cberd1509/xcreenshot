@@ -39,7 +39,7 @@ impl Front {
     }
 }
 
-/// What to do with focus once the overlay windows are hidden.
+/// What to do with focus once the overlay or a notice is hidden.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Handback {
     /// Leave it with our open window (Settings): the user started there.
@@ -72,7 +72,7 @@ pub trait Apps: Send + Sync {
     fn hide(&self);
 }
 
-/// Hands focus back after a capture; managed by the app on macOS.
+/// Hands focus back after a capture or a notice; managed by the app on macOS.
 pub struct Focus(Box<dyn Apps>);
 
 impl Focus {

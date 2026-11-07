@@ -37,10 +37,10 @@ pub fn display_id(label: &str) -> Option<u32> {
 /// Whether a capture is running or the overlay is open. Read-only; the update prompt waits
 /// for this to clear so it never interrupts a capture.
 pub fn is_busy<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
-    window::phase(app).session().is_some()
+    front(app).is_some()
 }
 
-/// The app in front at the hotkey of the capture under way; `None` if no capture is.
+/// The app in front at the hotkey of the capture or session under way; `None` if neither is.
 pub fn front<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<Front> {
     window::phase(app).front()
 }
