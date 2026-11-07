@@ -73,6 +73,8 @@ On first launch, macOS asks for **Screen Recording** permission. xcreenshot walk
 
 Your screenshots stay on your computer. xcreenshot has no accounts, no analytics and no telemetry, and it never uploads anything. The only network requests are update checks and downloads from GitHub Releases. Automatic update checks can be turned off in Settings. See [PRIVACY.md](PRIVACY.md).
 
+Windows builds follow the [code signing policy](CODE_SIGNING.md).
+
 ## Build from source
 
 You need [Node 26+](https://nodejs.org) (LTS), [pnpm](https://pnpm.io) and [Rust](https://rustup.rs) (plus Xcode Command Line Tools on macOS, or the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) on Windows).
