@@ -13,6 +13,8 @@ Don't edit these files by hand. Change the canvas, then sync it: ask Claude to "
 | `Desktop.dc.html` | Mock desktop behind the overlay mockups (not a screen) |
 | `Settings.dc.html` | Settings window |
 | `Onboarding.dc.html` | First run: Screen Recording permission |
+| `QuickCopy.dc.html` | Overlay with quick copy on |
+| `Toast.dc.html` | Confirmation toasts (copy, save, share) |
 | `Tray.dc.html` | Menu bar menu |
 | `UpdateReady.dc.html` | Update ready dialog |
 | `ShortcutNotice.dc.html` | Shortcut changed dialog (Windows; both reasons) |

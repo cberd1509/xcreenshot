@@ -1,18 +1,20 @@
 {
   "canvas": "https://claude.ai/artifact/RAcQ8kKKNBJCeC4Z3MriRr",
-  "version": "1794008704-9c7c",
-  "syncedAt": "2026-11-06T23:45:20Z",
+  "version": "1794011532-32a1",
+  "syncedAt": "2026-11-07T00:32:57Z",
   "files": {
     "AppIcon.dc.html": "72f6c195721c90f77635186b9c8426f39bbeb96157eb34cdcafc793048018bee",
     "Desktop.dc.html": "9ec3e1777dea7808f8b8a632d7d41e4640d812bbe0e4d06176df3926d24a7363",
     "Landing.dc.html": "7ea99b956b5600017c9eceafdeac29e42cc77e30023a3e2486aaa123cabf2037",
     "Main.dc.html": "6939b7b73614bdaf0cd73251106ecf0ae94b35d24fe7527748507cdfe82c7ae9",
     "Onboarding.dc.html": "4a20ea47a1e3ed1110640765ec6a873665948ec82adf5fcdab02ff6c77640e29",
-    "Settings.dc.html": "7b91671dfa00985d71fafb788ba33bd7cf9c797f95c567c8e9ec3672ac1f14ea",
+    "QuickCopy.dc.html": "2e378e8907b44f85d761e0ed045daf0d081ecf323f55c06b1c34688a3a95719b",
+    "Settings.dc.html": "03490e6ed423a37b6c00b3cef85b218da3e1d7a22f7e0568775cfbf78581a2eb",
     "ShortcutNotice.dc.html": "0fa185fc938cdac81594aacb39c6dd4de9c2c0c48e35cbcbb42a1bc388203c45",
+    "Toast.dc.html": "47b4038356860581db9f42242a785d6a5e4de5a90e0d663f78494ba245d291eb",
     "Tray.dc.html": "e3b1df2d15539b5e861fa674f23dbea549ae1f5b24f7750e3d640b9b682a8813",
     "UpdateReady.dc.html": "b99a91bb850a45b8a32f04e5b91cdf20b24f9fd07b959641669904034e46bd8b",
     "WindowSelect.dc.html": "db43e2394126347a9f8d69114a1cf99bdb9f645fc95d60ddadf3083a0909fd8c",
-    "canvas.json": "3278b8caa4827da418a1eb408793490d1fe10da671e857a4f0c3aac58d3dbdbd"
+    "canvas.json": "9af2997c32e08488fa04bc6db42782abf5cc79893701274a8967c5149523c3c8"
   }
 }

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Capture overlay: quick copy on</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 1440px; height: 900px; position: relative; overflow: hidden; font-family: Inter, system-ui, sans-serif; color: #fafafa; background: #3f4b5e;">
+  <div style="position: absolute; left: 0; top: 0;">
+    <dc-import name="Desktop" hint-size="1440px,900px"></dc-import>
+  </div>
+
+  <!-- whole frozen frame dimmed until the user drags -->
+  <div style="position: absolute; inset: 0; background: rgba(9, 9, 11, 0.45);"></div>
+
+  <!-- full-height / full-width guides through the cursor -->
+  <div style="position: absolute; left: 567px; top: 0; width: 1px; height: 900px; background: rgba(255, 255, 255, 0.35);"></div>
+  <div style="position: absolute; left: 0; top: 337px; width: 1440px; height: 1px; background: rgba(255, 255, 255, 0.35);"></div>
+
+  <!-- magnifier (kept in quick copy when it's on in Settings) -->
+  <div style="position: absolute; left: 592px; top: 352px; display: flex; flex-direction: column; align-items: center; gap: 6px;">
+    <div style="width: 120px; height: 120px; border-radius: 50%; overflow: hidden; position: relative; border: 2px solid #ffffff; box-shadow: 0 8px 24px rgba(0,0,0,0.4); background: repeating-linear-gradient(0deg, transparent 0 11px, rgba(0,0,0,0.08) 11px 12px), repeating-linear-gradient(90deg, transparent 0 11px, rgba(0,0,0,0.08) 11px 12px), #ffffff;">
+      <div style="position: absolute; left: 0; top: 60px; width: 120px; height: 36px; background: #f4f4f5;"></div>
+      <div style="position: absolute; left: 0; top: 96px; width: 120px; height: 12px; background: #e4e4e7;"></div>
+      <div style="position: absolute; left: 54px; top: 54px; width: 12px; height: 12px; box-sizing: border-box; border: 2px solid #3B82F6;"></div>
+    </div>
+    <div style="padding: 3px 8px; border-radius: 6px; background: #18181b; border: 1px solid #27272a; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: #e4e4e7;">567, 337 · #FFFFFF</div>
+  </div>
+
+  <!-- quick copy bar: replaces the hint pill while the mode is on -->
+  <div style="position: absolute; left: 0; right: 0; bottom: 28px; display: flex; justify-content: center;">
+    <div role="toolbar" aria-label="Quick copy" style="padding: 6px 6px 6px 14px; display: flex; align-items: center; gap: 12px; border-radius: 12px; background: rgba(24, 24, 27, 0.94); border: 1px solid #27272a; box-shadow: 0 12px 32px rgba(0,0,0,0.35); font-size: 13px; color: #a1a1aa;">
+      <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fafafa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"></path></svg>
+      <span><b style="color: #fafafa; font-weight: 600;">Quick copy</b> · drag to copy</span>
+      <div style="width: 1px; height: 20px; background: #3f3f46;"></div>
+      <button style="height: 30px; padding: 0 12px; border: 0; border-radius: 8px; background: #27272a; font-family: inherit; font-size: 13px; font-weight: 500; color: #fafafa;">Annotate this time</button>
+      <!-- "Turn off", shown hovered: its tooltip says how to get the mode back -->
+      <div style="position: relative; display: flex;">
+        <button aria-describedby="turn-off-tip" style="height: 30px; padding: 0 10px; border: 0; border-radius: 8px; background: #27272a; font-family: inherit; font-size: 13px; font-weight: 500; color: #fafafa;">Turn off</button>
+        <div id="turn-off-tip" role="tooltip" style="position: absolute; bottom: 40px; left: 50%; transform: translateX(-50%); white-space: nowrap; padding: 6px 10px; border-radius: 8px; background: #fafafa; color: #09090b; font-size: 12px; font-weight: 500; box-shadow: 0 8px 20px rgba(0,0,0,0.3);">You can turn it back on in Settings.</div>
+      </div>
+      <div style="width: 1px; height: 20px; background: #3f3f46;"></div>
+      <span style="padding-right: 8px;"><b style="color: #e4e4e7; font-weight: 600;">Esc</b> cancel</span>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
