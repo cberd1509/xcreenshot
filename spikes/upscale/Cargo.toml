@@ -1,0 +1,35 @@
+[package]
+name = "upscale-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Spike for issue #107: compare upscalers. Not part of the app."
+
+# Standalone: not a member of the app's crate.
+[workspace]
+
+[features]
+default = ["fir", "metalfx"]
+fir = ["dep:fast_image_resize"]
+metalfx = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-metal", "dep:objc2-metal-fx"]
+# Only for the size probe (src/bin/probe.rs).
+probe-image-lanczos = []
+fir-u8x4 = ["fir", "fast_image_resize/only_u8x4"]
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+fast_image_resize = { version = "6", optional = true }
+ab_glyph = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6.5", optional = true }
+objc2-foundation = { version = "0.3.2", optional = true, default-features = false, features = ["std", "NSString", "NSError"] }
+objc2-metal = { version = "0.3.2", optional = true }
+objc2-metal-fx = { version = "0.3.2", optional = true }
+
+[profile.release]
+debug = false
+
+[profile.probe]
+inherits = "release"
+strip = true
