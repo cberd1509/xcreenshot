@@ -6,7 +6,6 @@ export interface NavigatorLike {
   userAgentData?: { platform?: string }
   platform?: string
   userAgent?: string
-  maxTouchPoints?: number
 }
 
 const STORAGE_KEY = 'xcreenshot-os'
@@ -14,14 +13,12 @@ const STORAGE_KEY = 'xcreenshot-os'
 const isOs = (value: unknown): value is Os => value === 'mac' || value === 'other'
 
 /**
- * Mac unless the browser says otherwise; Windows, Linux, iPhones and iPads all get the "other"
- * page. iPads report a Mac, so a touch screen rules it out.
+ * "other" (the Windows page) only when the browser says Windows; Macs, Linux, iPhones, iPads and
+ * unknown systems get the Mac page. `\bwin` matches Win32, Win64 and Windows but not Darwin.
  */
 export function detectOs(nav: NavigatorLike | undefined): Os {
   const hint = [nav?.userAgentData?.platform, nav?.platform, nav?.userAgent].find(Boolean)
-  if (!hint) return 'mac'
-  const mac = /mac/i.test(hint) && !/iphone|ipad|ipod/i.test(hint)
-  return mac && (nav?.maxTouchPoints ?? 0) <= 1 ? 'mac' : 'other'
+  return hint && /\bwin/i.test(hint) ? 'other' : 'mac'
 }
 
 /** The version the visitor picked, if storage allows it. */

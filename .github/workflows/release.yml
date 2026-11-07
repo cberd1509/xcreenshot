@@ -340,33 +340,36 @@ jobs:
           name: windows-installer
           path: out/
           if-no-files-found: error
-          retention-days: 1
+          # Long enough to re-run a failed windows-upload without rebuilding.
+          retention-days: 7
+
+      - name: Explain what to do
+        if: failure() && !inputs.dry-run
+        run: |
+          echo "::error::The Windows build failed. The draft stays, titled (adding Windows):" \
+            "re-run the failed jobs, and don't publish it until that's gone."
 
   # Runs no code from the build: it adds the installer and its .sig to the draft the macOS job
   # created, then merges the Windows entries into that job's latest.json. Running after both
   # builds keeps one writer per file. The macOS job titles the draft "… (adding Windows)" and this
-  # job removes that once it's done, so the draft says when it's ready to publish. If the Windows
-  # build fails, the run is cancelled or this job fails, the draft is deleted, so a macOS-only
-  # draft is never left to publish. It runs even when cancelled, to clean up.
+  # job removes that once it's done, so the draft says when it's ready to publish.
+  # If Windows fails or the run is cancelled, the draft and its notarized DMG stay, still titled
+  # "(adding Windows)", and the run fails. "Re-run failed jobs" finishes it: the uploads clobber
+  # and add-windows overwrites the same entries, so running it twice is safe.
   windows-upload:
     name: Add Windows to the v${{ needs.plan.outputs.version }} draft
     needs: [plan, build, windows]
-    if: ${{ always() && needs.build.result == 'success' }}
+    if: >-
+      !cancelled() && needs.build.result == 'success' && needs.windows.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
       VERSION: ${{ needs.plan.outputs.version }}
       SIGNED: ${{ needs.build.outputs.signed }}
-      WINDOWS: ${{ needs.windows.result }}
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
-      - name: Check the Windows build
-        run: |
-          if [ "$WINDOWS" != success ]; then
-            echo "::error::The Windows build didn't succeed ($WINDOWS)."; exit 1
-          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -402,12 +405,11 @@ jobs:
           fi
           gh release edit "v$VERSION" --title "xcreenshot $VERSION"
 
-      # Only the draft this run made; a published release is never deleted.
-      - name: Delete the unfinished draft
-        if: failure() || cancelled()
+      - name: Explain what to do
+        if: failure()
         run: |
-          draft=$(gh release view "v$VERSION" --json isDraft --jq .isDraft 2> /dev/null || true)
-          if [ "$draft" = true ]; then gh release delete "v$VERSION" --yes; fi
+          echo "::error::Windows wasn't added to the v$VERSION draft. Re-run the failed jobs;" \
+            "don't publish while its title says (adding Windows)."
 
   # tauri-action writes GitHub API asset URLs into latest.json, but the app only downloads from
   # https://github.com/<repo>/releases/download/ (src-tauri/src/updates.rs). Once the release is

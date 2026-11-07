@@ -14,7 +14,9 @@ describe('detectOs', () => {
     ['client hints on Windows', { userAgentData: { platform: 'Windows' } }, 'other'],
     ['navigator.platform on a Mac', { platform: 'MacIntel' }, 'mac'],
     ['navigator.platform on Windows', { platform: 'Win32' }, 'other'],
-    ['navigator.platform on Linux', { platform: 'Linux x86_64' }, 'other'],
+    ['navigator.platform on Linux', { platform: 'Linux x86_64' }, 'mac'],
+    ['client hints on Linux', { userAgentData: { platform: 'Linux' } }, 'mac'],
+    ['client hints on Android', { userAgentData: { platform: 'Android' } }, 'mac'],
     [
       'the user agent alone',
       { platform: '', userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
@@ -26,13 +28,13 @@ describe('detectOs', () => {
       'mac',
     ],
     ['empty client hints', { userAgentData: { platform: '' }, platform: 'Win32' }, 'other'],
-    ['an iPad, which reports a Mac', { platform: 'MacIntel', maxTouchPoints: 5 }, 'other'],
+    ['an iPad, which reports a Mac', { platform: 'MacIntel' }, 'mac'],
     [
       'an iPhone user agent',
       { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)' },
-      'other',
+      'mac',
     ],
-    ['a Mac trackpad', { platform: 'MacIntel', maxTouchPoints: 0 }, 'mac'],
+    ['a user agent that mentions Darwin', { userAgent: 'xcreenshot/1.0 Darwin/24.0.0' }, 'mac'],
   ])('reads %s', (_, nav, os) => {
     expect(detectOs(nav)).toBe(os)
   })

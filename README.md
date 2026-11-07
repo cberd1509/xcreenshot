@@ -34,7 +34,7 @@ Website: https://cberd1509.github.io/xcreenshot/
 - **Annotate in place.** Arrows, lines, rectangles, circles, pen, highlighter, text and blur, in any color.
 - **Copy or save.** Straight to the clipboard or a PNG file, at the size you saw it.
 - **Private by design.** No accounts, no tracking, no uploads.
-- **Tiny and native-feeling.** A small menu bar app, not a browser in disguise.
+- **Tiny and native-feeling.** A small menu bar and system tray app, not a browser in disguise.
 
 <p align="center">
   <img src="docs/media/demo.gif" alt="Demo: capture, annotate and copy" width="640" />

@@ -76,6 +76,21 @@ describe.each([
       'Version 0.4.0 · macOS 14 or later · Apple Silicon and Intel · Free and open source',
     )
   })
+
+  it('says menu bar on a Mac and system tray on Windows', () => {
+    render(release)
+    expect(text($('.lede [data-os="mac"]'))).toBe('menu bar')
+    expect(text($('.lede [data-os="other"]'))).toBe('system tray')
+  })
+
+  it('keeps the title and descriptions for both platforms', () => {
+    render(release)
+    const meta = $$('title, meta[name="description"], meta[property^="og:"]')
+      .map((el) => el.textContent || el.getAttribute('content'))
+      .join(' ')
+    expect(meta).not.toMatch(/menu bar(?! or system tray)/)
+    expect($('title')?.textContent).toBe('xcreenshot — screenshots for macOS and Windows')
+  })
 })
 
 describe('with a Windows release', () => {
