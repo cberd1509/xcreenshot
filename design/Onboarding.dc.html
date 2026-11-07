@@ -2,19 +2,22 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Allow screen recording</title>
+<title>First run</title>
 <script src="./support.js"></script>
 </head>
 <body>
 <x-dc>
 <helmet>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@500&amp;display=swap" rel="stylesheet">
 <style>
 body{margin:0}
-a{color:#2563eb}a:hover{color:#1d4ed8}
 </style>
 </helmet>
-<div style="width: 560px; height: 640px; box-sizing: border-box; padding: 40px; display: flex; flex-direction: column; gap: 24px; border-radius: 12px; border: 1px solid #e4e4e7; background: #ffffff; font-family: Inter, system-ui, sans-serif; color: #09090b;">
+<!-- First-run window. macOS: Screen Recording steps plus the shortcut. Windows: no permission is
+     needed, so it's the shortcut only. Shown once. The shortcut button works like the one in
+     Settings › Shortcuts: click it, press new keys, Esc cancels. It always shows the shortcut that
+     is actually registered (on Windows, Ctrl Shift PrtSc when Snipping Tool has PrtSc). -->
+<div style="width: 560px; height: 700px; box-sizing: border-box; padding: 40px; display: flex; flex-direction: column; gap: 24px; border-radius: 12px; border: 1px solid #e4e4e7; background: #ffffff; font-family: Inter, system-ui, sans-serif; color: #09090b;">
   <svg role="img" aria-label="xcreenshot" width="56" height="56" viewBox="0 0 256 256" style="flex-shrink: 0;">
     <rect x="8" y="8" width="240" height="240" rx="56" fill="#18181b"></rect>
     <g transform="translate(56 56) scale(6)" fill="none" stroke="#fafafa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -24,28 +27,108 @@ a{color:#2563eb}a:hover{color:#1d4ed8}
     </g>
   </svg>
   <div style="display: flex; flex-direction: column; gap: 8px;">
-    <h1 style="margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.01em;">Allow screen recording</h1>
-    <p style="margin: 0; font-size: 14px; line-height: 22px; color: #52525b;">xcreenshot needs this to take screenshots. Nothing leaves your Mac.</p>
+    <h1 style="margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.01em;">{{title}}</h1>
+    <p style="margin: 0; font-size: 14px; line-height: 22px; color: #52525b;">{{lead}}</p>
   </div>
-  <ol style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 12px;">
-    <li style="display: flex; gap: 12px; align-items: flex-start; font-size: 14px; line-height: 22px;"><span style="width: 22px; height: 22px; flex-shrink: 0; border-radius: 50%; background: #f4f4f5; font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center;">1</span><span>Click <b style="font-weight: 600;">Open System Settings</b> below.</span></li>
-    <li style="display: flex; gap: 12px; align-items: flex-start; font-size: 14px; line-height: 22px;"><span style="width: 22px; height: 22px; flex-shrink: 0; border-radius: 50%; background: #f4f4f5; font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center;">2</span><span>Go to <b style="font-weight: 600;">Privacy &amp; Security › Screen &amp; System Audio Recording</b> and turn on xcreenshot.</span></li>
-    <li style="display: flex; gap: 12px; align-items: flex-start; font-size: 14px; line-height: 22px;"><span style="width: 22px; height: 22px; flex-shrink: 0; border-radius: 50%; background: #f4f4f5; font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center;">3</span><span>Come back to this window. It updates on its own.</span></li>
-  </ol>
-  <div style="display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 10px; background: #fafafa; border: 1px solid #e4e4e7; font-size: 13px; color: #52525b;">
-    <span style="width: 8px; height: 8px; border-radius: 50%; background: #f59e0b; flex-shrink: 0;"></span>
-    Waiting for permission…
+
+  <sc-if value="{{mac}}" hint-placeholder-val="{{ true }}">
+    <ol style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 12px;">
+      <li style="display: flex; gap: 12px; align-items: flex-start; font-size: 14px; line-height: 22px;"><span style="width: 22px; height: 22px; flex-shrink: 0; border-radius: 50%; background: #f4f4f5; font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center;">1</span><span>Click <b style="font-weight: 600;">Open System Settings</b> below.</span></li>
+      <li style="display: flex; gap: 12px; align-items: flex-start; font-size: 14px; line-height: 22px;"><span style="width: 22px; height: 22px; flex-shrink: 0; border-radius: 50%; background: #f4f4f5; font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center;">2</span><span>Go to <b style="font-weight: 600;">Privacy &amp; Security › Screen &amp; System Audio Recording</b> and turn on xcreenshot.</span></li>
+      <li style="display: flex; gap: 12px; align-items: flex-start; font-size: 14px; line-height: 22px;"><span style="width: 22px; height: 22px; flex-shrink: 0; border-radius: 50%; background: #f4f4f5; font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center;">3</span><span>Come back to this window. It updates on its own.</span></li>
+    </ol>
+    <div style="display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 10px; background: #fafafa; border: 1px solid #e4e4e7; font-size: 13px; color: #52525b;">
+      <span style="{{dot}}"></span>
+      {{status}}
+    </div>
+  </sc-if>
+
+  <!-- shortcut, on both platforms -->
+  <div style="display: flex; align-items: center; gap: 16px; padding-top: 20px; border-top: 1px solid #e4e4e7;">
+    <div style="flex-grow: 1;">
+      <div style="font-size: 14px; font-weight: 500;">Take a screenshot</div>
+      <div style="font-size: 13px; line-height: 20px; color: #71717a;">{{note}}</div>
+    </div>
+    <button aria-label="Change shortcut" style="height: 36px; padding: 0 10px; display: flex; align-items: center; gap: 4px; border: 1px solid #e4e4e7; border-radius: 8px; background: #ffffff; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; color: #09090b;">
+      <sc-for list="{{keys}}" as="k" hint-placeholder-count="4"><span style="padding: 2px 7px; border-radius: 5px; background: #f4f4f5; border: 1px solid #e4e4e7;">{{k}}</span></sc-for>
+    </button>
   </div>
+
+  <!-- Try it: shown once the shortcut can work (macOS: after permission; Windows: always). Pressing
+       the shortcut opens a real capture over this window. When that capture closes (copy, save or
+       Esc), this box switches to the success state. -->
+  <sc-if value="{{canTry}}" hint-placeholder-val="{{ false }}">
+    <sc-if value="{{untried}}" hint-placeholder-val="{{ true }}">
+      <div style="display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 10px; border: 1px dashed #a1a1aa; font-size: 13px; color: #52525b;">
+        <span style="display: flex; gap: 4px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: #09090b;"><sc-for list="{{keys}}" as="k" hint-placeholder-count="4"><span style="padding: 2px 7px; border-radius: 5px; background: #f4f4f5; border: 1px solid #e4e4e7;">{{k}}</span></sc-for></span>
+        <span><b style="font-weight: 600; color: #09090b;">Try it now.</b> Press the keys and drag over anything.</span>
+      </div>
+    </sc-if>
+    <sc-if value="{{tried}}" hint-placeholder-val="{{ false }}">
+      <div role="status" style="display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 10px; background: #fafafa; border: 1px solid #e4e4e7; font-size: 13px; color: #52525b;">
+        <span style="width: 20px; height: 20px; border-radius: 50%; background: #09090b; display: flex; align-items: center; justify-content: center; flex-shrink: 0;"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fafafa" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg></span>
+        <span><b style="font-weight: 600; color: #09090b;">It works.</b> You're all set.</span>
+      </div>
+    </sc-if>
+  </sc-if>
+
+  <!-- Windows, when Snipping Tool has PrtSc: how to give PrtSc to xcreenshot. The button opens
+       ms-settings:easeofaccess-keyboard. xcreenshot re-checks PrtSc when that setting changes (or when
+       this window regains focus) and switches to it on its own, updating the keys above. -->
+  <sc-if value="{{taken}}" hint-placeholder-val="{{ false }}">
+    <div style="display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: 10px; background: #fafafa; border: 1px solid #e4e4e7;">
+      <div style="font-size: 14px; font-weight: 600;">Want to use PrtSc instead?</div>
+      <ol style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px;">
+        <li style="display: flex; gap: 12px; align-items: flex-start; font-size: 13px; line-height: 20px; color: #52525b;"><span style="width: 20px; height: 20px; flex-shrink: 0; border-radius: 50%; background: #e4e4e7; font-size: 11px; font-weight: 600; color: #09090b; display: flex; align-items: center; justify-content: center;">1</span><span>Click <b style="font-weight: 600; color: #09090b;">Open keyboard settings</b>.</span></li>
+        <li style="display: flex; gap: 12px; align-items: flex-start; font-size: 13px; line-height: 20px; color: #52525b;"><span style="width: 20px; height: 20px; flex-shrink: 0; border-radius: 50%; background: #e4e4e7; font-size: 11px; font-weight: 600; color: #09090b; display: flex; align-items: center; justify-content: center;">2</span><span>Turn off <b style="font-weight: 600; color: #09090b;">Use the Print screen key to open screen capture</b>.</span></li>
+        <li style="display: flex; gap: 12px; align-items: flex-start; font-size: 13px; line-height: 20px; color: #52525b;"><span style="width: 20px; height: 20px; flex-shrink: 0; border-radius: 50%; background: #e4e4e7; font-size: 11px; font-weight: 600; color: #09090b; display: flex; align-items: center; justify-content: center;">3</span><span>Come back here. xcreenshot switches to PrtSc on its own.</span></li>
+      </ol>
+      <button style="align-self: flex-start; height: 32px; padding: 0 12px; border: 1px solid #d4d4d8; border-radius: 8px; background: #ffffff; font-family: inherit; font-size: 13px; font-weight: 500; color: #09090b;">Open keyboard settings</button>
+    </div>
+  </sc-if>
+
   <div style="flex-grow: 1;"></div>
   <div style="display: flex; gap: 8px; justify-content: flex-end;">
-    <button style="height: 40px; padding: 0 16px; border: 1px solid #e4e4e7; border-radius: 8px; background: #ffffff; font-family: inherit; font-size: 14px; font-weight: 500; color: #09090b;">Later</button>
-    <button style="height: 40px; padding: 0 16px; border: 0; border-radius: 8px; background: #18181b; font-family: inherit; font-size: 14px; font-weight: 500; color: #fafafa;">Open System Settings</button>
+    <sc-if value="{{waiting}}" hint-placeholder-val="{{ true }}">
+      <button style="height: 40px; padding: 0 16px; border: 1px solid #e4e4e7; border-radius: 8px; background: #ffffff; font-family: inherit; font-size: 14px; font-weight: 500; color: #09090b;">Later</button>
+      <button style="height: 40px; padding: 0 16px; border: 0; border-radius: 8px; background: #18181b; font-family: inherit; font-size: 14px; font-weight: 500; color: #fafafa;">Open System Settings</button>
+    </sc-if>
+    <sc-if value="{{done}}" hint-placeholder-val="{{ false }}">
+      <button style="height: 40px; padding: 0 16px; border: 0; border-radius: 8px; background: #18181b; font-family: inherit; font-size: 14px; font-weight: 500; color: #fafafa;">Done</button>
+    </sc-if>
   </div>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":560,"height":640}}'>
+<script type="text/x-dc" data-dc-script data-props="{&quot;os&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;mac: waiting&quot;,&quot;mac: allowed&quot;,&quot;windows&quot;,&quot;windows: PrtSc taken&quot;],&quot;default&quot;:&quot;windows: PrtSc taken&quot;},&quot;tried&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false},&quot;$preview&quot;:{&quot;width&quot;:560,&quot;height&quot;:700}}">
 class Component extends DCLogic {
-  renderVals() { return {}; }
+  renderVals() {
+    const os = this.props.os ?? 'mac: waiting';
+    const mac = os.startsWith('mac');
+    const waiting = os === 'mac: waiting';
+    const tried = !!this.props.tried;
+    const tryState = { canTry: os !== 'mac: waiting', tried, untried: !tried };
+    const dotBase = 'width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: ';
+    if (mac) return {
+      ...tryState,
+      mac, waiting, done: !waiting, taken: false,
+      title: 'Allow screen recording',
+      lead: 'xcreenshot needs this to take screenshots. Nothing leaves your Mac.',
+      dot: dotBase + (waiting ? '#a1a1aa;' : '#09090b;'),
+      status: waiting ? 'Waiting for permission…' : 'Screen recording is on.',
+      keys: ['⌃', '⇧', '⌘', 'S'],
+      note: 'Works from any app. Click to change it.',
+    };
+    const taken = os === 'windows: PrtSc taken';
+    return {
+      ...tryState,
+      mac: false, waiting: false, done: true, taken,
+      title: 'xcreenshot is ready',
+      lead: 'It lives in the system tray.',
+      dot: '', status: '',
+      keys: taken ? ['Ctrl', 'Shift', 'PrtSc'] : ['PrtSc'],
+      note: taken ? 'PrtSc opens Snipping Tool, so xcreenshot uses this. Click to change it.' : 'Works from any app. Click to change it.',
+    };
+  }
 }
 </script>
 </body>

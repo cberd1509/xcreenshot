@@ -32,8 +32,8 @@
       "y": 0
     },
     "Onboarding.dc.html": {
-      "h": 640,
-      "title": "First run: Screen Recording permission",
+      "h": 700,
+      "title": "First run (macOS: permission + shortcut; Windows: shortcut)",
       "w": 560,
       "x": 960,
       "y": 1280
