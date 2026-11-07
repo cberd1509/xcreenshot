@@ -8,11 +8,11 @@
 //! 1 = on). A missing value is on in Windows 11 (build 22000 and later) and off in Windows 10.
 //! The registry reads are the `os` module; the decisions here are pure and tested.
 
+use crate::notice::{self, Notice};
 use crate::prefs::Prefs;
 use crate::shortcut::{self, Registered, Registrar};
 use crate::windows::Open;
 use tauri::{AppHandle, Runtime};
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogResult};
 use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut};
 
 /// Used instead of bare PrintScreen when it won't reach the app.
@@ -20,8 +20,6 @@ pub const FALLBACK: &str = "Control+Shift+PrintScreen";
 /// The recorder's error for PrintScreen while Snipping Tool has it.
 pub const TAKEN_BY_SNIPPING_TOOL: &str =
     "Snipping Tool uses PrintScreen. Turn that off in Windows Settings, or pick another shortcut.";
-const OK: &str = "OK";
-const OPEN_SETTINGS: &str = "Open Settings";
 /// First Windows 11 build: a missing setting is on from here.
 const WINDOWS_11: u32 = 22000;
 
@@ -34,27 +32,13 @@ pub const SNIPPING_TOOL: SnippingTool = Some(os::has_print_screen);
 #[cfg(not(target_os = "windows"))]
 pub const SNIPPING_TOOL: SnippingTool = None;
 
-/// Why PrintScreen won't reach the app.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Why PrintScreen won't reach the app. The notice page has the copy for each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Reason {
     SnippingTool,
     /// It didn't register: another app has it.
     InUse,
-}
-
-impl Reason {
-    fn notice(self) -> &'static str {
-        match self {
-            Reason::SnippingTool => {
-                "PrintScreen opens Snipping Tool, so xcreenshot uses Ctrl+Shift+PrintScreen. \
-                 You can change this in Settings."
-            }
-            Reason::InUse => {
-                "Another app is using PrintScreen, so xcreenshot uses Ctrl+Shift+PrintScreen. \
-                 You can change this in Settings."
-            }
-        }
-    }
 }
 
 /// Why PrintScreen won't reach the app, or `None` if it will. `snipping` is whether Snipping
@@ -179,26 +163,32 @@ pub fn at_startup(
 }
 
 /// Tells the user why the shortcut moved off PrintScreen, with a button to open Settings.
-pub fn tell<R: Runtime>(app: &AppHandle<R>, reason: Reason, open_settings: Open<R>) {
-    let handle = app.clone();
-    app.dialog()
-        .message(reason.notice())
-        .title("xcreenshot")
-        .buttons(MessageDialogButtons::OkCancelCustom(
-            OK.into(),
-            OPEN_SETTINGS.into(),
-        ))
-        .show_with_result(move |answer| {
-            if wants_settings(&answer)
-                && let Err(e) = open_settings(&handle)
-            {
+/// Returns at once; the task ends when the notice is answered.
+pub fn tell<R: Runtime>(
+    app: &AppHandle<R>,
+    reason: Reason,
+    open_settings: Open<R>,
+) -> tauri::async_runtime::JoinHandle<()> {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let notice = Notice::ShortcutChanged {
+            reason,
+            accelerator: FALLBACK.to_owned(),
+        };
+        // "Open Settings" is the second button; "OK" the main one.
+        if notice::ask(&app, notice).await != Some(false) {
+            return;
+        }
+        let handle = app.clone();
+        let opened = app.run_on_main_thread(move || {
+            if let Err(e) = open_settings(&handle) {
                 log::error!("could not open settings: {e}");
             }
         });
-}
-
-fn wants_settings(answer: &MessageDialogResult) -> bool {
-    matches!(answer, MessageDialogResult::Custom(label) if label == OPEN_SETTINGS)
+        if let Err(e) = opened {
+            log::error!("could not open settings: {e}");
+        }
+    })
 }
 
 #[cfg(target_os = "windows")]
@@ -304,22 +294,6 @@ pub(crate) mod tests {
         assert_eq!(parse_build(&utf16("")), None);
         assert_eq!(parse_build(&utf16("x\0")), None);
         assert_eq!(parse_build(&[0xD800]), None, "not UTF-16");
-    }
-
-    #[test]
-    fn the_notice_names_the_reason() {
-        assert!(
-            Reason::SnippingTool
-                .notice()
-                .starts_with("PrintScreen opens Snipping Tool")
-        );
-        let in_use = Reason::InUse.notice();
-        assert_eq!(
-            in_use,
-            "Another app is using PrintScreen, so xcreenshot uses Ctrl+Shift+PrintScreen. \
-             You can change this in Settings."
-        );
-        assert!(!in_use.contains("Snipping"));
     }
 
     #[test]
@@ -512,12 +486,33 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn only_open_settings_opens_settings() {
-        assert!(wants_settings(&MessageDialogResult::Custom(
-            OPEN_SETTINGS.into()
-        )));
-        assert!(!wants_settings(&MessageDialogResult::Custom(OK.into())));
-        assert!(!wants_settings(&MessageDialogResult::Cancel));
-        assert!(!wants_settings(&MessageDialogResult::Ok));
+    fn the_notice_shows_the_fallback_and_open_settings_opens_settings() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use tauri::Manager;
+        use tauri::async_runtime::block_on;
+        use tauri::test::MockRuntime;
+        static OPENED: AtomicU32 = AtomicU32::new(0);
+        let app = notice::tests::app();
+        let h = app.handle();
+        // Counts the calls; failing also covers the logged error.
+        let open: Open<MockRuntime> = |_| {
+            OPENED.fetch_add(1, Ordering::SeqCst);
+            Err(tauri::Error::WindowNotFound)
+        };
+        let answer = |reason, primary| {
+            let told = tell(h, reason, open);
+            let shown = Notice::ShortcutChanged {
+                reason,
+                accelerator: FALLBACK.into(),
+            };
+            let label = notice::tests::opened(h, &shown);
+            notice::notice_answer(h.get_webview_window(&label).unwrap(), primary).unwrap();
+            block_on(told).unwrap();
+        };
+
+        answer(Reason::InUse, true);
+        assert_eq!(OPENED.load(Ordering::SeqCst), 0, "OK");
+        answer(Reason::SnippingTool, false);
+        assert_eq!(OPENED.load(Ordering::SeqCst), 1, "Open Settings");
     }
 }

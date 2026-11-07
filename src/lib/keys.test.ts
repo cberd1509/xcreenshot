@@ -26,13 +26,14 @@ describe('shortcutKeys', () => {
   })
 
   it('shows Windows key names on Windows', () => {
-    expect(shortcutKeys('Control+Super+S', false)).toEqual(['Control', 'Win', 'S'])
-    expect(shortcutKeys('PrintScreen', false)).toEqual(['PrintScreen'])
+    expect(shortcutKeys('Control+Super+S', false)).toEqual(['Ctrl', 'Win', 'S'])
+    expect(shortcutKeys('CmdOrCtrl+K', false)).toEqual(['Ctrl', 'K'])
+    expect(shortcutKeys('Control+Shift+PrintScreen', false)).toEqual(['Ctrl', 'Shift', 'PrtSc'])
   })
 
   it('shows punctuation and arrows as characters', () => {
     expect(shortcutKeys('Alt+ArrowUp', true)).toEqual(['⌥', '↑'])
-    expect(shortcutKeys('Control+Minus', false)).toEqual(['Control', '-'])
+    expect(shortcutKeys('Control+Minus', false)).toEqual(['Ctrl', '-'])
   })
 
   it('has no keys before the shortcut is known', () => {

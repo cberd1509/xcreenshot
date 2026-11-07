@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { failed } from '$lib/log'
   import { invoke } from '@tauri-apps/api/core'
   import { getCurrentWindow } from '@tauri-apps/api/window'
   import { onMount } from 'svelte'
@@ -26,8 +27,6 @@
   let openedSettings = false
   let timer: ReturnType<typeof setTimeout> | undefined
   let stopped = false
-
-  const failed = (command: string) => (e: unknown) => console.error(`${command} failed`, e)
 
   /** Checks now and plans the next check. Resolves to the permission, or null if it failed. */
   async function check(): Promise<boolean | null> {

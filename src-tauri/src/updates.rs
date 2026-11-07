@@ -2,11 +2,13 @@
 //!
 //! Automatic checks run 10 s after launch, then every 24 h, while `checkForUpdates` is on. A
 //! found update downloads quietly. Once it is ready, the menu bar gets "Restart to update" and
-//! one non-blocking prompt is shown while no capture is open. Nothing restarts without a click,
-//! and the restart never cuts a capture short. "Check for updates…" always answers.
+//! one "Update ready" window is shown while no capture is open (see `notice`). Nothing restarts
+//! without a click, and the restart never cuts a capture short. "Check for updates…" always
+//! answers.
 //!
 //! The flow works against the [`Host`] trait and injected time, so it is tested without a
-//! network or a screen. [`TauriHost`] is the thin glue to the updater and dialog plugins.
+//! network or a screen. [`TauriHost`] is the thin glue to the updater, the dialog plugin and
+//! the notice window.
 
 use crate::prefs;
 use std::future::Future;
@@ -42,9 +44,10 @@ pub trait Host: Send + Sync {
         &self,
         ready: Arc<Ready<Self::Update>>,
     ) -> impl Future<Output = Result<bool, String>> + Send;
-    /// Shows a message without blocking the app; with `buttons` (ok, cancel), whether ok was
-    /// clicked.
-    fn show(&self, text: &str, buttons: Option<(&str, &str)>) -> impl Future<Output = bool> + Send;
+    /// Shows a message without blocking the app.
+    fn show(&self, text: &str) -> impl Future<Output = ()> + Send;
+    /// "Update ready": whether "Restart now" was clicked.
+    fn ask_restart(&self, version: &str) -> impl Future<Output = bool> + Send;
     /// Resolves once no capture is running or open.
     fn idle(&self) -> impl Future<Output = ()> + Send;
     /// Adds "Restart to update" to the menu bar.
@@ -218,7 +221,7 @@ pub async fn manual_check<H: Host>(host: &H, state: &Updates<H::Update>) {
 
 async fn tell<H: Host>(host: &H, text: &str) {
     host.idle().await;
-    host.show(text, None).await;
+    host.show(text).await;
 }
 
 /// "Update ready" with "Restart now" / "Later". Later keeps the menu bar item. Only one prompt
@@ -228,8 +231,7 @@ async fn offer_restart<H: Host>(host: &H, state: &Updates<H::Update>, version: &
         return;
     };
     host.idle().await;
-    let text = format!("Update ready: v{version}");
-    let accepted = host.show(&text, Some(("Restart now", "Later"))).await;
+    let accepted = host.ask_restart(version).await;
     drop(prompt);
     if accepted {
         restart(host, state).await;
@@ -317,7 +319,8 @@ pub fn restart_now<R: Runtime>(app: &AppHandle<R>) {
 
 struct Offer<R: Runtime>(fn(&AppHandle<R>, &str));
 
-/// The updater and dialog plugins, used from Rust only (no page permissions).
+/// The updater and dialog plugins, used from Rust only (no page permissions), and the notice
+/// window.
 struct TauriHost<R: Runtime>(AppHandle<R>);
 
 impl<R: Runtime> Host for TauriHost<R> {
@@ -373,22 +376,25 @@ impl<R: Runtime> Host for TauriHost<R> {
 
     /// The dialog plugin's callback API. On macOS a dialog without a parent window is a system
     /// alert shown from a background thread, so the main thread (and the hotkey) keep running.
-    async fn show(&self, text: &str, buttons: Option<(&str, &str)>) -> bool {
+    async fn show(&self, text: &str) {
         use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
-        let buttons = match buttons {
-            Some((ok, cancel)) => MessageDialogButtons::OkCancelCustom(ok.into(), cancel.into()),
-            None => MessageDialogButtons::Ok,
-        };
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.0
             .dialog()
             .message(text)
             .title("xcreenshot")
-            .buttons(buttons)
-            .show(move |ok| {
-                let _ = tx.send(ok);
+            .buttons(MessageDialogButtons::Ok)
+            .show(move |_| {
+                let _ = tx.send(());
             });
-        rx.await.unwrap_or(false)
+        let _ = rx.await;
+    }
+
+    /// Later, Esc or closing the window keep the update for the menu bar item.
+    async fn ask_restart(&self, version: &str) -> bool {
+        let version = version.to_owned();
+        let notice = crate::notice::Notice::UpdateReady { version };
+        crate::notice::ask(&self.0, notice).await == Some(true)
     }
 
     async fn idle(&self) {
@@ -475,11 +481,12 @@ mod tests {
             self.install.map(|()| true).map_err(str::to_owned)
         }
 
-        async fn show(&self, text: &str, buttons: Option<(&str, &str)>) -> bool {
-            match buttons {
-                Some((ok, cancel)) => self.note(format!("ask {text} [{ok}|{cancel}]")),
-                None => self.note(format!("tell {text}")),
-            }
+        async fn show(&self, text: &str) {
+            self.note(format!("tell {text}"));
+        }
+
+        async fn ask_restart(&self, version: &str) -> bool {
+            self.note(format!("ask restart {version}"));
             self.answer
         }
 
@@ -492,7 +499,7 @@ mod tests {
         }
     }
 
-    const ASK: &str = "ask Update ready: v1.2.0 [Restart now|Later]";
+    const ASK: &str = "ask restart 1.2.0";
 
     #[test]
     fn automatic_check_downloads_then_offers_a_restart() {
@@ -773,6 +780,7 @@ mod tests {
         let app = mock_builder()
             .plugin(tauri_plugin_updater::Builder::new().build())
             .manage(crate::overlay::Overlay::default())
+            .manage(crate::notice::Notices::default())
             .build(context)
             .unwrap();
         let offer: fn(&AppHandle<MockRuntime>, &str) = |_, v| {
@@ -793,6 +801,15 @@ mod tests {
         block_on(host.idle());
         host.offer("99.0.0");
         assert!(OFFERED.load(Ordering::SeqCst));
+
+        let asking = TauriHost(app.handle().clone());
+        let asked = tauri::async_runtime::spawn(async move { asking.ask_restart("99.0.0").await });
+        let shown = crate::notice::Notice::UpdateReady {
+            version: "99.0.0".into(),
+        };
+        let label = crate::notice::tests::opened(app.handle(), &shown);
+        crate::notice::notice_answer(app.get_webview_window(&label).unwrap(), true).unwrap();
+        assert!(block_on(asked).unwrap(), "Restart now");
         assert!(app.state::<AppUpdates>().ready().is_none());
         assert_eq!(ready_version(app.handle()), None);
     }

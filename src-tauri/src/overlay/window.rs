@@ -197,6 +197,9 @@ fn start_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) -> Option<u64
         app.state::<Overlay>().idle.notify_waiters();
         return None;
     };
+    // Before the capture, so a notice isn't in the frame; with none open it costs nothing. The
+    // overlay is always on top: a notice waits until it closes.
+    crate::notice::hide_for_capture(app);
     // Before the capture, so the pages learn whether Rust owns Esc.
     let escape_shortcut = sync_escape(app);
     let worker = app.clone();
@@ -316,14 +319,9 @@ pub fn close_if<R: Runtime>(app: &AppHandle<R>, ok: impl FnOnce(&Phase) -> bool)
             log::warn!("could not tell {label} to free its frame: {e}");
         }
     }
-    // Give focus back to the app the user was in, unless Settings is open.
-    #[cfg(target_os = "macos")]
-    if !windows
-        .iter()
-        .any(|(l, w)| display_id(l).is_none() && w.is_visible().unwrap_or(false))
-    {
-        let _ = app.hide();
-    }
+    // First, so a notice shown again keeps the app visible, as Settings does.
+    crate::notice::show_after_capture(app);
+    crate::windows::yield_focus(app, None);
     // Last, so a waiting update restart sees the overlay gone.
     app.state::<Overlay>().idle.notify_waiters();
 }
@@ -668,7 +666,7 @@ pub(crate) fn close_overlay<R: Runtime>(app: AppHandle<R>, session: u64) {
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+pub(crate) mod tests {
     use super::super::tests::frame;
     use super::*;
     use std::sync::mpsc;

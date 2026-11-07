@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "notice",
+  "description": "Notice windows (Update ready, Shortcut changed): read the notice, answer it, drag the window, close it when there is nothing to show",
+  "windows": ["notice-*"],
+  "permissions": [
+    "core:window:allow-close","core:window:allow-start-dragging", "allow-notice", "allow-notice-answer"]
+}

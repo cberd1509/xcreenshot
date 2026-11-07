@@ -9,6 +9,8 @@ fn main() {
         "overlay_copy",
         "overlay_save",
         "close_overlay",
+        "notice",
+        "notice_answer",
         "permission_granted",
         "open_permission_settings",
         "permission_pane",

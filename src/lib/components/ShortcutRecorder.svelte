@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { failed } from '$lib/log'
   import { Button } from '$lib/components/ui/button'
   import SettingRow from '$lib/components/SettingRow.svelte'
   import ShortcutKbd from '$lib/components/ShortcutKbd.svelte'
@@ -27,8 +28,6 @@
   /** A full shortcut, saved on key-up or Enter. */
   let pending: Combo | null = null
   let error = $state('')
-
-  const failed = (command: string) => (e: unknown) => console.error(`${command} failed`, e)
 
   function clear() {
     held = ''

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-overlay-share"
+description = "Enables the overlay_share command without any pre-configured scope."
+commands.allow = ["overlay_share"]
+
+[[permission]]
+identifier = "deny-overlay-share"
+description = "Denies the overlay_share command without any pre-configured scope."
+commands.deny = ["overlay_share"]
