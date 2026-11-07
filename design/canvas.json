@@ -72,6 +72,20 @@
       "w": 1440,
       "x": 1520,
       "y": 0
+    },
+    "QuickCopy.dc.html": {
+      "x": 4560,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "title": "Quick copy on: ready to drag"
+    },
+    "Toast.dc.html": {
+      "x": 6080,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "title": "Confirmation toasts (every Copy, Save, Share; stacked)"
     }
   },
   "createdOnFiles": {
@@ -99,7 +113,7 @@
     },
     "capture": {
       "kind": "title1",
-      "maxW": 4480,
+      "maxW": 7520,
       "text": "Capture overlay",
       "w": 240,
       "x": 0,
@@ -126,6 +140,8 @@
     "Desktop.dc.html",
     "Main.dc.html",
     "WindowSelect.dc.html",
+    "QuickCopy.dc.html",
+    "Toast.dc.html",
     "Settings.dc.html",
     "Onboarding.dc.html",
     "Tray.dc.html",
