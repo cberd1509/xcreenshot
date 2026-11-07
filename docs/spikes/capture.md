@@ -320,8 +320,8 @@ only once the window was shown, so the first frame on screen was whatever it ren
 (black, or the end of the previous capture). On macOS, `requestAnimationFrame` never ran in the
 hidden window (every paint gave up waiting for it, below).
 
-Now Rust puts each window on screen fully transparent once the capture is done (`NSWindow`
-alpha 0 on macOS, a layered window at alpha 0 on Windows, neither taking focus). The page draws,
+Now Rust puts each window on screen fully transparent and click-through once the capture is done
+(`NSWindow` alpha 0 on macOS, a layered window at alpha 0 on Windows). The page draws,
 waits two animation frames, and only then calls `overlay_painted`, which makes the window opaque
 and shows it. If the frames don't come within 100 ms the page reports anyway, and Rust logs
 "shown before its frame was rendered". The 2 s watchdog still closes an overlay that never paints.

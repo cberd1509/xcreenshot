@@ -5,6 +5,7 @@ import { clearMocks, mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetSettings, settings } from '$lib/settings.svelte'
 import { box, fakeContext } from '../test/canvas'
+import { fakeFrames } from '../test/frames'
 import { stages } from '../test/konva'
 import { OUTPUT_HEADER } from './annotate/output'
 import type { Rect } from './geometry'
@@ -251,31 +252,28 @@ describe('Overlay', () => {
   })
 
   it('reports the paint only once the frame is rendered, and not after a close', async () => {
-    const frames: FrameRequestCallback[] = []
-    const real = globalThis.requestAnimationFrame
-    globalThis.requestAnimationFrame = (callback) => frames.push(callback)
-    const nextFrame = () => frames.splice(0).forEach((callback) => callback(0))
+    const frames = fakeFrames()
     try {
       await mount()
       await emit('overlay:show', small(1))
-      await waitFor(() => expect(frames).toHaveLength(1))
-      nextFrame()
+      await waitFor(() => expect(frames.pending()).toBe(1))
+      frames.next()
       await tick()
       expect(called('overlay_painted'), 'drawn, not yet rendered').toHaveLength(0)
-      nextFrame()
+      frames.next()
       await waitFor(() => expect(called('overlay_painted')).toHaveLength(1))
 
       // Closed while waiting for the next session's frame to render: Rust is not told.
       await emit('overlay:closed')
       await emit('overlay:show', small(2))
-      await waitFor(() => expect(frames).toHaveLength(1))
+      await waitFor(() => expect(frames.pending()).toBe(1))
       await emit('overlay:closed')
-      nextFrame()
-      nextFrame()
+      frames.next()
+      frames.next()
       await tick()
       expect(called('overlay_painted')).toHaveLength(1)
     } finally {
-      globalThis.requestAnimationFrame = real
+      frames.restore()
     }
   })
 
