@@ -4,29 +4,38 @@ name: Release
 # with the pending changes. Merging it bumps package.json (the only version source;
 # tauri.conf.json reads it) and writes CHANGELOG.md.
 # Once no changesets are pending and v<version> isn't released yet, the build job makes the
-# universal macOS app and DMG and uploads them to a draft GitHub Release. The maintainer checks
-# the draft and publishes it, which creates the tag (docs/releasing.md).
+# universal macOS app and DMG and uploads them to a draft GitHub Release. In parallel, the
+# windows job builds the NSIS installer with a read-only token, and windows-upload adds it to the
+# draft and merges its entry into latest.json, after the macOS job has written that file. The
+# maintainer checks the draft and publishes it, which creates the tag (docs/releasing.md).
 # Developer ID signing and notarization switch on when the APPLE_CERTIFICATE secret is set.
+# Windows builds aren't code signed yet (#103).
 # When a release is published, the updater-urls job points latest.json at the tag's download URLs.
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Only build the Windows installer, from any branch. No release is touched.
+        type: boolean
+        default: false
   release:
     types: [published]
 
 concurrency: release-${{ github.ref }}
 
-permissions:
-  contents: write
-  pull-requests: write
+permissions: {}
 
 jobs:
   version:
     name: Version PR
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     outputs:
       hasChangesets: ${{ steps.changesets.outputs.has-changesets }}
     steps:
@@ -44,9 +53,12 @@ jobs:
     name: Check release
     needs: version
     if: >-
-      !cancelled() && (github.event_name == 'workflow_dispatch' ||
+      !cancelled() && !inputs.dry-run && (github.event_name == 'workflow_dispatch' ||
       (needs.version.result == 'success' && needs.version.outputs.hasChangesets == 'false'))
     runs-on: ubuntu-latest
+    # Write access only so `gh release view` can see an existing draft; it changes nothing.
+    permissions:
+      contents: write
     outputs:
       version: ${{ steps.plan.outputs.version }}
       build: ${{ steps.plan.outputs.build }}
@@ -87,6 +99,10 @@ jobs:
     needs: plan
     if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.build == 'true' }}
     runs-on: macos-latest
+    permissions:
+      contents: write
+    outputs:
+      signed: ${{ steps.secrets.outputs.signed }}
     env:
       VERSION: ${{ needs.plan.outputs.version }}
       DMG: src-tauri/target/universal-apple-darwin/release/bundle/dmg/xcreenshot_${{ needs.plan.outputs.version }}_universal.dmg
@@ -177,7 +193,8 @@ jobs:
           echo "started=true" >> "$GITHUB_OUTPUT"
 
       # Builds, signs and notarizes the app (when signing), signs the updater bundle, then creates
-      # the draft release and uploads the DMG, .app.tar.gz, .sig and (signed builds only) latest.json.
+      # the draft release and uploads the DMG, .app.tar.gz, .sig and (signed builds only) latest.json
+      # with the macOS entries. The windows-upload job adds the Windows entries afterwards.
       # Tauri skips the Finder step that lays out the DMG window when CI=true;
       # TAURI_BUNDLER_DMG_IGNORE_CI keeps it.
       - name: Build and upload (custom DMG window)
@@ -258,15 +275,140 @@ jobs:
         if: always()
         run: rm -f "$RUNNER_TEMP"/AuthKey_*.p8
 
+  # Builds the NSIS installer and signs it for the updater, with a read-only token: it never
+  # touches the release. A dry run (workflow_dispatch with dry-run) builds any branch this way and
+  # uploads nothing.
+  windows:
+    name: Build the Windows installer
+    needs: plan
+    if: >-
+      !cancelled() && (inputs.dry-run ||
+      (needs.plan.result == 'success' && needs.plan.outputs.build == 'true'))
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: src-tauri
+          key: release-windows
+
+      # createUpdaterArtifacts (tauri.conf.json) writes <installer>.exe.sig next to the installer,
+      # signed with the same updater key as the macOS build.
+      - name: Build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set; updates can't be signed."; exit 1
+          fi
+          pnpm tauri build --bundles nsis
+
+      - name: Check the installer
+        run: |
+          exe="xcreenshot_$(node -p "require('./package.json').version")_x64-setup.exe"
+          mkdir -p out
+          for file in "$exe" "$exe.sig"; do
+            path="src-tauri/target/release/bundle/nsis/$file"
+            if [ ! -s "$path" ]; then
+              echo "::error::Missing $path"; ls src-tauri/target/release/bundle/nsis; exit 1
+            fi
+            cp "$path" out/
+          done
+          ls -l out
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !inputs.dry-run }}
+        with:
+          name: windows-installer
+          path: out/
+          if-no-files-found: error
+          retention-days: 1
+
+  # Runs no code from the build: it adds the installer and its .sig to the draft the macOS job
+  # created, then merges the Windows entries into that job's latest.json. Running after both
+  # builds keeps one writer per file. If the Windows build or this job fails, the draft is deleted,
+  # so a macOS-only draft is never left to publish.
+  windows-upload:
+    name: Add Windows to the v${{ needs.plan.outputs.version }} draft
+    needs: [plan, build, windows]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      SIGNED: ${{ needs.build.outputs.signed }}
+      WINDOWS: ${{ needs.windows.result }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Check the Windows build
+        run: |
+          if [ "$WINDOWS" != success ]; then
+            echo "::error::The Windows build didn't succeed ($WINDOWS)."; exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: windows-installer
+          path: out
+
+      - name: Upload the installer
+        run: |
+          exe="out/xcreenshot_${VERSION}_x64-setup.exe"
+          gh release upload "v$VERSION" "$exe" "$exe.sig" --clobber
+
+      # Unsigned macOS test builds have no latest.json, so the updater offers neither platform.
+      - name: Add Windows to latest.json
+        if: env.SIGNED == 'true'
+        run: |
+          dir="$RUNNER_TEMP/updater"
+          mkdir -p "$dir/merged"
+          gh release download "v$VERSION" --pattern latest.json --dir "$dir"
+          node scripts/release.ts add-windows "$dir/latest.json" \
+            "out/xcreenshot_${VERSION}_x64-setup.exe.sig" "$GH_REPO" "v$VERSION" \
+            > "$dir/merged/latest.json"
+          jq -e '.platforms | has("darwin-aarch64") and has("windows-x86_64")' \
+            "$dir/merged/latest.json" > /dev/null
+          gh release upload "v$VERSION" "$dir/merged/latest.json" --clobber
+
+      # Only the draft this run made; a published release is never deleted.
+      - name: Delete the unfinished draft
+        if: failure() || cancelled()
+        run: |
+          draft=$(gh release view "v$VERSION" --json isDraft --jq .isDraft 2> /dev/null || true)
+          if [ "$draft" = true ]; then gh release delete "v$VERSION" --yes; fi
+
   # tauri-action writes GitHub API asset URLs into latest.json, but the app only downloads from
   # https://github.com/<repo>/releases/download/ (src-tauri/src/updates.rs). Once the release is
   # published its tag exists, so rewrite each URL to the tag download URL of the same asset.
   # Drafts are invisible to releases/latest, so the updater can only see the original file for
-  # the few seconds between publishing and this job finishing.
+  # the few seconds between publishing and this job finishing. The Windows entries already use the
+  # tag URL and are kept as they are.
   updater-urls:
     name: Point latest.json at the tag
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}

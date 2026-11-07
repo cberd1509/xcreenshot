@@ -69,13 +69,16 @@ const press = (el: HTMLElement, key: string) => {
 
 const get = (selector: string) => document.querySelector<HTMLElement>(selector)!
 
+/** Two tablists, like the hero and Install sections, plus per-OS content. */
 const page = () => {
   document.body.innerHTML = `
+    <div role="tablist" id="hero">
+      <button role="tab" data-os-tab="mac" aria-selected="true">macOS</button>
+      <button role="tab" data-os-tab="other" aria-selected="false" tabindex="-1">Windows</button>
+    </div>
     <a data-os="mac">Download for Mac</a>
-    <a data-os="other" hidden>Get notified for Windows</a>
-    <button data-os="mac" data-os-toggle>Not on a Mac?</button>
-    <button data-os="other" data-os-toggle hidden>On a Mac?</button>
-    <div role="tablist">
+    <a data-os="other" hidden>Download for Windows</a>
+    <div role="tablist" id="install">
       <button role="tab" data-os-tab="mac" aria-selected="true">macOS</button>
       <button role="tab" data-os-tab="other" aria-selected="false" tabindex="-1">Windows</button>
       <button role="tab" data-os-tab="linux">Not a choice</button>
@@ -84,14 +87,16 @@ const page = () => {
   return {
     mac: get('a[data-os="mac"]'),
     other: get('a[data-os="other"]'),
-    notMac: get('button[data-os="mac"]'),
-    onMac: get('button[data-os="other"]'),
-    macTab: get('[data-os-tab="mac"]'),
-    winTab: get('[data-os-tab="other"]'),
+    heroMac: get('#hero [data-os-tab="mac"]'),
+    heroWin: get('#hero [data-os-tab="other"]'),
+    macTab: get('#install [data-os-tab="mac"]'),
+    winTab: get('#install [data-os-tab="other"]'),
     oddTab: get('[data-os-tab="linux"]'),
     always: get('p'),
   }
 }
+
+const selected = (tab: HTMLElement) => tab.getAttribute('aria-selected')
 
 describe('applyOs', () => {
   it('swaps to the other version', () => {
@@ -124,59 +129,56 @@ describe('setUpOs', () => {
     expect(mac.hidden).toBe(false)
   })
 
-  it('switches and remembers when a toggle is clicked', () => {
-    const { mac, other, notMac, onMac } = page()
+  it('preselects the detected platform in every tablist', () => {
+    const { heroMac, heroWin, macTab, winTab } = page()
+    setUpOs(document, { platform: 'Win32' }, local)
+    for (const tab of [heroWin, winTab]) {
+      expect(selected(tab)).toBe('true')
+      expect(tab.tabIndex).toBe(0)
+    }
+    for (const tab of [heroMac, macTab]) {
+      expect(selected(tab)).toBe('false')
+      expect(tab.tabIndex).toBe(-1)
+    }
+  })
+
+  it('switches the whole page and the other tablist when a tab is clicked', () => {
+    const { mac, other, heroMac, heroWin, macTab, winTab } = page()
     setUpOs(document, { platform: 'MacIntel' }, local)
 
-    notMac.click()
+    heroWin.click()
     expect(other.hidden).toBe(false)
-    expect(mac.hidden).toBe(true)
+    expect(selected(winTab)).toBe('true')
+    expect(selected(macTab)).toBe('false')
     expect(readChoice(local)).toBe('other')
-    expect(document.activeElement).toBe(onMac)
 
-    onMac.click()
+    macTab.click()
     expect(mac.hidden).toBe(false)
+    expect(selected(heroMac)).toBe('true')
+    expect(selected(heroWin)).toBe('false')
     expect(readChoice(local)).toBe('mac')
   })
 
   it('still switches when storage is blocked', () => {
-    const { other, notMac } = page()
+    const { other, heroWin } = page()
     setUpOs(document, {}, blocked)
-    notMac.click()
+    heroWin.click()
     expect(other.hidden).toBe(false)
   })
 
-  it('selects the tab for the shown version', () => {
-    const { macTab, winTab } = page()
-    setUpOs(document, { platform: 'Win32' }, local)
-    expect(winTab.getAttribute('aria-selected')).toBe('true')
-    expect(winTab.tabIndex).toBe(0)
-    expect(macTab.getAttribute('aria-selected')).toBe('false')
-    expect(macTab.tabIndex).toBe(-1)
-  })
-
-  it('switches the whole page when a tab is clicked', () => {
-    const { mac, other, macTab, winTab } = page()
-    setUpOs(document, { platform: 'MacIntel' }, local)
-    winTab.click()
-    expect(other.hidden).toBe(false)
-    expect(readChoice(local)).toBe('other')
-    macTab.click()
-    expect(mac.hidden).toBe(false)
-    expect(readChoice(local)).toBe('mac')
-  })
-
-  it('moves between tabs with the arrow keys, Home and End', () => {
-    const { macTab, winTab, oddTab } = page()
+  it('moves within a tablist with the arrow keys, Home and End', () => {
+    const { heroMac, heroWin, macTab, winTab, oddTab } = page()
     setUpOs(document, { platform: 'MacIntel' }, local)
 
-    expect(press(macTab, 'ArrowRight').defaultPrevented).toBe(true)
-    expect(document.activeElement).toBe(winTab)
+    expect(press(heroMac, 'ArrowRight').defaultPrevented).toBe(true)
+    expect(document.activeElement).toBe(heroWin)
     expect(readChoice(local)).toBe('other')
+    expect(selected(winTab)).toBe('true')
 
-    press(winTab, 'ArrowLeft')
-    expect(document.activeElement).toBe(macTab)
-    expect(readChoice(local)).toBe('mac')
+    // The hero has two tabs: it wraps around without reaching Install's.
+    press(heroWin, 'ArrowRight')
+    expect(document.activeElement).toBe(heroMac)
+    expect(selected(macTab)).toBe('true')
 
     press(macTab, 'ArrowLeft')
     expect(document.activeElement).toBe(oddTab)
@@ -184,7 +186,6 @@ describe('setUpOs', () => {
     press(winTab, 'Home')
     expect(document.activeElement).toBe(macTab)
     expect(readChoice(local)).toBe('mac')
-    expect(macTab.getAttribute('aria-selected')).toBe('true')
     press(macTab, 'End')
     expect(document.activeElement).toBe(oddTab)
 
@@ -199,5 +200,14 @@ describe('setUpOs', () => {
     expect(localStorage.length).toBe(0)
     expect(mac.hidden).toBe(false)
     expect(other.hidden).toBe(true)
+  })
+
+  it('moves among tabs outside a tablist too', () => {
+    document.body.innerHTML = `
+      <button data-os-tab="mac">macOS</button>
+      <button data-os-tab="other">Windows</button>`
+    setUpOs(document, { platform: 'MacIntel' }, local)
+    press(get('[data-os-tab="mac"]'), 'End')
+    expect(document.activeElement).toBe(get('[data-os-tab="other"]'))
   })
 })

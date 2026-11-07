@@ -41,22 +41,30 @@ a{color:#09090b}a:visited{color:#09090b}
     <h1 style="margin: 0; max-width: 680px; font-size: 52px; line-height: 1.06; font-weight: 300; letter-spacing: -0.03em;"><span style="font-weight: 800;">A screenshot app</span> that stays out of the way</h1>
     <p style="margin: 0; max-width: 520px; font-size: 17px; line-height: 27px; color: #52525b;">Press the shortcut, drag a region, mark it up, then copy or save. It lives in your menu bar.</p>
 
+    <!-- platform switch: detected from the visitor's OS, and they can change it -->
+    <div role="tablist" aria-label="Platform" style="margin-top: 8px; display: inline-flex; gap: 2px; padding: 3px; border-radius: 9px; border: 1px solid #d4d4d8;">
+      <a href="#" role="tab" aria-selected="{{mac}}" onClick="{{pickMac}}" style="{{macTab}}">macOS</a>
+      <a href="#" role="tab" aria-selected="{{other}}" onClick="{{pickWindows}}" style="{{winTab}}">Windows</a>
+    </div>
     <sc-if value="{{mac}}" hint-placeholder-val="{{ true }}">
-      <div style="display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 8px;">
+      <div style="display: flex; flex-wrap: wrap; gap: 10px; justify-content: center;">
         <a href="#download" style="height: 44px; padding: 0 20px; display: inline-flex; align-items: center; gap: 8px; border-radius: 10px; background: #09090b; color: #ffffff; font-size: 15px; font-weight: 500; text-decoration: none;">
           <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"></path><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><path d="m7 10 5 5 5-5"></path></svg>
           Download for Mac
         </a>
         <a href="https://github.com/cberd1509/xcreenshot" style="color: #09090b; height: 44px; padding: 0 18px; display: inline-flex; align-items: center; border-radius: 10px; border: 1px solid #d4d4d8; font-size: 15px; font-weight: 500; text-decoration: none;">View source</a>
       </div>
-      <div style="font-size: 13px; color: #71717a;">Version 0.3.0 · Apple Silicon and Intel · Free and open source · <a href="#" onClick="{{toggle}}" style="color: #09090b; font-weight: 600; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px;">Not on a Mac?</a></div>
+      <div style="font-size: 13px; color: #71717a;">Version 0.4.0 · Apple Silicon and Intel · Free and open source</div>
     </sc-if>
     <sc-if value="{{other}}" hint-placeholder-val="{{ false }}">
       <div style="display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 8px;">
-        <a href="https://github.com/cberd1509/xcreenshot/releases" style="height: 44px; padding: 0 20px; display: inline-flex; align-items: center; gap: 8px; border-radius: 10px; background: #09090b; color: #ffffff; font-size: 15px; font-weight: 500; text-decoration: none;">Get notified for Windows</a>
-        <a href="#download" style="color: #09090b; height: 44px; padding: 0 18px; display: inline-flex; align-items: center; border-radius: 10px; border: 1px solid #d4d4d8; font-size: 15px; font-weight: 500; text-decoration: none;">Download for Mac</a>
+        <a href="#download" style="height: 44px; padding: 0 20px; display: inline-flex; align-items: center; gap: 8px; border-radius: 10px; background: #09090b; color: #ffffff; font-size: 15px; font-weight: 500; text-decoration: none;">
+          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"></path><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><path d="m7 10 5 5 5-5"></path></svg>
+          Download for Windows
+        </a>
+        <a href="https://github.com/cberd1509/xcreenshot" style="color: #09090b; height: 44px; padding: 0 18px; display: inline-flex; align-items: center; border-radius: 10px; border: 1px solid #d4d4d8; font-size: 15px; font-weight: 500; text-decoration: none;">View source</a>
       </div>
-      <div style="font-size: 13px; color: #71717a;">Mac only for now. The Windows version is in progress. · <a href="#" onClick="{{toggle}}" style="color: #09090b; font-weight: 600; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px;">On a Mac?</a></div>
+      <div style="font-size: 13px; color: #71717a;">Version 0.4.0 · Windows 10 and 11, 64-bit · Free and open source</div>
     </sc-if>
 
     <!-- the real overlay design, scaled into a window -->
@@ -104,7 +112,7 @@ a{color:#09090b}a:visited{color:#09090b}
         <p style="margin: 0; font-size: 15px; line-height: 24px; color: #52525b;">Signed and notarized by Apple. It updates itself, and you can turn that off in Settings.</p>
       </sc-if>
       <sc-if value="{{other}}" hint-placeholder-val="{{ false }}">
-        <p style="margin: 0; font-size: 15px; line-height: 24px; color: #52525b;">The Windows version is in progress.</p>
+        <p style="margin: 0; font-size: 15px; line-height: 24px; color: #52525b;">It updates itself, and you can turn that off in Settings. It isn't code signed yet, so Windows asks before the first run.</p>
       </sc-if>
     </div>
     <sc-if value="{{mac}}" hint-placeholder-val="{{ true }}">
@@ -116,8 +124,8 @@ a{color:#09090b}a:visited{color:#09090b}
     </sc-if>
     <sc-if value="{{other}}" hint-placeholder-val="{{ false }}">
       <ol style="flex: 999 1 480px; margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0; border-top: 1px solid #e4e4e7;">
-        <li style="padding: 18px 0; display: flex; gap: 16px; border-bottom: 1px solid #e4e4e7; font-size: 15px; line-height: 24px;"><span style="width: 24px; flex-shrink: 0; font-family: 'JetBrains Mono', ui-monospace, monospace; font-weight: 700; color: #09090b;">01</span><span>It isn't out yet. On <a href="https://github.com/cberd1509/xcreenshot" style="color: #09090b; font-weight: 600; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px;">GitHub</a>, click <b style="font-weight: 600;">Watch › Custom › Releases</b> to get an email when it is.</span></li>
-        <li style="padding: 18px 0; display: flex; gap: 16px; border-bottom: 1px solid #e4e4e7; font-size: 15px; line-height: 24px;"><span style="width: 24px; flex-shrink: 0; font-family: 'JetBrains Mono', ui-monospace, monospace; font-weight: 700; color: #09090b;">02</span><span>Once it's out: download the installer from Releases and run it.</span></li>
+        <li style="padding: 18px 0; display: flex; gap: 16px; border-bottom: 1px solid #e4e4e7; font-size: 15px; line-height: 24px;"><span style="width: 24px; flex-shrink: 0; font-family: 'JetBrains Mono', ui-monospace, monospace; font-weight: 700; color: #09090b;">01</span><span><a href="#download" style="color: #09090b; font-weight: 600; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px;">Download the installer</a> and run it.</span></li>
+        <li style="padding: 18px 0; display: flex; gap: 16px; border-bottom: 1px solid #e4e4e7; font-size: 15px; line-height: 24px;"><span style="width: 24px; flex-shrink: 0; font-family: 'JetBrains Mono', ui-monospace, monospace; font-weight: 700; color: #09090b;">02</span><span>If Windows says it protected your PC, click <b style="font-weight: 600;">More info › Run anyway</b>.</span></li>
         <li style="padding: 18px 0; display: flex; gap: 16px; border-bottom: 1px solid #e4e4e7; font-size: 15px; line-height: 24px;"><span style="width: 24px; flex-shrink: 0; font-family: 'JetBrains Mono', ui-monospace, monospace; font-weight: 700; color: #09090b;">03</span><span>Press <span class="kbd" style="height: 22px; font-size: 12px;">PrtSc</span> to take a screenshot, or <span class="kbd" style="height: 22px; font-size: 12px;">Ctrl</span> <span class="kbd" style="height: 22px; font-size: 12px;">Shift</span> <span class="kbd" style="height: 22px; font-size: 12px;">PrtSc</span> if Snipping Tool already uses PrtSc.</span></li>
       </ol>
     </sc-if>
@@ -129,7 +137,8 @@ a{color:#09090b}a:visited{color:#09090b}
       <h2 style="margin: 0; font-size: 32px; font-weight: 300; letter-spacing: -0.02em;"><span style="font-weight: 800;">Small</span> on purpose</h2>
       <p style="margin: 0; font-size: 15px; line-height: 24px; color: #52525b;">A handful of settings: your shortcut, whether it remembers the last region, a magnifier for exact pixels, and whether it opens at login.</p>
     </div>
-    <div style="flex: 999 1 480px; min-width: 0; aspect-ratio: 880 / 800; position: relative; overflow: hidden; border-radius: 12px; border: 1px solid #e4e4e7; box-shadow: 0 24px 48px -16px rgba(0,0,0,0.16);">
+    <!-- the frame is exactly the scaled window (880×800 × 0.68), so there's no empty margin -->
+    <div style="flex: 0 0 auto; width: 598px; height: 544px; margin-left: auto; position: relative; overflow: hidden; border-radius: 12px; border: 1px solid #e4e4e7; box-shadow: 0 24px 48px -16px rgba(0,0,0,0.16);">
       <div style="position: absolute; left: 0; top: 0; width: 880px; height: 800px; transform: scale(0.68); transform-origin: 0 0;">
         <dc-import name="Settings" hint-size="880px,800px"></dc-import>
       </div>
@@ -146,17 +155,16 @@ a{color:#09090b}a:visited{color:#09090b}
     <span>·</span>
     <a href="https://github.com/cberd1509/xcreenshot/issues" style="color: #09090b; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px;">Report a bug</a>
     <div style="flex-grow: 1;"></div>
-    <span>Windows version in progress.</span>
+    <span>macOS and Windows.</span>
   </footer>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props="{&quot;os&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;mac&quot;,&quot;windows&quot;],&quot;default&quot;:&quot;mac&quot;},&quot;$preview&quot;:{&quot;width&quot;:1280,&quot;height&quot;:2600}}">
+<script type="text/x-dc" data-dc-script data-props="{&quot;os&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;mac&quot;,&quot;windows&quot;],&quot;default&quot;:&quot;windows&quot;},&quot;$preview&quot;:{&quot;width&quot;:1280,&quot;height&quot;:2600}}">
 class Component extends DCLogic {
   renderVals() {
     const os = this.state?.os ?? this.props.os ?? 'mac';
     const mac = os === 'mac';
     return {
-      toggle: (e) => { e && e.preventDefault && e.preventDefault(); this.setState({ os: mac ? 'windows' : 'mac' }); },
       pickMac: (e) => { e && e.preventDefault && e.preventDefault(); this.setState({ os: 'mac' }); },
       pickWindows: (e) => { e && e.preventDefault && e.preventDefault(); this.setState({ os: 'windows' }); },
       macTab: mac ? 'height: 32px; padding: 0 14px; display: inline-flex; align-items: center; border-radius: 6px; background: #09090b; color: #ffffff; font-size: 13px; font-weight: 600; text-decoration: none;' : 'height: 32px; padding: 0 14px; display: inline-flex; align-items: center; border-radius: 6px; color: #09090b; font-size: 13px; font-weight: 500; text-decoration: none;',

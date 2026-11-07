@@ -46,9 +46,9 @@ Website: https://cberd1509.github.io/xcreenshot/
 
 Download the `.dmg` from the [latest release](https://github.com/cberd1509/xcreenshot/releases/latest), open it and drag xcreenshot to Applications. It's signed and notarized by Apple. It checks for updates and asks before restarting to install one.
 
-**Windows** (10 or later)
+**Windows** (10 and 11, 64-bit)
 
-Not released yet. On GitHub, click **Watch › Custom › Releases** to get an email when it is.
+Download the `x64-setup.exe` installer from the [latest release](https://github.com/cberd1509/xcreenshot/releases/latest) and run it. It isn't code signed yet, so the first time Windows may say it protected your PC: click **More info › Run anyway**. It checks for updates and asks before restarting to install one.
 
 ## Usage
 

@@ -44,16 +44,18 @@ pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
 ## What a release publishes
 
-The **Release** workflow (`.github/workflows/release.yml`, see [releasing.md](releasing.md)) builds one universal macOS app (Apple silicon and Intel) with [`tauri-apps/tauri-action`](https://github.com/tauri-apps/tauri-action) and uploads to the GitHub release:
+The **Release** workflow (`.github/workflows/release.yml`, see [releasing.md](releasing.md)) builds one universal macOS app (Apple silicon and Intel) with [`tauri-apps/tauri-action`](https://github.com/tauri-apps/tauri-action), and the 64-bit Windows NSIS installer, and uploads to the GitHub release:
 
 | File                                             | Used by                     |
 | ------------------------------------------------ | --------------------------- |
 | `xcreenshot_<version>_universal.dmg`             | people installing the app   |
 | `xcreenshot_<version>_universal.app.tar.gz`      | the updater (the update)    |
 | `xcreenshot_<version>_universal.app.tar.gz.sig`  | reference copy of the signature |
-| `latest.json` (signed builds only)               | the updater (the manifest)  |
+| `xcreenshot_<version>_x64-setup.exe`             | people installing it on Windows, and the updater |
+| `xcreenshot_<version>_x64-setup.exe.sig`         | its signature, copied into `latest.json` |
+| `latest.json` (signed macOS builds only)         | the updater (the manifest)  |
 
-The updater only sees it once the release is **published** (not a draft or prerelease, and marked "latest"), so `releases/latest/download/latest.json` resolves to it. After publishing, `latest.json` looks like this; all four macOS entries point at the same universal `.app.tar.gz`:
+The updater only sees it once the release is **published** (not a draft or prerelease, and marked "latest"), so `releases/latest/download/latest.json` resolves to it. After publishing, `latest.json` looks like this; all the macOS entries point at the same universal `.app.tar.gz`, and both Windows entries at the installer:
 
 ```json
 {
@@ -64,7 +66,9 @@ The updater only sees it once the release is **published** (not a draft or prere
     "darwin-aarch64": { "signature": "<contents of the .sig>", "url": "<.../download/v1.2.0/xcreenshot_1.2.0_universal.app.tar.gz>" },
     "darwin-x86_64": { "signature": "<contents of the .sig>", "url": "<.../download/v1.2.0/xcreenshot_1.2.0_universal.app.tar.gz>" },
     "darwin-aarch64-app": { "signature": "<contents of the .sig>", "url": "<.../download/v1.2.0/xcreenshot_1.2.0_universal.app.tar.gz>" },
-    "darwin-x86_64-app": { "signature": "<contents of the .sig>", "url": "<.../download/v1.2.0/xcreenshot_1.2.0_universal.app.tar.gz>" }
+    "darwin-x86_64-app": { "signature": "<contents of the .sig>", "url": "<.../download/v1.2.0/xcreenshot_1.2.0_universal.app.tar.gz>" },
+    "windows-x86_64": { "signature": "<contents of the .exe.sig>", "url": "<.../download/v1.2.0/xcreenshot_1.2.0_x64-setup.exe>" },
+    "windows-x86_64-nsis": { "signature": "<contents of the .exe.sig>", "url": "<.../download/v1.2.0/xcreenshot_1.2.0_x64-setup.exe>" }
   }
 }
 ```
@@ -73,5 +77,6 @@ The updater only sees it once the release is **published** (not a draft or prere
 - `signature` is the text of the `.sig` file, not a URL.
 - `url` must start with `https://github.com/cberd1509/xcreenshot/releases/download/`, or the app refuses it (`src-tauri/src/updates.rs`). tauri-action writes GitHub API asset URLs instead (`https://api.github.com/repos/cberd1509/xcreenshot/releases/assets/<id>`), and a draft has no tag to build a download URL from. So when the release is published, the workflow's `updater-urls` job rewrites each `url` to `https://github.com/cberd1509/xcreenshot/releases/download/v<version>/<asset name>` and replaces `latest.json`; signatures and the version stay as they were.
 - Nothing reads a draft's `latest.json`: `releases/latest` only sees published releases. The original file is only visible for the few seconds between publishing and that job finishing, and the app refuses its URLs, so at worst an update check in that window finds nothing and the next one gets the update.
-- Unsigned test builds (no Developer ID certificate) don't upload `latest.json`, so the updater never offers them.
-- Windows isn't built yet. When it is, its NSIS installer adds a `windows-x86_64` entry.
+- **How it's assembled:** tauri-action writes `latest.json` with the macOS entries when the macOS job creates the draft. After both builds finish, the `windows-upload` job downloads it, adds `windows-x86_64` and `windows-x86_64-nsis` (`node scripts/release.ts add-windows`), with the `.exe.sig` text and the tag download URL, and uploads it back. Only one job writes the file at a time. The updater looks for `windows-x86_64-nsis` first, then `windows-x86_64`.
+- Unsigned test builds (no Developer ID certificate) don't upload `latest.json`, so the updater never offers them, on either platform.
+- **On Windows**, installing runs the new NSIS installer in passive mode (`/P /R /UPDATE`, the plugin's default `installMode`): xcreenshot exits, a progress bar shows, and the installer starts it again. The installer isn't code signed yet (#103), but the update's signature is checked like on macOS.

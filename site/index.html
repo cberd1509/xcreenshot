@@ -65,41 +65,109 @@
           bar.
         </p>
 
-        <div class="actions" data-os="mac">
-          <a class="button primary" href="%DOWNLOAD_URL%">
-            <svg
-              aria-hidden="true"
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M12 15V3" />
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <path d="m7 10 5 5 5-5" />
-            </svg>
-            Download for Mac
-          </a>
-          <a class="button secondary" href="https://github.com/cberd1509/xcreenshot">View source</a>
-        </div>
-        <div class="actions" data-os="other" hidden>
-          <a class="button primary" href="https://github.com/cberd1509/xcreenshot"
-            >Get notified for Windows</a
+        <div class="tabs" role="tablist" aria-label="Platform">
+          <button
+            id="hero-tab-mac"
+            class="tab"
+            type="button"
+            role="tab"
+            aria-selected="true"
+            aria-controls="hero-mac"
+            data-os-tab="mac"
           >
-          <a class="button secondary" href="%DOWNLOAD_URL%">Download for Mac</a>
+            macOS
+          </button>
+          <button
+            id="hero-tab-windows"
+            class="tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="hero-windows"
+            tabindex="-1"
+            data-os-tab="other"
+          >
+            Windows
+          </button>
         </div>
-        <p class="meta" data-os="mac">
-          Version %VERSION% · macOS 14 or later · Apple Silicon and Intel · Free and open source ·
-          <button class="switch" type="button" data-os-toggle>Not on a Mac?</button>
-        </p>
-        <p class="meta" data-os="other" hidden>
-          Mac only for now. The Windows version is in progress. ·
-          <button class="switch" type="button" data-os-toggle>On a Mac?</button>
-        </p>
+        <div
+          id="hero-mac"
+          class="platform"
+          role="tabpanel"
+          aria-labelledby="hero-tab-mac"
+          data-os="mac"
+        >
+          <div class="actions">
+            <a class="button primary" href="%DOWNLOAD_URL%">
+              <svg
+                aria-hidden="true"
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M12 15V3" />
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <path d="m7 10 5 5 5-5" />
+              </svg>
+              Download for Mac
+            </a>
+            <a class="button secondary" href="https://github.com/cberd1509/xcreenshot"
+              >View source</a
+            >
+          </div>
+          <p class="meta">
+            Version %VERSION% · macOS 14 or later · Apple Silicon and Intel · Free and open source
+          </p>
+        </div>
+        <div
+          id="hero-windows"
+          class="platform"
+          role="tabpanel"
+          aria-labelledby="hero-tab-windows"
+          data-os="other"
+          hidden
+        >
+          <!-- windows -->
+          <div class="actions">
+            <a class="button primary" href="%WINDOWS_URL%">
+              <svg
+                aria-hidden="true"
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M12 15V3" />
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <path d="m7 10 5 5 5-5" />
+              </svg>
+              Download for Windows
+            </a>
+            <a class="button secondary" href="https://github.com/cberd1509/xcreenshot"
+              >View source</a
+            >
+          </div>
+          <p class="meta">Version %VERSION% · Windows 10 and 11, 64-bit · Free and open source</p>
+          <!-- /windows -->
+          <!-- no-windows -->
+          <div class="actions">
+            <a class="button primary" href="https://github.com/cberd1509/xcreenshot/releases"
+              >Get notified for Windows</a
+            >
+            <a class="button secondary" href="%DOWNLOAD_URL%">Download for Mac</a>
+          </div>
+          <p class="meta">Mac only for now. The Windows version is in progress.</p>
+          <!-- /no-windows -->
+        </div>
 
         <div class="window">
           <video
@@ -187,7 +255,15 @@
           <p data-os="mac">
             Signed and notarized by Apple. It updates itself, and you can turn that off in Settings.
           </p>
+          <!-- windows -->
+          <p data-os="other" hidden>
+            It updates itself, and you can turn that off in Settings. It isn't code signed yet, so
+            Windows asks before the first run.
+          </p>
+          <!-- /windows -->
+          <!-- no-windows -->
           <p data-os="other" hidden>The Windows version is in progress.</p>
+          <!-- /no-windows -->
         </div>
         <ol
           id="install-mac"
@@ -219,6 +295,19 @@
           data-os="other"
           hidden
         >
+          <!-- windows -->
+          <li>
+            <span class="num">01</span
+            ><span
+              ><a class="strong" href="%WINDOWS_URL%">Download the installer</a> and run it.</span
+            >
+          </li>
+          <li>
+            <span class="num">02</span
+            ><span>If Windows says it protected your PC, click <b>More info › Run anyway</b>.</span>
+          </li>
+          <!-- /windows -->
+          <!-- no-windows -->
           <li>
             <span class="num">01</span
             ><span
@@ -231,6 +320,7 @@
             <span class="num">02</span
             ><span>Once it's out: download the installer from Releases and run it.</span>
           </li>
+          <!-- /no-windows -->
           <li>
             <span class="num">03</span
             ><span
@@ -271,7 +361,8 @@
       <span aria-hidden="true">·</span>
       <a href="https://github.com/cberd1509/xcreenshot/issues">Report a bug</a>
       <span class="spacer"></span>
-      <span>Windows version in progress.</span>
+      <!-- windows --><span>macOS and Windows.</span><!-- /windows -->
+      <!-- no-windows --><span>Windows version in progress.</span><!-- /no-windows -->
     </footer>
   </body>
 </html>

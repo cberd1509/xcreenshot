@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   UNSIGNED_WARNING,
+  WINDOWS_NOTE,
+  addWindows,
   changelogSection,
   main,
   releaseNotes,
@@ -71,13 +73,19 @@ describe('changelogSection', () => {
 })
 
 describe('releaseNotes', () => {
-  it('adds the warning to unsigned builds only', () => {
-    expect(releaseNotes('- a', true)).toBe(`${UNSIGNED_WARNING}\n\n- a\n`)
-    expect(releaseNotes('- a', false)).toBe('- a\n')
+  it('adds the macOS warning to unsigned builds only, and always the Windows note', () => {
+    expect(releaseNotes('- a', true)).toBe(`${UNSIGNED_WARNING}\n\n${WINDOWS_NOTE}\n\n- a\n`)
+    expect(releaseNotes('- a', false)).toBe(`${WINDOWS_NOTE}\n\n- a\n`)
+  })
+
+  it('tells Windows users how to get past SmartScreen', () => {
+    expect(WINDOWS_NOTE).toContain('More info › Run anyway')
   })
 
   it('falls back when the changelog has no entry', () => {
-    expect(releaseNotes('', false)).toBe('No changelog entry for this version.\n')
+    expect(releaseNotes('', false)).toBe(
+      `${WINDOWS_NOTE}\n\nNo changelog entry for this version.\n`,
+    )
   })
 })
 
@@ -115,6 +123,34 @@ describe('tagDownloadUrls', () => {
   })
 })
 
+const SETUP = 'xcreenshot_0.2.0_x64-setup.exe'
+
+describe('addWindows', () => {
+  it('adds the installer under both Windows keys and keeps the macOS entries', () => {
+    const out = addWindows(MANIFEST, 'WINSIG\n', SETUP, REPO, 'v0.2.0')
+    const entry = { signature: 'WINSIG', url: `${DOWNLOAD}/${SETUP}` }
+    expect(out).toEqual({
+      ...MANIFEST,
+      platforms: {
+        ...MANIFEST.platforms,
+        'windows-x86_64': entry,
+        'windows-x86_64-nsis': entry,
+      },
+    })
+  })
+
+  it('keeps the URL when the tag download rewrite runs on it later', () => {
+    const done = tagDownloadUrls(MANIFEST, ASSETS, REPO, 'v0.2.0')
+    const both = addWindows(done, 'WINSIG', SETUP, REPO, 'v0.2.0')
+    expect(tagDownloadUrls(both, [], REPO, 'v0.2.0')).toEqual(both)
+  })
+
+  it('refuses anything but a signed NSIS installer', () => {
+    expect(() => addWindows(MANIFEST, 'S', 'xcreenshot.msi', REPO, 'v0.2.0')).toThrow('NSIS')
+    expect(() => addWindows(MANIFEST, ' \n', SETUP, REPO, 'v0.2.0')).toThrow('empty signature')
+  })
+})
+
 describe('main', () => {
   const dir = mkdtempSync(join(tmpdir(), 'release-'))
   const changelogPath = join(dir, 'CHANGELOG.md')
@@ -122,10 +158,10 @@ describe('main', () => {
 
   it('prints the notes for a version', () => {
     expect(main(['notes', '0.2.0'], changelogPath)).toBe(
-      '### Minor Changes\n\n- abc123: Add the editor.\n',
+      `${WINDOWS_NOTE}\n\n### Minor Changes\n\n- abc123: Add the editor.\n`,
     )
     expect(main(['notes', '0.2.0', '--unsigned'], changelogPath)).toContain(UNSIGNED_WARNING)
-    expect(main(['notes', '0.1.0'], join(dir, 'none.md'))).toBe(
+    expect(main(['notes', '0.1.0'], join(dir, 'none.md'))).toContain(
       'No changelog entry for this version.\n',
     )
   })
@@ -143,9 +179,23 @@ describe('main', () => {
     expect(out.version).toBe('0.2.0')
   })
 
+  it('prints latest.json with the Windows installer added', () => {
+    const manifestPath = join(dir, 'mac.json')
+    const sigPath = join(dir, `${SETUP}.sig`)
+    writeFileSync(manifestPath, JSON.stringify(MANIFEST))
+    writeFileSync(sigPath, 'WINSIG')
+    const out = JSON.parse(main(['add-windows', manifestPath, sigPath, REPO, 'v0.2.0']))
+    expect(out.platforms['windows-x86_64']).toEqual({
+      signature: 'WINSIG',
+      url: `${DOWNLOAD}/${SETUP}`,
+    })
+    expect(out.platforms['darwin-aarch64']).toEqual(MANIFEST.platforms['darwin-aarch64'])
+  })
+
   it('rejects bad arguments', () => {
     expect(() => main([])).toThrow('usage')
     expect(() => main(['notes'])).toThrow('usage')
     expect(() => main(['updater-urls', 'a'])).toThrow('usage')
+    expect(() => main(['add-windows', 'a'])).toThrow('usage')
   })
 })

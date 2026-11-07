@@ -4,7 +4,10 @@
 //     Prints the GitHub Release notes for a version, taken from CHANGELOG.md.
 //   node scripts/release.ts updater-urls <latest.json> <assets.json> <owner/repo> <tag>
 //     Prints latest.json with every download URL pointing at the published tag.
+//   node scripts/release.ts add-windows <latest.json> <installer.exe.sig> <owner/repo> <tag>
+//     Prints latest.json with the Windows installer added next to the macOS entries.
 import { readFileSync } from 'node:fs'
+import { basename } from 'node:path'
 
 export const UNSIGNED_WARNING =
   '> [!WARNING]\n' +
@@ -21,9 +24,15 @@ export function changelogSection(changelog: string, version: string): string {
   return (end === -1 ? rest : rest.slice(0, end)).join('\n').trim()
 }
 
+export const WINDOWS_NOTE =
+  '> [!NOTE]\n' +
+  "> The Windows installer isn't code signed yet. If Windows says it protected your PC, click\n" +
+  '> More info › Run anyway.'
+
 export function releaseNotes(section: string, unsigned: boolean): string {
   const body = section || 'No changelog entry for this version.'
-  return unsigned ? `${UNSIGNED_WARNING}\n\n${body}\n` : `${body}\n`
+  const notes = unsigned ? [UNSIGNED_WARNING, WINDOWS_NOTE, body] : [WINDOWS_NOTE, body]
+  return `${notes.join('\n\n')}\n`
 }
 
 export interface UpdaterManifest {
@@ -41,13 +50,16 @@ export interface ReleaseAsset {
  * latest.json. The app only downloads from `https://github.com/<owner>/<repo>/releases/download/`,
  * so point every platform at the published tag's download URL for the same asset.
  */
+const downloadBase = (repo: string, tag: string) =>
+  `https://github.com/${repo}/releases/download/${encodeURIComponent(tag)}/`
+
 export function tagDownloadUrls(
   manifest: UpdaterManifest,
   assets: ReleaseAsset[],
   repo: string,
   tag: string,
 ): UpdaterManifest {
-  const base = `https://github.com/${repo}/releases/download/${encodeURIComponent(tag)}/`
+  const base = downloadBase(repo, tag)
   const names = new Map(assets.map((asset) => [asset.id, asset.name]))
   const platforms = Object.fromEntries(
     Object.entries(manifest.platforms).map(([platform, entry]) => {
@@ -60,6 +72,33 @@ export function tagDownloadUrls(
   )
   return { ...manifest, platforms }
 }
+
+/** The updater looks for `windows-x86_64-nsis` first, then `windows-x86_64`, like tauri-action. */
+export const WINDOWS_PLATFORMS = ['windows-x86_64', 'windows-x86_64-nsis']
+
+/**
+ * Adds the Windows NSIS installer to the macOS latest.json, pointing at the tag download URL of
+ * `asset` (the updater installs the setup .exe itself). Other platforms are kept as they are.
+ */
+export function addWindows(
+  manifest: UpdaterManifest,
+  signature: string,
+  asset: string,
+  repo: string,
+  tag: string,
+): UpdaterManifest {
+  if (!asset.endsWith('-setup.exe')) throw new Error(`${asset}: not an NSIS installer`)
+  if (!signature.trim()) throw new Error(`${asset}: empty signature`)
+  const entry = {
+    signature: signature.trim(),
+    url: downloadBase(repo, tag) + encodeURIComponent(asset),
+  }
+  const windows = Object.fromEntries(WINDOWS_PLATFORMS.map((platform) => [platform, entry]))
+  return { ...manifest, platforms: { ...manifest.platforms, ...windows } }
+}
+
+const readJson = <T>(path: string) => JSON.parse(readFileSync(path, 'utf8')) as T
+const printJson = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`
 
 function readChangelog(path: string): string {
   try {
@@ -80,13 +119,19 @@ export function main(args: string[], changelogPath = 'CHANGELOG.md'): string {
   }
   if (command === 'updater-urls' && rest.length === 4) {
     const [manifestPath, assetsPath, repo, tag] = rest
-    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as UpdaterManifest
-    const assets = JSON.parse(readFileSync(assetsPath, 'utf8')) as ReleaseAsset[]
-    return `${JSON.stringify(tagDownloadUrls(manifest, assets, repo, tag), null, 2)}\n`
+    const manifest = readJson<UpdaterManifest>(manifestPath)
+    return printJson(tagDownloadUrls(manifest, readJson<ReleaseAsset[]>(assetsPath), repo, tag))
+  }
+  if (command === 'add-windows' && rest.length === 4) {
+    const [manifestPath, sigPath, repo, tag] = rest
+    const manifest = readJson<UpdaterManifest>(manifestPath)
+    const asset = basename(sigPath).replace(/\.sig$/, '')
+    return printJson(addWindows(manifest, readFileSync(sigPath, 'utf8'), asset, repo, tag))
   }
   throw new Error(
     'usage: release.ts notes <version> [--unsigned] | ' +
-      'updater-urls <latest.json> <assets.json> <owner/repo> <tag>',
+      'updater-urls <latest.json> <assets.json> <owner/repo> <tag> | ' +
+      'add-windows <latest.json> <installer.exe.sig> <owner/repo> <tag>',
   )
 }
 
