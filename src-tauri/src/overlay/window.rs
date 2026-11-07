@@ -3,9 +3,10 @@
 //! Hotkey (main thread): claim the [`Phase`], take Esc, start the capture on a worker
 //! thread and place the hidden windows while it runs. Capture done (worker): open the session
 //! and send `overlay:show` with each frame's size. Each window fetches its frame
-//! (`overlay_frame`: a copy of the raw RGBA buffer), draws it and calls `overlay_painted`,
-//! which shows that window. Esc goes to every page (`overlay:escape` with a token); each
-//! answers `overlay_escaped`, saying whether it undid something (a size edit, a selection).
+//! (`overlay_frame`: a copy of the raw RGBA buffer), draws it, waits until it is rendered and
+//! calls `overlay_painted`, which shows that window. Esc goes to every page (`overlay:escape`
+//! with a token); each answers `overlay_escaped`, saying whether it undid something (a size
+//! edit, a selection).
 //! Rust closes when every shown page had nothing to undo, or when no page answers in time.
 //! Copy and save are in `export.rs`. `close_overlay`, closing a window or the watchdog hide
 //! everything and tell the pages to free their frames (`overlay:closed`); calls from a page
@@ -70,6 +71,7 @@ pub(crate) fn phase<R: Runtime>(app: &AppHandle<R>) -> MutexGuard<'_, Phase> {
 /// Shows or hides an overlay window and records which are on screen ([`shown`]).
 fn set_shown<R: Runtime>(window: &WebviewWindow<R>, on: bool) -> tauri::Result<()> {
     if on {
+        reveal(window);
         window.show()?;
     } else {
         window.hide()?;
@@ -256,8 +258,14 @@ fn finish<R: Runtime>(
     let Some(shows) = phase(app).open(session, frames, focus, escape_shortcut, regions) else {
         return;
     };
-    on_main(app, |app| {
+    let displays: Vec<u32> = shows.iter().map(|(d, _)| *d).collect();
+    on_main(app, move |app| {
         sync_escape(app);
+        for d in displays {
+            if let Some(window) = app.get_webview_window(&label(d)) {
+                prepare(&window);
+            }
+        }
     });
     for (display, info) in shows {
         if let Err(e) = app.emit_to(label(display).as_str(), SHOW_EVENT, info) {
@@ -568,6 +576,28 @@ fn build<R: Runtime>(app: &AppHandle<R>, display: u32) -> tauri::Result<WebviewW
     Ok(window)
 }
 
+/// Puts a hidden overlay window on screen fully transparent, so its webview renders the frame
+/// while nothing shows yet: a hidden webview renders nothing, so a window shown as soon as the
+/// page drew would first show what it rendered last (black, or the previous capture). The
+/// page reports the paint once the frame is rendered; [`set_shown`] then makes it opaque.
+/// Main thread only.
+fn prepare<R: Runtime>(window: &WebviewWindow<R>) {
+    #[cfg(all(target_os = "macos", not(test)))]
+    macos::set_opacity(window, false);
+    #[cfg(all(target_os = "windows", not(test)))]
+    win::set_opacity(window, false);
+    let _ = window;
+}
+
+/// Makes a window [`prepare`]d for the paint opaque again.
+fn reveal<R: Runtime>(window: &WebviewWindow<R>) {
+    #[cfg(all(target_os = "macos", not(test)))]
+    macos::set_opacity(window, true);
+    #[cfg(all(target_os = "windows", not(test)))]
+    win::set_opacity(window, true);
+    let _ = window;
+}
+
 /// Window level and Spaces: `always_on_top` alone stays under the menu bar and the Dock.
 #[cfg(all(target_os = "macos", not(test)))]
 mod macos {
@@ -575,22 +605,77 @@ mod macos {
     use objc2_app_kit::{NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior};
     use tauri::{Runtime, WebviewWindow};
 
-    pub fn raise<R: Runtime>(window: &WebviewWindow<R>) {
+    fn ns_window<R: Runtime>(window: &WebviewWindow<R>) -> Option<&NSWindow> {
         if MainThreadMarker::new().is_none() {
-            return log::error!("overlay window level must be set on the main thread");
+            log::error!("overlay windows must be changed on the main thread");
+            return None;
         }
-        let ptr = match window.ns_window() {
-            Ok(ptr) => ptr,
-            Err(e) => return log::error!("no NSWindow for {}: {e}", window.label()),
+        match window.ns_window() {
+            // SAFETY: Tauri returns the live NSWindow of this window, and we are on the main
+            // thread.
+            Ok(ptr) => Some(unsafe { &*ptr.cast::<NSWindow>() }),
+            Err(e) => {
+                log::error!("no NSWindow for {}: {e}", window.label());
+                None
+            }
+        }
+    }
+
+    /// Opaque, or on screen but fully transparent (ordered in without taking focus).
+    pub fn set_opacity<R: Runtime>(window: &WebviewWindow<R>, opaque: bool) {
+        let Some(ns_window) = ns_window(window) else {
+            return;
         };
-        // SAFETY: Tauri returns the live NSWindow of this window, and we are on the main thread.
-        let ns_window = unsafe { &*ptr.cast::<NSWindow>() };
+        ns_window.setAlphaValue(if opaque { 1.0 } else { 0.0 });
+        if !opaque {
+            ns_window.orderFrontRegardless();
+        }
+    }
+
+    pub fn raise<R: Runtime>(window: &WebviewWindow<R>) {
+        let Some(ns_window) = ns_window(window) else {
+            return;
+        };
         // Above the menu bar (24), the Dock (20) and pop-up menus (101).
         ns_window.setLevel(NSScreenSaverWindowLevel);
         // Over full-screen apps too. `visible_on_all_workspaces` already set CanJoinAllSpaces.
         ns_window.setCollectionBehavior(
             ns_window.collectionBehavior() | NSWindowCollectionBehavior::FullScreenAuxiliary,
         );
+    }
+}
+
+#[cfg(all(target_os = "windows", not(test)))]
+mod win {
+    use tauri::{Runtime, WebviewWindow};
+    use windows::Win32::Foundation::COLORREF;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GWL_EXSTYLE, GetWindowLongPtrW, LWA_ALPHA, SW_SHOWNOACTIVATE, SetLayeredWindowAttributes,
+        SetWindowLongPtrW, ShowWindow, WS_EX_LAYERED,
+    };
+
+    /// Opaque, or on screen but fully transparent (a layered window at alpha 0, shown without
+    /// taking focus). Opaque drops the layered style, which costs a copy per frame.
+    pub fn set_opacity<R: Runtime>(window: &WebviewWindow<R>, opaque: bool) {
+        let hwnd = match window.hwnd() {
+            Ok(hwnd) => hwnd,
+            Err(e) => return log::error!("no HWND for {}: {e}", window.label()),
+        };
+        let layered = WS_EX_LAYERED.0 as isize;
+        // SAFETY: Tauri returns the live HWND of this window, and we are on its thread.
+        unsafe {
+            let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            if opaque {
+                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style & !layered);
+                return;
+            }
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | layered);
+            if let Err(e) = SetLayeredWindowAttributes(hwnd, COLORREF(0), 0, LWA_ALPHA) {
+                log::warn!("could not make {} transparent: {e}", window.label());
+                return;
+            }
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
     }
 }
 
@@ -645,14 +730,23 @@ pub(crate) fn overlay_escape<R: Runtime>(app: AppHandle<R>) {
     let _ = escape(&app, ESCAPE_TIMEOUT);
 }
 
-/// The window drew its frame: show it (only if its session is still open), focus the
-/// display under the cursor, and log the time on the first paint.
+/// The window rendered its frame: show it (only if its session is still open), focus the
+/// display under the cursor, and log the time on the first paint. The page calls this only
+/// once its frame is on screen, so the window never shows what the webview drew before.
+/// `rendered` is false if the page gave up waiting for that and the window may flash.
 #[tauri::command]
 pub(crate) fn overlay_painted<R: Runtime>(
     window: WebviewWindow<R>,
     state: tauri::State<'_, Overlay>,
     session: u64,
+    rendered: bool,
 ) {
+    if !rendered {
+        log::warn!(
+            "overlay {} shown before its frame was rendered",
+            window.label()
+        );
+    }
     let Some(display) = display_id(window.label()) else {
         return;
     };
@@ -660,6 +754,8 @@ pub(crate) fn overlay_painted<R: Runtime>(
         return;
     };
     if paint.hidden {
+        // Out of the way of the Save dialog; shown with the others if it is cancelled.
+        let _ = set_shown(&window, false);
         return;
     }
     let app = window.app_handle();
@@ -994,13 +1090,13 @@ pub(crate) mod tests {
         let app = app();
         let h = app.handle();
         let session = open(h, &[1, 2]);
-        overlay_painted(window(h, 1), h.state(), session);
+        overlay_painted(window(h, 1), h.state(), session, true);
         assert!(!phase(h).stalled(session));
         close_overlay(h.clone(), session + 1);
         assert!(is_open(h, session), "another session is left alone");
         close_overlay(h.clone(), session);
         // A late paint from the closed session must not reopen anything.
-        overlay_painted(window(h, 2), h.state(), session);
+        overlay_painted(window(h, 2), h.state(), session, false);
         assert!(is_idle(h));
     }
 
@@ -1079,7 +1175,7 @@ pub(crate) mod tests {
         assert!(is_idle(h));
 
         let session = open(h, &[1]);
-        overlay_painted(window(h, 1), h.state(), session);
+        overlay_painted(window(h, 1), h.state(), session, true);
         rescue(h, session);
         assert!(is_open(h, session), "painted in time");
     }
@@ -1125,7 +1221,7 @@ pub(crate) mod tests {
     pub(crate) fn shown(app: &Handle, ids: &[u32]) -> u64 {
         let session = open(app, ids);
         for &id in ids {
-            overlay_painted(window(app, id), app.state(), session);
+            overlay_painted(window(app, id), app.state(), session, true);
         }
         session
     }
@@ -1187,7 +1283,7 @@ pub(crate) mod tests {
             .build()
             .unwrap();
         assert_eq!(overlay_ready(settings.clone(), h.state()), None);
-        overlay_painted(settings, h.state(), session);
+        overlay_painted(settings, h.state(), session, true);
         assert!(phase(h).stalled(session));
     }
 }
