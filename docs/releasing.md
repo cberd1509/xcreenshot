@@ -62,8 +62,9 @@ workflow (`.github/workflows/windows-test.yml`). Run it from the Actions tab, or
 gh workflow run windows-test.yml -f ref=<branch>
 ```
 
-It builds the NSIS installer from that branch and publishes it as a pre-release named
-`windows-test-<sha>`. A pre-release is never "latest", so `releases/latest`, the macOS updater,
-the README and the landing page are unaffected, and `updater-urls` skips it. The build is
-unsigned (SmartScreen asks once) and has no updater files. Delete old test pre-releases when
-you're done with them.
+It builds the NSIS installer from that branch and uploads it to a **draft** release named
+`windows-test-<sha>`. A draft sends no notifications to watchers, fires no release events (so the
+updater and the landing page are untouched) and is visible only to people with access to the
+repo, who can download the installer from the Releases page. The build is unsigned (SmartScreen
+asks once) and has no updater files. Delete old test drafts when you're done with them; never
+publish one.

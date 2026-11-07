@@ -1,9 +1,9 @@
 name: Windows test build
 
 # Builds the Windows installer from any branch or commit and publishes it as a GitHub
-# pre-release, so it can be tried on a Windows machine without cloning the repo.
-# It is a test build: unsigned (SmartScreen asks once), no updater files, and never "latest",
-# so releases/latest, the macOS updater, the README and the landing page are unaffected.
+# draft release, so it can be tried on a Windows machine without cloning the repo.
+# A draft sends no notifications, fires no release events and is visible only to people with
+# access to the repo. It is a test build: unsigned (SmartScreen asks once), no updater files.
 # Run it from the Actions tab or: gh workflow run windows-test.yml -f ref=<branch>
 
 on:
@@ -45,7 +45,7 @@ jobs:
         shell: bash
         run: pnpm tauri build --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
-      - name: Publish the pre-release
+      - name: Upload the draft
         shell: bash
         run: |
           sha=$(git rev-parse HEAD)
@@ -65,6 +65,6 @@ jobs:
           } > "$notes"
           gh release delete "$tag" --yes --cleanup-tag 2> /dev/null || true
           gh release create "$tag" "$RUNNER_TEMP/$name" \
-            --target "$sha" --prerelease --latest=false \
+            --target "$sha" --draft \
             --title "Windows test build: $REF ($short)" --notes-file "$notes"
-          echo "::notice::Published $tag: https://github.com/$GH_REPO/releases/tag/$tag"
+          echo "::notice::Draft $tag is ready: https://github.com/$GH_REPO/releases"
