@@ -202,9 +202,10 @@ impl Start {
     pub fn of(prefs: Prefs) -> Self {
         // With quick copy on, nothing is restored, but a capture annotated this time may still
         // be remembered.
-        let regions = match prefs.quick_copy {
-            true => Vec::new(),
-            false => prefs.regions,
+        let regions = if prefs.quick_copy {
+            Vec::new()
+        } else {
+            prefs.regions
         };
         Self {
             regions: prefs.remember_region.then_some(regions),

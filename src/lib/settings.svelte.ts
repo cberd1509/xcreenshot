@@ -61,8 +61,10 @@ export async function syncSettings(): Promise<void> {
   show(await invoke<Snapshot>('get_prefs'))
 }
 
-/** The options the overlay may change too (through its own, narrower command). */
-const captureOptions = new Set<keyof Settings>(['rememberRegion', 'magnifier', 'quickCopy'])
+/** The options the overlay may change too (through its own, narrower command): in its ⋯ menu,
+ * and Quick copy's Turn off. */
+const CAPTURE_OPTIONS = ['rememberRegion', 'magnifier', 'quickCopy'] as const
+const captureOptions = new Set<keyof Settings>(CAPTURE_OPTIONS)
 
 /**
  * Changes one setting; `null` resets the shortcut to the default. Rejects with a message to
@@ -79,8 +81,7 @@ export async function setSetting<K extends keyof Settings>(
   )
 }
 
-/** An option the overlay can change: in its ⋯ menu, and Quick copy's Turn off. */
-export type CaptureOption = 'rememberRegion' | 'magnifier' | 'quickCopy'
+export type CaptureOption = (typeof CAPTURE_OPTIONS)[number]
 
 /** The overlay's toggles: like `setSetting`, but a failure is only logged (the overlay keeps
  * showing the saved value). */

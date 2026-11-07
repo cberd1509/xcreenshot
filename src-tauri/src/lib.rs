@@ -137,6 +137,7 @@ pub fn run() {
                 });
             }
             overlay::prewarm(app.handle());
+            toast::prewarm(app.handle());
             permission::on_startup(app.handle());
             updates::start(app.handle(), offer_update);
             share::init(app.handle());
@@ -264,7 +265,7 @@ fn handle(app: &AppHandle, action: Action) {
 
 /// The Settings webview is created on demand and destroyed on close. The only webviews kept
 /// while idle are the hidden overlay windows, prewarmed so the hotkey is fast, and the toast
-/// window once a toast has shown.
+/// window, prewarmed so the first toast builds nothing between captures.
 fn open_settings(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     windows::show_window(app, SETTINGS_WINDOW, WebviewUrl::default(), |b| {
         b.title("xcreenshot Settings")

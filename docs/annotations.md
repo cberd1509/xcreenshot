@@ -166,11 +166,10 @@ invoke('overlay_copy' | 'overlay_save' | 'overlay_share', body, {
 
 - `body` is the layer's `rgba` as a `Uint8Array` (empty without a layer). It reaches Rust as
   `InvokeBody::Raw`, never as JSON, and Rust reads the pixels in place.
-- `json` is `{ session, rect, layer?: { x, y, width, height }, blurs, anchor?, quick? }`. `rect`
-  is the selection in physical px; `layer` is there only when the body has its pixels. `anchor`
-  is the Share button's rect in logical px, for a share only (see `docs/share.md`). `quick: true`
-  marks a quick copy capture (the drag copied at once, with no toolbar), whose region is not
-  remembered.
+- `json` is `{ session, rect, layer?: { x, y, width, height }, blurs, anchor?, remember? }`.
+  `rect` is the selection in physical px; `layer` is there only when the body has its pixels.
+  `anchor` is the Share button's rect in logical px, for a share only (see `docs/share.md`).
+  `remember: false` keeps the region from being remembered: a quick copy sends it.
 
 `overlay/export.rs` parses the request (the body must be exactly `width × height × 4` bytes, and
 there may be at most 256 blurs, each clipped to the selection) and crops the frame. Then `output/compose.rs`:

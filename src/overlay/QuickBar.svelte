@@ -1,6 +1,8 @@
 <script lang="ts">
   import ZapIcon from '@lucide/svelte/icons/zap'
   import * as Tooltip from '$lib/components/ui/tooltip'
+  import { cn } from '$lib/utils'
+  import { PANEL } from './panel'
 
   /** Shown instead of the key hint while quick copy is on: the drag copies at once. */
   let {
@@ -18,7 +20,10 @@
 </script>
 
 <div
-  class="fixed bottom-7 left-1/2 flex -translate-x-1/2 cursor-default items-center gap-3 rounded-[12px] border border-zinc-800 bg-zinc-900/94 py-1.5 pr-1.5 pl-3.5 text-[13px] whitespace-nowrap text-zinc-400 shadow-[0_12px_32px_rgb(0_0_0/0.35)]"
+  class={cn(
+    PANEL,
+    'fixed bottom-7 left-1/2 flex -translate-x-1/2 cursor-default items-center gap-3 rounded-[12px] bg-zinc-900/94 py-1.5 pr-1.5 pl-3.5 text-[13px] whitespace-nowrap text-zinc-400',
+  )}
   role="toolbar"
   aria-label="Quick copy"
   tabindex="-1"

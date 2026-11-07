@@ -1208,13 +1208,24 @@ describe('Overlay', () => {
           session: 9,
           rect: rect200,
           blurs: [],
-          quick: true,
+          remember: false,
         }),
       )
       expect(called('overlay_copy')).toHaveLength(1)
       // No toolbar or annotations meanwhile.
       expect(stages).toHaveLength(0)
       expect(bar()).toBeInTheDocument()
+    })
+
+    it('copies a drag let go while Space moves it', async () => {
+      await quick()
+      fireEvent.pointerDown(overlay(), point({ x: 10, y: 10 }))
+      fireEvent.pointerMove(overlay(), point({ x: 60, y: 40 }))
+      await fireEvent.keyDown(window, { key: ' ' })
+      fireEvent.pointerMove(overlay(), point({ x: 80, y: 50 }))
+      fireEvent.pointerUp(overlay(), point({ x: 80, y: 50 }))
+      await waitFor(() => expect(called('overlay_copy')).toHaveLength(1))
+      expect(output('overlay_copy', 0)).toMatchObject({ remember: false })
     })
 
     it('copies nothing for a click, a cancelled drag or a move', async () => {
@@ -1230,6 +1241,21 @@ describe('Overlay', () => {
       fireEvent.pointerUp(overlay(), point({ x: 30, y: 30 }))
       await tick()
       expect(called('overlay_copy')).toHaveLength(0)
+    })
+
+    it('remembers the region of a save in a quick copy capture', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      finished = (cmd) => {
+        if (cmd === 'overlay_copy') throw new Error('busy')
+        return null
+      }
+      await quick()
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      await waitFor(() => expect(called('overlay_copy')).toHaveLength(1))
+      await userEvent.keyboard(ctrl('s'))
+      await waitFor(() =>
+        expect(output('overlay_save', 0)).toEqual({ session: 9, rect: rect200, blurs: [] }),
+      )
     })
 
     it('keeps the magnifier', async () => {

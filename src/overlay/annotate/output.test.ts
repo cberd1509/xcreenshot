@@ -35,14 +35,14 @@ describe('outputRequest', () => {
     expect(header(r)).toEqual({ session: 3, rect, blurs: [], anchor })
   })
 
-  it('marks a quick copy', () => {
-    expect(header(outputRequest(3, rect, null, { quick: true }))).toEqual({
+  it('says when the region must not be remembered', () => {
+    expect(header(outputRequest(3, rect, null, { remember: false }))).toEqual({
       session: 3,
       rect,
       blurs: [],
-      quick: true,
+      remember: false,
     })
-    expect(header(outputRequest(3, rect, null, { quick: false }))).toEqual({
+    expect(header(outputRequest(3, rect, null, { remember: true }))).toEqual({
       session: 3,
       rect,
       blurs: [],

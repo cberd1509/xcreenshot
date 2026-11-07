@@ -83,6 +83,23 @@ describe('Toasts', () => {
     expect(texts()[2]).toBe('Copied 1260 × 1064 ×3')
   })
 
+  it('keeps the toasts it missed when a newer one arrives first', async () => {
+    let answer: ((missed: ToastEvent[]) => void) | undefined
+    mockIPC(
+      (cmd) => {
+        if (cmd === 'toast_ready') return new Promise((resolve) => (answer = resolve))
+      },
+      { shouldMockEvents: true },
+    )
+    render(Toasts)
+    await settle()
+    await emit('toast:show', { seq: 2, kind: 'saved', file: 'a.png' })
+    await settle()
+    answer!([copied(1), { seq: 2, kind: 'saved', file: 'a.png' }])
+    await settle()
+    expect(texts()).toEqual(['Saved a.png', 'Copied 1260 × 1064'])
+  })
+
   it('shows Shared alone when the service is not known', async () => {
     await mount()
     await emit('toast:show', { seq: 1, kind: 'shared', service: null })

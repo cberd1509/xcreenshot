@@ -286,7 +286,9 @@
     try {
       const session = current
       const marks = await annotator?.exportAnnotations(rect, scale)
-      const { body, headers } = outputRequest(session, rect, marks, { anchor, quick })
+      // A quick copy's region is not remembered.
+      const remember = !(quick && command === 'overlay_copy')
+      const { body, headers } = outputRequest(session, rect, marks, { anchor, remember })
       await invoke(command, body, { headers })
     } catch (e) {
       console.error(`${command} failed`, e)
@@ -372,7 +374,8 @@
   }
 
   function onpointerup() {
-    const drew = drag?.kind === 'draw'
+    // A draw moved with Space held is still a draw.
+    const drew = drag?.kind === 'draw' || (drag?.kind === 'move' && drag.resume?.kind === 'draw')
     drag = null
     // Quick copy: letting go of the drag copies, as Copy does. A click selects nothing.
     if (quick && drew && physical) void finish('overlay_copy', physical)
@@ -563,14 +566,16 @@
   {#if notice}
     <div class={TOAST} role="alert">{notice}</div>
   {/if}
-  {#if quick && !idle}
-    <QuickBar {annotate} {turnOff} />
-  {:else if !idle}
-    <div class="hint" data-testid="hint">
-      {#each hints as [key, action] (key)}
-        <span><b>{key}</b> {action}</span>
-      {/each}
-    </div>
+  {#if !idle}
+    {#if quick}
+      <QuickBar {annotate} {turnOff} />
+    {:else}
+      <div class="hint" data-testid="hint">
+        {#each hints as [key, action] (key)}
+          <span><b>{key}</b> {action}</span>
+        {/each}
+      </div>
+    {/if}
   {/if}
 </div>
 

@@ -53,8 +53,8 @@ pub const HEADER: &str = "x-xcreenshot-output";
 pub const MAX_BLURS: usize = 256;
 
 /// The JSON in [`HEADER`]. `layer` is where the body's pixels go, relative to `rect`; it is
-/// there only when the body has them. `anchor` is the Share button, for a share; `quick` marks
-/// a quick copy capture.
+/// there only when the body has them. `anchor` is the Share button, for a share. `remember` is
+/// `false` for an output whose region must not be remembered (a quick copy).
 #[derive(Debug, Deserialize)]
 struct Head {
     session: u64,
@@ -65,8 +65,12 @@ struct Head {
     blurs: Vec<PixelRect>,
     #[serde(default)]
     anchor: Option<share::Rect>,
-    #[serde(default)]
-    quick: bool,
+    #[serde(default = "yes")]
+    remember: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// A copy, save or share request: the session, the selection in native px, and its
@@ -78,8 +82,8 @@ pub(crate) struct Output<'a> {
     pub rect: PixelRect,
     pub marks: Marks<'a>,
     pub anchor: Option<share::Rect>,
-    /// A quick copy: the drag copied at once. Its region is not remembered.
-    pub quick: bool,
+    /// Whether the region may be remembered (not for a quick copy).
+    pub remember: bool,
 }
 
 fn invalid(e: impl std::fmt::Display) -> CaptureError {
@@ -137,7 +141,7 @@ pub(crate) fn parse<'a>(
         rect: head.rect,
         marks: Marks { layer, blurs },
         anchor: head.anchor,
-        quick: head.quick,
+        remember: head.remember,
     })
 }
 
@@ -203,10 +207,17 @@ async fn copy_with<R: Runtime>(
         remember(region);
     }
     // Only if nothing happened meanwhile: a save started (even cancelled) keeps the overlay.
+    // The toast only with the close: not over a Save dialog, nor under a newer capture.
     let anchor = window.clone();
     on_main(window.app_handle(), move |app| {
-        close_if(app, |phase| phase.copy_may_close(session, saves));
-        toast::show(&anchor, Toast::Copied { width, height });
+        let mut closing = false;
+        close_if(app, |phase| {
+            closing = phase.copy_may_close(session, saves);
+            closing
+        });
+        if closing {
+            toast::show(&anchor, Toast::Copied { width, height });
+        }
     });
     Ok(())
 }
@@ -237,9 +248,10 @@ fn selected_frame<R: Runtime>(
     let mut phase = state.phase();
     let saves = phase.saves(session)?;
     let (frame, density) = phase.image(session, display)?;
-    let region = match out.quick {
-        true => None,
-        false => phase.region(session, display, out.rect),
+    let region = if out.remember {
+        phase.region(session, display, out.rect)
+    } else {
+        None
     };
     Some(Selected {
         display,
@@ -801,7 +813,7 @@ mod tests {
         let session = shown(h, &[1]);
         let state = h.state::<Overlay>();
         let out = Output {
-            quick: true,
+            remember: false,
             ..plain(session, px(1, 0, 2, 2))
         };
         let (c, images) = clipboard(false);
@@ -874,9 +886,10 @@ mod tests {
             Ok(())
         });
         assert_eq!(copy(h, session, px(0, 0, 2, 2), clipboard), Ok(()));
-        // The overlay stays: the user moved on from that copy.
+        // The overlay stays: the user moved on from that copy. No toast either.
         std::thread::sleep(std::time::Duration::from_millis(50));
         assert!(is_open(h, session));
+        assert!(toasts(h).is_empty());
     }
 
     /// Answers the dialog from `answers` (cancel when they run out) and records what it saw.
@@ -961,7 +974,7 @@ mod tests {
             rect,
             marks: Marks::default(),
             anchor: None,
-            quick: false,
+            remember: true,
         }
     }
 
@@ -1585,8 +1598,8 @@ mod tests {
         // An empty body may come as JSON.
         let json = InvokeBody::Json(serde_json::Value::Null);
         assert_eq!(parse(&json, &h).unwrap(), plain(3, px(1, 2, 3, 4)));
-        let quick = r#"{"session":3,"rect":{"x":1,"y":2,"width":3,"height":4},"quick":true}"#;
-        assert!(parse(&body, &headers(quick)).unwrap().quick);
+        let kept = r#"{"session":3,"rect":{"x":1,"y":2,"width":3,"height":4},"remember":false}"#;
+        assert!(!parse(&body, &headers(kept)).unwrap().remember);
     }
 
     #[test]

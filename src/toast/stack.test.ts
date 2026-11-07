@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FADE, SHOWN, detail, look, next, prune, push, up, type ToastEvent } from './stack'
+import { FADE, SHOWN, TITLES, detail, look, next, prune, push, up, type ToastEvent } from './stack'
 
 const copied = (seq: number, width = 1260): ToastEvent => ({
   seq,
@@ -24,12 +24,11 @@ describe('toast stack', () => {
     expect(toast).toEqual({
       id: 4,
       kind: 'saved',
-      title: 'Saved',
       detail: 'shot.png',
       count: 1,
       fades: SHOWN,
     })
-    expect(push([], shared(1), 0)[0].title).toBe('Shared')
+    expect(TITLES).toEqual({ copied: 'Copied', saved: 'Saved', shared: 'Shared' })
   })
 
   it('puts a new toast at the bottom and keeps three', () => {

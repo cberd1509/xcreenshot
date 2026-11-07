@@ -14,7 +14,6 @@ export type Toast = {
   /** Keys the toast on the page; a repeat keeps it. */
   id: number
   kind: Kind
-  title: string
   detail: string
   /** How many times the action ran while this toast was up. */
   count: number
@@ -29,7 +28,8 @@ export const FADE = 200
 /** The most toasts on screen at once. */
 export const MOST = 3
 
-const TITLES: Record<Kind, string> = { copied: 'Copied', saved: 'Saved', shared: 'Shared' }
+/** What each toast says first. */
+export const TITLES: Record<Kind, string> = { copied: 'Copied', saved: 'Saved', shared: 'Shared' }
 
 /** The toast's detail: the size, the file name or the service. */
 export function detail(event: ToastEvent): string {
@@ -55,7 +55,6 @@ export function push(stack: Toast[], event: ToastEvent, now: number): Toast[] {
   const toast: Toast = {
     id: same?.id ?? event.seq,
     kind: event.kind,
-    title: TITLES[event.kind],
     detail: detail(event),
     count: (same?.count ?? 0) + 1,
     fades: now + SHOWN,

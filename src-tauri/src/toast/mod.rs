@@ -1,7 +1,7 @@
 //! Confirmation toasts: "Copied", "Saved" or "Shared" at the bottom of the display the capture
 //! was on, after every finished copy, save and share, with the system screenshot sound.
 //!
-//! One window (`toast.html`), built on the first toast and kept, hidden, between them. It never
+//! One window (`toast.html`), built hidden at startup and shown only while toasts are up. It never
 //! takes focus: it can't become the key window, ignores the mouse, and is shown without
 //! activating the app. The page stacks, counts and fades the toasts (`src/toast/stack.ts`).
 //! Rust numbers them, keeps the ones sent before the page loaded, places the window and hides
@@ -13,7 +13,7 @@ mod sound;
 /// Public to the crate so `generate_handler!` can reach the commands.
 pub(crate) mod window;
 
-pub use window::{Toasts, hide_for_capture, show};
+pub use window::{Toasts, hide_for_capture, prewarm, show};
 
 use crate::capture::Bounds;
 use std::path::Path;

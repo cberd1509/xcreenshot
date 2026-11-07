@@ -3,7 +3,7 @@
   import { invoke } from '@tauri-apps/api/core'
   import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
   import { onMount } from 'svelte'
-  import { look, next, prune, push, up, type Toast, type ToastEvent } from './stack'
+  import { TITLES, look, next, prune, push, up, type Toast, type ToastEvent } from './stack'
 
   /** The confirmation toasts, bottom centre of their window; Rust places the window. */
   let stack = $state<Toast[]>([])
@@ -22,13 +22,17 @@
     else invoke('toast_idle', { seq: newest }).catch((e: unknown) => console.error(e))
   }
 
+  /** The toasts received, by number: the load check and an event may both have one. */
+  const got = new Set<number>()
+
   function add(events: ToastEvent[]) {
-    // Numbers only grow: a toast already shown (the load check and an event both had it) is
-    // skipped.
-    const fresh = events.filter((e) => e.seq > newest)
+    // Skips a toast already shown. The load check's answer can come after a newer event, so
+    // its toasts are not dropped for being older.
+    const fresh = events.filter((e) => !got.has(e.seq))
     if (!fresh.length) return
     for (const event of fresh) {
-      newest = event.seq
+      got.add(event.seq)
+      newest = Math.max(newest, event.seq)
       stack = push(stack, event, Date.now())
     }
     tick()
@@ -70,7 +74,7 @@
       <span class="flex size-5 shrink-0 items-center justify-center rounded-full bg-zinc-50">
         <CheckIcon class="size-3 text-zinc-950" strokeWidth={3} aria-hidden="true" />
       </span>
-      <b class="font-semibold text-zinc-50">{toast.title}</b>
+      <b class="font-semibold text-zinc-50">{TITLES[toast.kind]}</b>
       {#if toast.detail}
         <span class="truncate font-mono text-xs">{toast.detail}</span>
       {/if}

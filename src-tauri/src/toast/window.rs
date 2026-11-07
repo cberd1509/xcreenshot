@@ -78,16 +78,13 @@ fn display_of<R: Runtime>(window: &WebviewWindow<R>) -> Option<(Bounds, f64)> {
     let at = window.outer_position().ok()?;
     let size = window.outer_size().ok()?;
     if cfg!(target_os = "windows") {
-        let (x, y, width, height) = (at.x, at.y, size.width, size.height);
-        return Some((
-            Bounds {
-                x,
-                y,
-                width,
-                height,
-            },
-            scale,
-        ));
+        let bounds = Bounds {
+            x: at.x,
+            y: at.y,
+            width: size.width,
+            height: size.height,
+        };
+        return Some((bounds, scale));
     }
     let at = at.to_logical::<f64>(scale);
     let size = size.to_logical::<f64>(scale);
@@ -100,7 +97,15 @@ fn display_of<R: Runtime>(window: &WebviewWindow<R>) -> Option<(Bounds, f64)> {
     Some((bounds, 1.0))
 }
 
-/// The toast window, built hidden the first time. It can't take focus or clicks.
+/// Builds the hidden toast window at startup, so the first toast never builds a webview on the
+/// main thread between two captures.
+pub fn prewarm<R: Runtime>(app: &AppHandle<R>) {
+    if let Err(e) = window(app) {
+        log::error!("could not open the toast window: {e}");
+    }
+}
+
+/// The toast window, built hidden if it isn't yet. It can't take focus or clicks.
 fn window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<WebviewWindow<R>> {
     if let Some(window) = app.get_webview_window(LABEL) {
         return Ok(window);
@@ -192,12 +197,9 @@ mod native {
             log::error!("the toast window must be changed on the main thread");
             return None;
         }
-        let ptr = window
-            .ns_window()
+        crate::macos::ns_window(window)
             .inspect_err(|e| log::error!("no NSWindow for the toasts: {e}"))
-            .ok()?;
-        // SAFETY: Tauri returns the live NSWindow of this window, and we are on the main thread.
-        Some(unsafe { &*ptr.cast::<NSWindow>() })
+            .ok()
     }
 
     /// Above the Dock and the menu bar, on every Space and over full-screen apps, out of the
@@ -317,6 +319,16 @@ mod tests {
         assert_eq!(h.webview_windows().len(), 2, "one toast window, reused");
         toast_idle(window, h.state(), 1);
         assert!(h.state::<Toasts>().queue().clear(), "toast 2 is still up");
+    }
+
+    #[test]
+    fn prewarm_builds_the_window_once() {
+        let app = app();
+        let h = app.handle();
+        prewarm(h);
+        prewarm(h);
+        assert!(h.get_webview_window(LABEL).is_some());
+        assert_eq!(h.webview_windows().len(), 1);
     }
 
     #[test]
