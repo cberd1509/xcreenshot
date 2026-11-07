@@ -207,11 +207,16 @@ async fn copy_with<R: Runtime>(
         remember(region);
     }
     // Only if nothing happened meanwhile: a save started (even cancelled) keeps the overlay.
-    // The clipboard changed either way, so the copy always gets its toast.
+    // The clipboard changed either way, so the copy gets its toast even if Esc ended its
+    // capture, unless a newer one started: its frame may not be taken yet, and the toast would
+    // be in it.
     let anchor = window.clone();
     on_main(window.app_handle(), move |app| {
+        let newer = phase(app).session().is_some_and(|s| s != session);
         close_if(app, |phase| phase.copy_may_close(session, saves));
-        toast::show(&anchor, Toast::Copied { width, height });
+        if !newer {
+            toast::show(&anchor, Toast::Copied { width, height });
+        }
     });
     Ok(())
 }
@@ -908,6 +913,29 @@ mod tests {
             height: 2,
         };
         assert_eq!(toasts(h), [copied]);
+    }
+
+    #[test]
+    fn a_copy_shows_no_toast_once_a_newer_capture_started() {
+        let app = app();
+        let h = app.handle();
+        let session = shown(h, &[1]);
+        // Esc, then the hotkey again, while the clipboard works: the new frame may not be taken.
+        let handle = h.clone();
+        let clipboard: Clipboard = Box::new(move |_: &RgbaImage, _| {
+            let mut phase = phase(&handle);
+            *phase = super::super::Phase::Idle;
+            assert!(phase.begin(session + 1, Instant::now()));
+            Ok(())
+        });
+        assert_eq!(copy(h, session, px(0, 0, 2, 2), clipboard), Ok(()));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(toasts(h).is_empty());
+        assert_eq!(
+            phase(h).session(),
+            Some(session + 1),
+            "the new capture goes on"
+        );
     }
 
     /// Answers the dialog from `answers` (cancel when they run out) and records what it saw.
