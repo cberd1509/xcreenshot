@@ -106,13 +106,22 @@ fn closed<R: Runtime>(app: &AppHandle<R>) {
 }
 
 /// The window's events: closing it records onboarding, and forgets a try for the next window.
-fn on_event<R: Runtime>(app: &AppHandle<R>, event: &WindowEvent) {
-    if matches!(event, WindowEvent::Destroyed) {
-        if let Some(tried) = app.try_state::<Tried>() {
-            tried.0.store(false, Ordering::Relaxed);
-        }
-        closed(app);
+/// Recording runs off the main thread: the prefs lock can be held by a shortcut change that
+/// waits for the main thread. Returns that task, for tests.
+fn on_event<R: Runtime>(
+    app: &AppHandle<R>,
+    event: &WindowEvent,
+) -> Option<tauri::async_runtime::JoinHandle<()>> {
+    if !matches!(event, WindowEvent::Destroyed) {
+        return None;
     }
+    if let Some(tried) = app.try_state::<Tried>() {
+        tried.0.store(false, Ordering::Relaxed);
+    }
+    let handle = app.clone();
+    Some(tauri::async_runtime::spawn_blocking(move || {
+        closed(&handle)
+    }))
 }
 
 /// A capture ended while the window was open, kept so the page's "Try it" box can't miss it
@@ -133,7 +142,9 @@ fn watch<R: Runtime>(app: &AppHandle<R>, window: &WebviewWindow<R>) {
         app.state::<Tried>().0.store(false, Ordering::Relaxed);
     }
     let handle = app.clone();
-    window.on_window_event(move |event| on_event(&handle, event));
+    window.on_window_event(move |event| {
+        on_event(&handle, event);
+    });
 }
 
 /// Whether a capture ended since the window opened, for a page that just loaded.
@@ -191,9 +202,10 @@ fn claim_print_screen<R: Runtime>(
 }
 
 /// Whether Snipping Tool keeps xcreenshot off PrintScreen; with `claim`, switches to it once
-/// it doesn't (see [`claim_print_screen`]).
+/// it doesn't (see [`claim_print_screen`]). Async, so it runs off the main thread: a
+/// shortcut change holding the prefs lock may be waiting for it.
 #[tauri::command]
-pub fn onboarding_print_screen<R: Runtime>(app: AppHandle<R>, claim: bool) -> bool {
+pub async fn onboarding_print_screen<R: Runtime>(app: AppHandle<R>, claim: bool) -> bool {
     claim_print_screen(
         &app,
         app.global_shortcut(),
@@ -219,6 +231,7 @@ mod tests {
     use crate::prefs::tests::FakeStorage;
     use crate::print_screen::tests::{OFF, ON};
     use crate::shortcut::{self, tests::FakeRegistrar};
+    use tauri::async_runtime::block_on;
     use tauri::test::{MockRuntime, mock_builder, mock_context, noop_assets};
 
     #[test]
@@ -356,16 +369,16 @@ mod tests {
         assert_eq!(prefs::load(h).onboarded, Some(false));
         // The window's own event handler (the mock runtime sends none) records the close, and
         // only a close.
-        on_event(h, &WindowEvent::Focused(false));
+        assert!(on_event(h, &WindowEvent::Focused(false)).is_none());
         assert_eq!(prefs::load(h).onboarded, Some(false));
-        on_event(h, &WindowEvent::Destroyed);
+        block_on(on_event(h, &WindowEvent::Destroyed).unwrap()).unwrap();
         assert_eq!(
             prefs::load(h).onboarded,
             Some(false),
             "the shortcut isn't registered"
         );
         h.state::<Registered>().set("Alt+S", true);
-        on_event(h, &WindowEvent::Destroyed);
+        block_on(on_event(h, &WindowEvent::Destroyed).unwrap()).unwrap();
         assert_eq!(prefs::load(h).onboarded, Some(granted));
         // Done: shown again only without the permission.
         assert_eq!(on_startup(h), !granted);
@@ -382,7 +395,7 @@ mod tests {
         tauri::Emitter::emit(h, CAPTURE_CLOSED, ()).unwrap();
         assert!(onboarding_tried(h.clone()));
         // Closing the window forgets it, before any next window loads.
-        on_event(h, &WindowEvent::Destroyed);
+        block_on(on_event(h, &WindowEvent::Destroyed).unwrap()).unwrap();
         assert!(!onboarding_tried(h.clone()));
         tauri::Emitter::emit(h, CAPTURE_CLOSED, ()).unwrap();
         // A new window starts over (the mock runtime can't destroy one, so watch it again).

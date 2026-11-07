@@ -347,12 +347,13 @@ fn end_if<R: Runtime>(
     app: &AppHandle<R>,
     ok: impl FnOnce(&mut Phase) -> bool,
 ) -> Option<focus::Front> {
-    let before = {
+    let (before, shown) = {
         let mut phase = phase(app);
         if !ok(&mut phase) {
             return None;
         }
-        phase.end()
+        let shown = matches!(*phase, Phase::Open(_));
+        (phase.end(), shown)
     };
     sync_escape(app);
     hide(app);
@@ -368,11 +369,9 @@ fn end_if<R: Runtime>(
     // A notice hidden for the capture comes back after a share too; only giving focus back
     // (in `close_if`) is skipped. First, so a notice shown again counts as an open window.
     crate::notice::show_after_capture(app);
-    // For any page that waits for a capture to end (onboarding's "Try it"). Only a close
-    // that ended a capture counts.
-    if before.is_some()
-        && let Err(e) = app.emit(CAPTURE_CLOSED, ())
-    {
+    // For any page that waits for a capture to end (onboarding's "Try it"). Only a capture
+    // that was shown counts, not one that failed while capturing.
+    if shown && let Err(e) = app.emit(CAPTURE_CLOSED, ()) {
         log::warn!("could not send {CAPTURE_CLOSED}: {e}");
     }
     // Last, so a waiting update restart sees the overlay gone.
@@ -977,9 +976,16 @@ pub(crate) mod tests {
     fn a_failed_capture_closes_the_overlay() {
         let app = app();
         let h = app.handle();
+        let ended = std::sync::Arc::new(AtomicU64::new(0));
+        let count = ended.clone();
+        tauri::Listener::listen_any(h, CAPTURE_CLOSED, move |_| {
+            count.fetch_add(1, Ordering::Relaxed);
+        });
         let (_, release) = press(h, &[1]);
         release.send(false).unwrap();
         wait_until("the overlay to close", || is_idle(h));
+        let failed = ended.load(Ordering::Relaxed);
+        assert_eq!(failed, 0, "nothing was shown, so nothing was tried");
         open(h, &[1]);
     }
 
