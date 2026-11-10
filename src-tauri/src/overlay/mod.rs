@@ -131,7 +131,7 @@ pub enum Phase {
     Capturing {
         session: u64,
         started: Instant,
-        /// The app in front at the hotkey, to hand focus back to on close.
+        /// Who was in front at the hotkey, to decide where focus goes on close.
         front: Front,
     },
     Open(Session),
@@ -215,15 +215,17 @@ impl Phase {
         *self = Phase::Capturing {
             session,
             started,
-            front: Front::Unknown,
+            front: Front::Other,
         };
         true
     }
 
-    /// Records the app in front for the capture under way.
+    /// Records who was in front for the capture under way, which may have opened already.
     pub fn set_front(&mut self, app: Front) {
-        if let Phase::Capturing { front, .. } = self {
-            *front = app;
+        match self {
+            Phase::Idle => {}
+            Phase::Capturing { front, .. } => *front = app,
+            Phase::Open(s) => s.front = app,
         }
     }
 
@@ -682,15 +684,20 @@ pub(crate) mod tests {
     fn the_app_in_front_lasts_from_the_hotkey_to_the_close() {
         let mut p = Phase::default();
         assert_eq!(p.front(), None);
-        p.set_front(Front::Us);
+        let us = Front::Us { switches: 3 };
+        p.set_front(us);
         assert_eq!(p.front(), None, "nothing to record it for");
         assert!(p.begin(1, Instant::now()));
-        assert_eq!(p.front(), Some(Front::Unknown));
-        p.set_front(Front::Us);
+        assert_eq!(p.front(), Some(Front::Other));
+        p.set_front(us);
         p.open(1, vec![frame(1, 4, 2)], None, true, Some(&[]), false)
             .unwrap();
-        assert_eq!(p.front(), Some(Front::Us));
-        assert_eq!(p.end(), Some(Front::Us));
+        assert_eq!(p.front(), Some(us));
+        // Recorded after a fast capture has opened the session.
+        p.set_front(Front::Other);
+        assert_eq!(p.front(), Some(Front::Other));
+        p.set_front(us);
+        assert_eq!(p.end(), Some(us));
         assert_eq!((p.front(), p.end()), (None, None));
     }
 

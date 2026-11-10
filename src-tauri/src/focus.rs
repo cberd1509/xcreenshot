@@ -1,42 +1,88 @@
-//! Where focus goes when the overlay or a notice closes. Each records the app that was in front
-//! ([`frontmost`]); closing hands focus back to it ([`hand_back`]). The decisions are
-//! [`handback`] and [`Focus::hand_back`]; the AppKit calls live in `macos.rs`, behind [`Apps`]
-//! so tests can see which ran. Only macOS manages a [`Focus`]; elsewhere the system moves focus
-//! itself when a window hides.
-#![cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+//! Where focus goes when the overlay or a notice closes. [`Focus`] follows the apps that come
+//! to the front ([`Focus::activated`], fed by [`watch`]) and keeps the last one that wasn't
+//! xcreenshot. A capture or a notice records whether xcreenshot was in front as it began
+//! ([`frontmost`]); closing hands focus back to that last app ([`hand_back`]). So a notice
+//! answered hours later goes back to the app the user just left, not the one in front when it
+//! opened. The decisions are [`handback`] and [`Focus::hand_back`]; the system calls sit behind
+//! [`Apps`] so tests can see which ran: AppKit on macOS (`macos.rs`), the foreground window on
+//! Windows (`win` below). Elsewhere no [`Focus`] is managed and the system moves focus itself
+//! when a window hides.
+#![cfg_attr(
+    not(any(target_os = "macos", target_os = "windows", test)),
+    allow(dead_code)
+)]
 
 use crate::windows;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use tauri::{AppHandle, Manager, Runtime};
 
-/// One launch of an app: a pid can be reused by a later app, a launch date can't. Only macOS
-/// reads one.
+/// One launch of an app: a pid can be reused by a later app, a launch date can't.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AppId {
     pub pid: i32,
-    /// Seconds since 1970; `None` for apps not launched through LaunchServices.
+    /// Seconds since 1970; `None` for apps not launched through LaunchServices on macOS, or
+    /// when Windows won't say.
     pub launched: Option<f64>,
+    /// The window that was in front (an `HWND`), to raise again. Windows only: macOS activates
+    /// whole apps.
+    pub window: Option<isize>,
 }
 
-/// The app that was in front when the capture started or the notice opened.
+impl AppId {
+    /// Whether `now` is the same launch as this one; its window may differ. Never for an app
+    /// with no launch date: its pid may have been reused.
+    fn same_launch(&self, now: &AppId) -> bool {
+        self.launched.is_some() && self.pid == now.pid && self.launched == now.launched
+    }
+}
+
+/// Who was in front when the capture started or the notice opened.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Front {
-    /// xcreenshot itself (the capture started from Settings, say).
-    Us,
-    Other(AppId),
-    /// AppKit could not say, or nothing was recorded.
+    /// xcreenshot itself (the capture started from Settings, say), when other apps had come to
+    /// the front `switches` times.
+    Us { switches: u64 },
+    /// Another app, or none we know of.
     #[default]
-    Unknown,
+    Other,
 }
 
-impl Front {
-    /// Classifies the app in front against our own pid.
-    pub fn of(front: Option<AppId>, ours: u32) -> Self {
-        match front {
-            Some(app) if u32::try_from(app.pid).is_ok_and(|p| p == ours) => Self::Us,
-            Some(app) => Self::Other(app),
-            None => Self::Unknown,
+/// What [`Focus`] has seen of the apps in front.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Seen {
+    /// Whether xcreenshot is the app in front now.
+    us_in_front: bool,
+    /// The last app in front that wasn't xcreenshot: where focus goes back to.
+    last: Option<AppId>,
+    /// How many times another app came to the front.
+    switches: u64,
+}
+
+impl Seen {
+    /// `app` came to the front; `ours` is our pid.
+    fn activated(&mut self, app: AppId, ours: u32) {
+        self.us_in_front = is_ours(&app, ours);
+        if !self.us_in_front {
+            self.last = Some(app);
+            self.switches += 1;
         }
     }
+
+    /// Who is in front.
+    fn front(&self) -> Front {
+        if self.us_in_front {
+            Front::Us {
+                switches: self.switches,
+            }
+        } else {
+            Front::Other
+        }
+    }
+}
+
+/// No pid (-1) is never ours.
+fn is_ours(app: &AppId, ours: u32) -> bool {
+    u32::try_from(app.pid).is_ok_and(|p| p == ours)
 }
 
 /// What to do with focus once the overlay or a notice is hidden.
@@ -44,20 +90,23 @@ impl Front {
 pub enum Handback {
     /// Leave it with our open window (Settings): the user started there.
     Keep,
-    /// Hide xcreenshot, so macOS gives focus to the app behind it.
+    /// Hide xcreenshot, so the system gives focus to the app behind it.
     Hide,
-    /// Activate the previous app: one of our windows is open, so staying active would bring it
-    /// to the front.
+    /// Activate the last app: one of our windows is open, so staying active would bring it to
+    /// the front.
     Activate(AppId),
 }
 
 /// `window_open` says whether one of our other windows (Settings, a notice) is on screen.
-pub fn handback(before: Front, window_open: bool) -> Handback {
-    match (before, window_open) {
-        (Front::Us, true) => Handback::Keep,
-        (Front::Other(app), true) => Handback::Activate(app),
+pub fn handback(before: Front, seen: &Seen, window_open: bool) -> Handback {
+    if !window_open {
+        return Handback::Hide;
+    }
+    match before {
+        // Still where the user started: no other app came up since.
+        Front::Us { switches } if switches == seen.switches => Handback::Keep,
         // Hiding beats leaving Settings in front of an app we can't name.
-        (Front::Unknown, true) | (_, false) => Handback::Hide,
+        _ => seen.last.map_or(Handback::Hide, Handback::Activate),
     }
 }
 
@@ -66,50 +115,75 @@ pub trait Apps: Send + Sync {
     fn frontmost(&self) -> Option<AppId>;
     /// The app running as `pid` now, if any.
     fn running(&self, pid: i32) -> Option<AppId>;
-    /// Asks `app` to come to the front; `false` if that launch is gone or macOS refused.
+    /// Asks `app` to come to the front; `false` if that launch is gone or the system refused.
     fn activate(&self, app: &AppId) -> bool;
     /// Hides xcreenshot.
     fn hide(&self);
 }
 
-/// Hands focus back after a capture or a notice; managed by the app on macOS.
-pub struct Focus(Box<dyn Apps>);
+/// Follows the app in front and hands focus back after a capture or a notice; managed by the
+/// app on macOS and Windows.
+pub struct Focus {
+    apps: Box<dyn Apps>,
+    seen: Mutex<Seen>,
+}
 
 impl Focus {
+    /// Starts from the app in front now.
     pub fn new(apps: impl Apps + 'static) -> Self {
-        Self(Box::new(apps))
+        let focus = Self {
+            apps: Box::new(apps),
+            seen: Mutex::default(),
+        };
+        if let Some(app) = focus.apps.frontmost() {
+            focus.activated(app);
+        }
+        focus
     }
 
-    /// AppKit, on macOS.
-    #[cfg(all(target_os = "macos", not(test)))]
+    /// AppKit on macOS, the foreground window on Windows.
+    #[cfg(all(any(target_os = "macos", target_os = "windows"), not(test)))]
     pub fn os() -> Self {
         Self::new(Os)
     }
 
+    /// `app` came to the front.
+    pub fn activated(&self, app: AppId) {
+        self.seen().activated(app, std::process::id());
+    }
+
+    fn seen(&self) -> MutexGuard<'_, Seen> {
+        self.seen.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     fn hand_back(&self, before: Front, window_open: bool) {
-        let app = match handback(before, window_open) {
+        // Copied, so the lock isn't held while another app activates.
+        let seen = *self.seen();
+        let app = match handback(before, &seen, window_open) {
             Handback::Keep => return,
-            Handback::Hide => return self.0.hide(),
+            Handback::Hide => return self.apps.hide(),
             Handback::Activate(app) => app,
         };
         // Only the same launch: its pid may now belong to another app.
-        let same = app.launched.is_some() && self.0.running(app.pid) == Some(app);
+        let same = self
+            .apps
+            .running(app.pid)
+            .is_some_and(|now| app.same_launch(&now));
         if !same {
-            log::info!("the app in front before the capture has quit; hiding xcreenshot");
-            self.0.hide();
-        } else if !self.0.activate(&app) {
-            log::info!("macOS did not activate the previous app; hiding xcreenshot");
-            self.0.hide();
+            log::info!("the last app the user was in has quit");
+            self.apps.hide();
+        } else if !self.apps.activate(&app) {
+            log::info!("the system did not activate the last app the user was in");
+            self.apps.hide();
         }
     }
 }
 
-/// The app in front right now. Read on the hotkey or as a notice opens, before its window takes
-/// focus. Main thread only.
+/// Who is in front now, as last seen: no system call, so it costs nothing on the hotkey. Read
+/// before the capture's or the notice's window takes focus. Main thread only.
 pub fn frontmost<R: Runtime>(app: &AppHandle<R>) -> Front {
-    app.try_state::<Focus>().map_or(Front::Unknown, |focus| {
-        Front::of(focus.0.frontmost(), std::process::id())
-    })
+    app.try_state::<Focus>()
+        .map_or(Front::Other, |focus| focus.seen().front())
 }
 
 /// Gives focus back after a capture or a notice, once its windows are hidden; `closing` is a
@@ -120,7 +194,45 @@ pub fn hand_back<R: Runtime>(app: &AppHandle<R>, before: Front, closing: Option<
     }
 }
 
-#[cfg(all(target_os = "macos", not(test)))]
+/// Starts following the apps that come to the front. Main thread, once, after [`Focus`] is
+/// managed.
+#[cfg(all(any(target_os = "macos", target_os = "windows"), not(test)))]
+pub fn watch<R: Runtime>(app: &AppHandle<R>) {
+    let handle = app.clone();
+    let activated = move |id| handle.state::<Focus>().activated(id);
+    #[cfg(target_os = "macos")]
+    crate::macos::on_activate(activated);
+    #[cfg(target_os = "windows")]
+    win::on_activate(activated);
+}
+
+/// Seconds since 1970 from a Windows `FILETIME`: 100 ns ticks since 1601.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn unix_seconds(filetime: u64) -> f64 {
+    const TICKS_TO_1970: u64 = 116_444_736_000_000_000;
+    filetime.saturating_sub(TICKS_TO_1970) as f64 / 1e7
+}
+
+/// Windows window classes the shell brings to the front for a moment: the Alt-Tab switcher and
+/// the tray overflow. With the taskbars and the desktop, focus never goes back to them.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const WINDOWS_PASSING: [&str; 4] = [
+    "MultitaskingViewFrame",
+    "XamlExplorerHostIslandWindow",
+    "NotifyIconOverflowWindow",
+    "TopLevelWindowForOverflowXamlIsland",
+];
+
+/// Whether focus may go back to a Windows window of `class`: not the shell's, and not a tool
+/// window (a palette or a tray pop-up).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn returns_to(class: &str, tool_window: bool) -> bool {
+    !tool_window
+        && !crate::pick::WINDOWS_SHELL.contains(&class)
+        && !WINDOWS_PASSING.contains(&class)
+}
+
+#[cfg(all(any(target_os = "macos", target_os = "windows"), not(test)))]
 struct Os;
 
 #[cfg(all(target_os = "macos", not(test)))]
@@ -139,6 +251,170 @@ impl Apps for Os {
     }
 }
 
+#[cfg(all(target_os = "windows", not(test)))]
+impl Apps for Os {
+    fn frontmost(&self) -> Option<AppId> {
+        win::frontmost()
+    }
+    fn running(&self, pid: i32) -> Option<AppId> {
+        win::running(pid)
+    }
+    fn activate(&self, app: &AppId) -> bool {
+        win::activate(app)
+    }
+    /// Nothing to do: Windows gives focus to the window behind once ours hide.
+    fn hide(&self) {}
+}
+
+/// The foreground window and its process, on Windows.
+#[cfg(all(target_os = "windows", not(test)))]
+mod win {
+    use super::{AppId, returns_to, unix_seconds};
+    use ::windows::Win32::Foundation::{CloseHandle, FILETIME, HWND};
+    use ::windows::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use ::windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
+    use ::windows::Win32::UI::WindowsAndMessaging::{
+        EVENT_SYSTEM_FOREGROUND, GWL_EXSTYLE, GetClassNameW, GetForegroundWindow, GetWindowLongW,
+        GetWindowThreadProcessId, OBJID_WINDOW, SetForegroundWindow, WINEVENT_OUTOFCONTEXT,
+        WS_EX_TOOLWINDOW,
+    };
+    use std::ffi::c_void;
+    use std::sync::OnceLock;
+
+    type Activated = Box<dyn Fn(AppId) + Send + Sync>;
+
+    /// Called with each window that comes to the front.
+    static ACTIVATED: OnceLock<Activated> = OnceLock::new();
+
+    pub(super) fn frontmost() -> Option<AppId> {
+        app_of(unsafe { GetForegroundWindow() })
+    }
+
+    /// The process that owns `hwnd`, with `hwnd` to raise again; `None` for a shell window
+    /// focus shouldn't go back to (see [`returns_to`]).
+    fn app_of(hwnd: HWND) -> Option<AppId> {
+        if hwnd.is_invalid() {
+            return None;
+        }
+        let pid = owner(hwnd)?;
+        let window = Some(hwnd.0 as isize);
+        // Our own windows only need the pid: no process lookup on every overlay focus.
+        if u32::try_from(pid).is_ok_and(|p| p == std::process::id()) {
+            return Some(AppId {
+                pid,
+                launched: None,
+                window,
+            });
+        }
+        let mut class = [0u16; 64];
+        // SAFETY: these calls only read `hwnd`; `class` outlives the call.
+        let (len, ex_style) = unsafe {
+            let len = GetClassNameW(hwnd, &mut class);
+            (len, GetWindowLongW(hwnd, GWL_EXSTYLE) as u32)
+        };
+        let class = String::from_utf16_lossy(&class[..usize::try_from(len).unwrap_or(0)]);
+        if !returns_to(&class, ex_style & WS_EX_TOOLWINDOW.0 != 0) {
+            return None;
+        }
+        Some(AppId {
+            window,
+            ..running(pid)?
+        })
+    }
+
+    /// The pid of the process that owns `hwnd`.
+    fn owner(hwnd: HWND) -> Option<i32> {
+        let mut pid = 0u32;
+        // SAFETY: `pid` outlives the call; a stale `hwnd` only makes it return 0.
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+        i32::try_from(pid).ok().filter(|&p| p != 0)
+    }
+
+    /// `pid`'s app, with no launch date if Windows won't open the process (a protected one, or
+    /// one that quit): still an app the user went to, but never one to activate.
+    pub(super) fn running(pid: i32) -> Option<AppId> {
+        let id = u32::try_from(pid).ok()?;
+        Some(AppId {
+            pid,
+            launched: launched(id),
+            window: None,
+        })
+    }
+
+    /// When process `pid` started, in seconds since 1970.
+    fn launched(pid: u32) -> Option<f64> {
+        // SAFETY: plain calls on a handle we own and close.
+        unsafe {
+            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+            let [mut created, mut exited, mut kernel, mut user] = [FILETIME::default(); 4];
+            let ok =
+                GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user).is_ok();
+            let _ = CloseHandle(process);
+            ok.then(|| {
+                let ticks =
+                    (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime);
+                unix_seconds(ticks)
+            })
+        }
+    }
+
+    /// Raises `app`'s window, if it is still that app's.
+    pub(super) fn activate(app: &AppId) -> bool {
+        let Some(window) = app.window else {
+            return false;
+        };
+        let hwnd = HWND(window as *mut c_void);
+        // A closed window's handle can be reused by another app's.
+        if owner(hwnd) != Some(app.pid) {
+            return false;
+        }
+        // SAFETY: a plain call; Windows checks the handle.
+        unsafe { SetForegroundWindow(hwnd) }.as_bool()
+    }
+
+    /// Calls `f` with each window that comes to the front, on this thread's message loop
+    /// (the main thread's), for as long as the app runs.
+    pub(super) fn on_activate(f: impl Fn(AppId) + Send + Sync + 'static) {
+        if ACTIVATED.set(Box::new(f)).is_err() {
+            return log::error!("already following the foreground window");
+        }
+        // SAFETY: the hook is never removed and calls back on this thread only.
+        let hook = unsafe {
+            SetWinEventHook(
+                EVENT_SYSTEM_FOREGROUND,
+                EVENT_SYSTEM_FOREGROUND,
+                None,
+                Some(foreground_changed),
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT,
+            )
+        };
+        if hook.is_invalid() {
+            log::error!("could not follow the foreground window");
+        }
+    }
+
+    unsafe extern "system" fn foreground_changed(
+        _hook: HWINEVENTHOOK,
+        _event: u32,
+        hwnd: HWND,
+        object: i32,
+        _child: i32,
+        _thread: u32,
+        _time: u32,
+    ) {
+        if object != OBJID_WINDOW.0 {
+            return;
+        }
+        if let (Some(f), Some(app)) = (ACTIVATED.get(), app_of(hwnd)) {
+            f(app);
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -147,7 +423,22 @@ pub(crate) mod tests {
     pub(crate) const SAFARI: AppId = AppId {
         pid: 7,
         launched: Some(1.0),
+        window: None,
     };
+
+    pub(crate) const MAIL: AppId = AppId {
+        pid: 8,
+        launched: Some(2.0),
+        window: None,
+    };
+
+    /// xcreenshot itself.
+    pub(crate) fn us() -> AppId {
+        AppId {
+            pid: std::process::id() as i32,
+            ..SAFARI
+        }
+    }
 
     /// Fake apps: `front` is in front, `running` are running, and activation works if
     /// `activates`. Records each call it gets.
@@ -199,42 +490,70 @@ pub(crate) mod tests {
         fake.calls()
     }
 
+    /// What was seen after `apps` came to the front in turn.
+    fn seen(apps: &[AppId]) -> Seen {
+        let mut seen = Seen::default();
+        for &app in apps {
+            seen.activated(app, 42);
+        }
+        seen
+    }
+
     #[test]
     fn our_own_pid_is_us() {
-        assert_eq!(Front::of(Some(SAFARI), 7), Front::Us);
-        assert_eq!(Front::of(Some(SAFARI), 42), Front::Other(SAFARI));
-        assert_eq!(Front::of(None, 42), Front::Unknown);
+        let ours = AppId { pid: 42, ..SAFARI };
+        assert_eq!(seen(&[]).front(), Front::Other);
+        assert_eq!(seen(&[SAFARI]).front(), Front::Other);
+        assert_eq!(seen(&[SAFARI, ours]).front(), Front::Us { switches: 1 });
         // No pid (-1) is never us.
         let no_pid = AppId { pid: -1, ..SAFARI };
-        assert_eq!(Front::of(Some(no_pid), u32::MAX), Front::Other(no_pid));
+        assert!(!is_ours(&no_pid, u32::MAX));
+    }
+
+    #[test]
+    fn the_last_app_is_the_last_one_that_was_not_us() {
+        let ours = AppId { pid: 42, ..SAFARI };
+        let seen = seen(&[SAFARI, ours, MAIL, ours]);
+        assert_eq!(seen.last, Some(MAIL));
+        assert_eq!(seen.switches, 2);
     }
 
     #[test]
     fn with_no_window_open_xcreenshot_hides() {
-        for before in [Front::Unknown, Front::Us, Front::Other(SAFARI)] {
-            assert_eq!(handback(before, false), Handback::Hide);
+        let us = Front::Us { switches: 0 };
+        for before in [Front::Other, us] {
+            assert_eq!(handback(before, &seen(&[SAFARI]), false), Handback::Hide);
             assert_eq!(hand_back_with(&Fake::new(None), before, false), ["hide"]);
         }
     }
 
     #[test]
-    fn with_settings_open_focus_returns_to_the_previous_app() {
-        let fake = Fake::new(Some(SAFARI));
+    fn with_settings_open_focus_returns_to_the_last_app() {
         assert_eq!(
-            hand_back_with(&fake, Front::Other(SAFARI), true),
-            ["activate 7"]
+            handback(Front::Other, &seen(&[SAFARI, MAIL]), true),
+            Handback::Activate(MAIL)
         );
+        let fake = Fake::new(Some(SAFARI));
+        assert_eq!(hand_back_with(&fake, Front::Other, true), ["activate 7"]);
     }
 
     #[test]
-    fn a_capture_started_from_settings_keeps_settings_focused() {
-        assert!(hand_back_with(&Fake::new(None), Front::Us, true).is_empty());
+    fn started_from_settings_keeps_settings_focused_until_another_app_comes_up() {
+        let started = Front::Us { switches: 1 };
+        assert_eq!(handback(started, &seen(&[SAFARI]), true), Handback::Keep);
+        // The user went to Mail and back to answer: Mail is where they were.
+        assert_eq!(
+            handback(started, &seen(&[SAFARI, MAIL]), true),
+            Handback::Activate(MAIL)
+        );
+        let fake = Fake::new(Some(us()));
+        assert!(hand_back_with(&fake, Front::Us { switches: 0 }, true).is_empty());
     }
 
     #[test]
     fn an_unknown_app_hides_instead_of_keeping_settings_in_front() {
         assert_eq!(
-            hand_back_with(&Fake::new(None), Front::Unknown, true),
+            hand_back_with(&Fake::new(None), Front::Other, true),
             ["hide"]
         );
     }
@@ -246,7 +565,7 @@ pub(crate) mod tests {
             ..Fake::new(Some(SAFARI))
         };
         assert_eq!(
-            hand_back_with(&fake, Front::Other(SAFARI), true),
+            hand_back_with(&fake, Front::Other, true),
             ["activate 7", "hide"]
         );
     }
@@ -261,16 +580,56 @@ pub(crate) mod tests {
             launched: None,
             ..SAFARI
         };
-        for (running, before) in [
+        for (running, last) in [
             (vec![], SAFARI),
             (vec![reused], SAFARI),
             (vec![undated], undated),
         ] {
             let fake = Fake {
                 running,
-                ..Fake::new(None)
+                ..Fake::new(Some(last))
             };
-            assert_eq!(hand_back_with(&fake, Front::Other(before), true), ["hide"]);
+            assert_eq!(hand_back_with(&fake, Front::Other, true), ["hide"]);
+        }
+    }
+
+    #[test]
+    fn the_same_launch_may_have_another_window_in_front() {
+        let other_window = AppId {
+            window: Some(3),
+            ..SAFARI
+        };
+        assert!(other_window.same_launch(&SAFARI));
+        assert!(!SAFARI.same_launch(&MAIL));
+    }
+
+    #[test]
+    fn focus_follows_the_apps_that_come_to_the_front() {
+        let fake = Fake {
+            running: vec![SAFARI, MAIL],
+            ..Fake::new(Some(SAFARI))
+        };
+        let focus = Focus::new(fake.clone());
+        focus.activated(us());
+        focus.activated(MAIL);
+        focus.activated(us());
+        focus.hand_back(Front::Other, true);
+        assert_eq!(fake.calls(), ["activate 8"]);
+    }
+
+    #[test]
+    fn windows_file_times_become_unix_seconds() {
+        assert_eq!(unix_seconds(116_444_736_000_000_000), 0.0);
+        assert_eq!(unix_seconds(116_444_736_015_000_000), 1.5);
+        assert_eq!(unix_seconds(0), 0.0, "before 1970 clamps");
+    }
+
+    #[test]
+    fn focus_never_goes_back_to_the_windows_shell_or_a_tool_window() {
+        assert!(returns_to("Notepad", false));
+        assert!(!returns_to("Notepad", true));
+        for class in crate::pick::WINDOWS_SHELL.iter().chain(&WINDOWS_PASSING) {
+            assert!(!returns_to(class, false), "{class}");
         }
     }
 
@@ -279,6 +638,6 @@ pub(crate) mod tests {
         let app = tauri::test::mock_builder()
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
-        assert_eq!(frontmost(app.handle()), Front::Unknown);
+        assert_eq!(frontmost(app.handle()), Front::Other);
     }
 }

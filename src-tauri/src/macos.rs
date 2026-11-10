@@ -1,11 +1,15 @@
 //! Shared AppKit helpers.
 
 use crate::focus::AppId;
+use block2::RcBlock;
 use objc2::MainThreadMarker;
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationOptions, NSRunningApplication, NSScreenSaverWindowLevel,
-    NSWindow, NSWorkspace,
+    NSWindow, NSWorkspace, NSWorkspaceApplicationKey,
+    NSWorkspaceDidActivateApplicationNotification,
 };
+use objc2_foundation::{NSNotification, NSOperationQueue};
+use std::ptr::NonNull;
 use tauri::{Runtime, WebviewWindow};
 
 /// The overlay's window level: above the menu bar, the Dock and pop-up menus.
@@ -66,7 +70,38 @@ fn app_id(app: &NSRunningApplication) -> AppId {
     AppId {
         pid: app.processIdentifier(),
         launched: app.launchDate().map(|d| d.timeIntervalSince1970()),
+        window: None,
     }
+}
+
+/// Calls `f` with each app that comes to the front, on the main thread, for as long as the app
+/// runs.
+pub(crate) fn on_activate(f: impl Fn(AppId) + Send + Sync + 'static) {
+    let block = RcBlock::new(move |note: NonNull<NSNotification>| {
+        // SAFETY: AppKit passes a notification that lives for the call.
+        let note = unsafe { note.as_ref() };
+        // SAFETY: an AppKit constant.
+        let key = unsafe { NSWorkspaceApplicationKey };
+        let app = note
+            .userInfo()
+            .and_then(|info| info.objectForKey(key))
+            .and_then(|app| app.downcast::<NSRunningApplication>().ok());
+        if let Some(app) = app {
+            f(app_id(&app));
+        }
+    });
+    let center = NSWorkspace::sharedWorkspace().notificationCenter();
+    // SAFETY: the main queue runs the block on the main thread; `f` is Send and Sync anyway.
+    let observer = unsafe {
+        center.addObserverForName_object_queue_usingBlock(
+            Some(NSWorkspaceDidActivateApplicationNotification),
+            None,
+            Some(&NSOperationQueue::mainQueue()),
+            &block,
+        )
+    };
+    // Never removed: it follows the apps until xcreenshot quits.
+    std::mem::forget(observer);
 }
 
 /// Brings `app` to the front, yielding our activation to it (macOS 14 activation is

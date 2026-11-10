@@ -75,8 +75,8 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_autostart::Builder::new().build());
     #[cfg(target_os = "macos")]
     let builder = builder.manage(login::System::default());
-    // Hands focus back to the app the user was in when a capture closes.
-    #[cfg(all(target_os = "macos", not(test)))]
+    // Hands focus back to the app the user was in when a capture or a notice closes.
+    #[cfg(all(any(target_os = "macos", target_os = "windows"), not(test)))]
     let builder = builder.manage(focus::Focus::os());
     builder
         .manage(overlay::Overlay::default())
@@ -137,6 +137,8 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
+            #[cfg(all(any(target_os = "macos", target_os = "windows"), not(test)))]
+            focus::watch(app.handle());
             let (capture_shortcut, print_screen_moved) = settings::init(app.handle());
             build_tray(app.handle(), &capture_shortcut)?;
             // First, so the hotkey is fast from the start.

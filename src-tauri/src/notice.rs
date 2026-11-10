@@ -46,7 +46,7 @@ struct Pending {
     answer: oneshot::Sender<bool>,
     /// Hidden while a capture is open.
     hidden: bool,
-    /// The app in front as the notice opened, to give focus back to once it's answered.
+    /// Who was in front as the notice opened, to decide where focus goes once it's answered.
     front: Front,
 }
 
@@ -70,7 +70,7 @@ pub async fn ask<R: Runtime>(app: &AppHandle<R>, notice: Notice) -> Option<bool>
         notice,
         answer,
         hidden: false,
-        front: Front::Unknown,
+        front: Front::Other,
     };
     app.state::<Notices>().lock().insert(label.clone(), pending);
     let handle = app.clone();
@@ -193,7 +193,7 @@ pub(crate) fn notice<R: Runtime>(window: WebviewWindow<R>) -> Option<Notice> {
 }
 
 /// A button was clicked (`primary`: the main one): closes the window, answers, then gives focus
-/// back to the app in front when it opened. An error means the window is still open and
+/// back to the last app the user was in. An error means the window is still open and
 /// unanswered; clicking again tries again.
 #[tauri::command]
 pub(crate) fn notice_answer<R: Runtime>(
@@ -394,13 +394,8 @@ pub(crate) mod tests {
 
     mod focus {
         use super::*;
-        use crate::focus::tests::{Fake, SAFARI};
+        use crate::focus::tests::{Fake, MAIL, SAFARI, us};
         use crate::focus::{AppId, Focus};
-
-        const MAIL: AppId = AppId {
-            pid: 8,
-            launched: Some(2.0),
-        };
 
         /// [`app`] with `fake` for the platform's apps and Settings open.
         fn app_with(fake: &Fake) -> tauri::App<MockRuntime> {
@@ -414,9 +409,17 @@ pub(crate) mod tests {
 
         /// The focus calls made answering a notice asked while `front` was in front.
         fn answering_with(front: Option<AppId>) -> Vec<String> {
-            let fake = Fake::new(front);
+            answering_after(Fake::new(front), &[])
+        }
+
+        /// The focus calls made answering a notice asked with `fake`, once `meanwhile` came to
+        /// the front in turn.
+        fn answering_after(fake: Fake, meanwhile: &[AppId]) -> Vec<String> {
             let app = app_with(&fake);
             let (task, window) = asking(app.handle(), update());
+            for &app_in_front in meanwhile {
+                app.state::<Focus>().activated(app_in_front);
+            }
             notice_answer(window.clone(), true).unwrap();
             assert_eq!(block_on(task).unwrap(), Some(true));
             let calls = fake.calls();
@@ -433,11 +436,19 @@ pub(crate) mod tests {
 
         #[test]
         fn a_notice_that_came_up_over_xcreenshot_keeps_it_in_front() {
-            let us = AppId {
-                pid: std::process::id() as i32,
-                ..SAFARI
-            };
-            assert!(answering_with(Some(us)).is_empty());
+            assert!(answering_with(Some(us())).is_empty());
+        }
+
+        #[test]
+        fn a_notice_answered_later_returns_to_the_app_the_user_just_left() {
+            // Opened over Safari or over Settings; the user then went to Mail and clicked it.
+            for front in [SAFARI, us()] {
+                let fake = Fake {
+                    running: vec![SAFARI, MAIL],
+                    ..Fake::new(Some(front))
+                };
+                assert_eq!(answering_after(fake, &[MAIL, us()]), ["activate 8"]);
+            }
         }
 
         #[test]
@@ -461,15 +472,16 @@ pub(crate) mod tests {
 
         #[test]
         fn a_notice_asked_during_a_capture_returns_to_the_app_before_it() {
-            // AppKit says Safari now, but Mail was in front at the hotkey.
+            // Mail was in front at the hotkey; the overlay is in front now.
             let fake = Fake {
                 running: vec![SAFARI, MAIL],
                 ..Fake::new(Some(SAFARI))
             };
             let app = app_with(&fake);
             let h = app.handle();
+            app.state::<Focus>().activated(MAIL);
             let (session, release) = overlay::press(h, &[1]);
-            crate::overlay::window::phase(h).set_front(Front::Other(MAIL));
+            app.state::<Focus>().activated(us());
             let (task, window) = asking(h, update());
             release.send(true).unwrap();
             wait_until("the session to open", || overlay::is_open(h, session));
