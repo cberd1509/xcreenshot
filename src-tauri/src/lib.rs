@@ -5,6 +5,7 @@ mod actions;
 /// Public for `examples/capture.rs`.
 pub mod capture;
 mod focus;
+mod logging;
 mod login;
 #[cfg(all(target_os = "macos", not(test)))]
 mod macos;
@@ -48,18 +49,7 @@ pub fn run() {
             log::info!("opened again with {args:?}");
             let _ = windows::open_from(app, Source::SecondLaunch, open_settings);
         }))
-        // Local log file only (nothing is sent anywhere); stderr is invisible in Windows release builds.
-        .plugin(
-            tauri_plugin_log::Builder::new()
-                .target(tauri_plugin_log::Target::new(
-                    tauri_plugin_log::TargetKind::LogDir { file_name: None },
-                ))
-                .level(log::LevelFilter::Info)
-                // About 1 MB per file: the current one plus the last 3, so a test session fits.
-                .max_file_size(1_000_000)
-                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(3))
-                .build(),
-        )
+        .plugin(logging::plugin())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, pressed, event| {

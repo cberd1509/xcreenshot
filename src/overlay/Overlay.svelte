@@ -701,7 +701,8 @@
   :global(body) {
     margin: 0;
     overflow: hidden;
-    background: black;
+    /* The window's background shows through: clear on macOS, black elsewhere (window.rs). */
+    background: transparent;
     user-select: none;
   }
 

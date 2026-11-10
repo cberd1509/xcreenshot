@@ -499,10 +499,12 @@ fn end_if<R: Runtime>(
         let shown = matches!(*phase, Phase::Open(_));
         (phase.end(), shown)
     };
+    let started = share.then(Instant::now);
     sync_escape(app);
     // Before the overlay hides: AppKit would make the next window of ours key at once.
     let parked = share && before.is_some_and(|front| focus::park_for_share(app, front));
     // Concealed and hidden before the page frees its frame.
+    let mut hidden = Vec::new();
     for (label, window) in app.webview_windows() {
         if display_id(&label).is_none() {
             continue;
@@ -514,6 +516,19 @@ fn end_if<R: Runtime>(
         if let Err(e) = app.emit_to(label.as_str(), CLOSED_EVENT, ()) {
             log::warn!("could not tell {label} to free its frame: {e}");
         }
+        if share {
+            hidden.push(label);
+        }
+    }
+    // A share closes inside the share sheet's callback: these lines time it against the
+    // service's UI, and tell whether anything put an overlay back on screen (#118).
+    if let Some(started) = started {
+        hidden.sort_unstable();
+        log::info!(
+            "overlay closed for the share in {:.1} ms: {hidden:?} transparent, then hidden",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+        watch_after_share(app);
     }
     // A notice hidden for the capture comes back after a share too, unless the share put our
     // windows away (it comes back with them); only giving focus back (in `close_if`) is
@@ -532,6 +547,62 @@ fn end_if<R: Runtime>(
     // Last, so a waiting update restart sees the overlay gone.
     app.state::<Overlay>().idle.notify_waiters();
     before
+}
+
+/// When the overlay windows a share closed are checked for being back on screen.
+#[cfg(not(test))]
+const AFTER_SHARE: [Duration; 2] = [Duration::from_millis(100), Duration::from_secs(1)];
+#[cfg(test)]
+const AFTER_SHARE: [Duration; 2] = [Duration::from_millis(1), Duration::from_millis(2)];
+
+/// Logs, at each of [`AFTER_SHARE`], the overlay windows on screen again after a share closed
+/// them. None should be: one that is would show over the service's UI (#118). Stops once a new
+/// capture starts: its windows are meant to show.
+fn watch_after_share<R: Runtime>(app: &AppHandle<R>) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let started = Instant::now();
+        for after in AFTER_SHARE {
+            tokio::time::sleep(after.saturating_sub(started.elapsed())).await;
+            if !matches!(*phase(&app), Phase::Idle) {
+                return;
+            }
+            on_main(&app, move |app| {
+                let back = app
+                    .webview_windows()
+                    .into_iter()
+                    .filter(|(label, w)| {
+                        display_id(label).is_some() && w.is_visible().unwrap_or(false)
+                    })
+                    .map(|(label, w)| on_screen(&label, &w))
+                    .collect();
+                let (level, message) = after_share(after, back);
+                log::log!(level, "{message}");
+            });
+        }
+    });
+}
+
+/// An overlay window on screen, for the log: its label, and its alpha on macOS.
+fn on_screen<R: Runtime>(label: &str, window: &WebviewWindow<R>) -> String {
+    #[cfg(all(target_os = "macos", not(test)))]
+    if let Some(alpha) = macos::alpha(window) {
+        return format!("{label} (alpha {alpha})");
+    }
+    let _ = window;
+    label.to_owned()
+}
+
+/// The log line for the overlay windows on screen `after` a share closed them.
+fn after_share(after: Duration, mut back: Vec<String>) -> (log::Level, String) {
+    let after = after.as_millis();
+    if back.is_empty() {
+        let message = format!("{after} ms after the share: no overlay on screen");
+        return (log::Level::Info, message);
+    }
+    back.sort_unstable();
+    let message = format!("{after} ms after the share: overlay on screen again: {back:?}");
+    (log::Level::Warn, message)
 }
 
 /// Hides the overlay windows on screen, keeping the session (the Save dialog hides them this
@@ -744,23 +815,43 @@ fn build<R: Runtime>(app: &AppHandle<R>, display: u32) -> tauri::Result<WebviewW
         // The page fetches and draws its frame while the window is hidden or transparent;
         // WebKit would otherwise throttle it.
         .background_throttling(BackgroundThrottlingPolicy::Disabled);
-    // The first click on the overlay starts the selection instead of only focusing it.
+    // The first click on the overlay starts the selection instead of only focusing it. Clear
+    // on macOS: whenever WebKit isn't drawing the page (as a service picked in the share sheet
+    // takes over, say), the window shows what is under it instead of a black screen (#118). The
+    // page's frame covers the whole window, so a capture looks the same.
     #[cfg(target_os = "macos")]
-    let builder = builder.accept_first_mouse(true);
+    let builder = builder
+        .accept_first_mouse(true)
+        .transparent(true)
+        .background_color(tauri::window::Color(0, 0, 0, 0));
     let window = builder.build()?;
     // A user close (Alt+F4) closes the overlay and keeps the window for the next capture.
     // Quitting the app does not send CloseRequested, so it is never blocked.
     let handle = app.clone();
-    window.on_window_event(move |event| {
-        if let WindowEvent::CloseRequested { api, .. } = event {
+    let name = label(display);
+    window.on_window_event(move |event| match event {
+        WindowEvent::CloseRequested { api, .. } => {
             api.prevent_close();
             close(&handle);
         }
+        // Focus moving while the sheet is open (a pick, say), to time against its callback,
+        // "shared with …" (#118). Never waits for the phase: just a log line.
+        WindowEvent::Focused(focused) if sharing(&handle) => {
+            let change = if *focused { "got" } else { "lost" };
+            log::info!("{name} {change} focus while the share sheet is open");
+        }
+        _ => {}
     });
     // The mock runtime used in tests has no real NSWindow.
     #[cfg(all(target_os = "macos", not(test)))]
     macos::raise(&window);
     Ok(window)
+}
+
+/// Whether the share sheet is open; `false` if the phase is locked right now.
+fn sharing<R: Runtime>(app: &AppHandle<R>) -> bool {
+    app.try_state::<Overlay>()
+        .is_some_and(|overlay| overlay.phase.try_lock().is_ok_and(|p| p.sharing()))
 }
 
 /// Stages a hidden overlay window: on screen but fully transparent and click-through, so its
@@ -905,6 +996,11 @@ mod macos {
             ns_window.orderFrontRegardless();
         }
         Ok(())
+    }
+
+    /// The window's alpha, for the log.
+    pub fn alpha<R: Runtime>(window: &WebviewWindow<R>) -> Option<f64> {
+        main_ns_window(window).map(|w| w.alphaValue())
     }
 
     pub fn raise<R: Runtime>(window: &WebviewWindow<R>) {
@@ -1463,6 +1559,43 @@ pub(crate) mod tests {
         overlay_painted(window(h, 1), h.state(), session, true);
         assert_eq!(super::shown(h), [1]);
         assert_eq!(staged(h), [2], "opaque again once painted");
+    }
+
+    #[test]
+    fn a_share_closes_the_overlay_and_checks_it_stays_hidden() {
+        let app = app();
+        let h = app.handle();
+        let session = open(h, &[1, 2]);
+        overlay_painted(window(h, 1), h.state(), session, true);
+        assert!(phase(h).begin_share(session));
+        assert!(sharing(h));
+        {
+            let _locked = phase(h);
+            assert!(!sharing(h), "never waits for the lock");
+        }
+        assert!(close_for_share(h, session));
+        assert!(!sharing(h));
+        assert!(super::shown(h).is_empty());
+        assert_eq!(staged(h), [1, 2], "transparent before hiding");
+        assert!(!close_for_share(h, session), "closed once");
+        assert_eq!(on_screen("overlay-1", &window(h, 1)), "overlay-1");
+        // Let the checks after the share run (on the async runtime) while the app lives.
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    #[test]
+    fn after_a_share_an_overlay_back_on_screen_is_a_warning() {
+        let after = Duration::from_millis(100);
+        let (level, message) = after_share(after, Vec::new());
+        assert_eq!(level, log::Level::Info);
+        assert_eq!(message, "100 ms after the share: no overlay on screen");
+        let back = vec!["overlay-2".into(), "overlay-1 (alpha 0)".into()];
+        let (level, message) = after_share(after, back);
+        assert_eq!(level, log::Level::Warn);
+        assert!(
+            message.ends_with(r#"on screen again: ["overlay-1 (alpha 0)", "overlay-2"]"#),
+            "{message}"
+        );
     }
 
     /// A step that fails its first `fails` calls, recording each call's argument.

@@ -208,6 +208,7 @@ define_class!(
             _items: &NSArray,
             _scope: *mut NSSharingContentScope,
         ) -> Option<Retained<NSWindow>> {
+            log::info!("the shared service asked for a source window; none given");
             None
         }
 
@@ -220,6 +221,7 @@ define_class!(
             _item: &AnyObject,
             _rect: *mut NSRect,
         ) -> Option<Retained<NSImage>> {
+            log::info!("the shared service asked for a transition image; none given");
             None
         }
     }
