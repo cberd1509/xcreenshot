@@ -122,7 +122,16 @@ describe('tagDownloadUrls', () => {
 
   it('leaves URLs that already point at the tag', () => {
     const done = tagDownloadUrls(MANIFEST, ASSETS, REPO, 'v0.2.0')
-    expect(tagDownloadUrls(done, [], REPO, 'v0.2.0')).toEqual(done)
+    expect(tagDownloadUrls(done, ASSETS, REPO, 'v0.2.0')).toEqual(done)
+  })
+
+  it('moves download URLs to another tag, by asset name (#135)', () => {
+    const draft = tagDownloadUrls(MANIFEST, ASSETS, REPO, 'v0.2.0')
+    const renamed = [{ id: 201, name: TARBALL }]
+    const out = tagDownloadUrls(draft, renamed, REPO, 'v0.2.0-fixed')
+    expect(out.platforms['darwin-aarch64'].url).toBe(
+      `https://github.com/${REPO}/releases/download/v0.2.0-fixed/${TARBALL}`,
+    )
   })
 
   it('encodes asset names', () => {
@@ -133,8 +142,17 @@ describe('tagDownloadUrls', () => {
 
   it('fails on an unknown asset or URL rather than writing a broken manifest', () => {
     expect(() => tagDownloadUrls(MANIFEST, [], REPO, 'v0.2.0')).toThrow('darwin-aarch64')
-    const other = { platforms: { 'darwin-aarch64': { signature: 'S', url: 'https://x/y' } } }
-    expect(() => tagDownloadUrls(other, ASSETS, REPO, 'v0.2.0')).toThrow('https://x/y')
+    const done = tagDownloadUrls(MANIFEST, ASSETS, REPO, 'v0.2.0')
+    expect(() => tagDownloadUrls(done, ASSETS.slice(0, 1), REPO, 'v0.2.0')).toThrow(TARBALL)
+    for (const url of [
+      'https://x/y',
+      `${DOWNLOAD}/`,
+      `${DOWNLOAD}/a/${TARBALL}`,
+      `https://github.com/other/repo/releases/download/v0.2.0/${TARBALL}`,
+    ]) {
+      const other = { platforms: { 'darwin-aarch64': { signature: 'S', url } } }
+      expect(() => tagDownloadUrls(other, ASSETS, REPO, 'v0.2.0')).toThrow(url)
+    }
   })
 })
 
@@ -157,7 +175,8 @@ describe('addWindows', () => {
   it('keeps the URL when the tag download rewrite runs on it later', () => {
     const done = tagDownloadUrls(MANIFEST, ASSETS, REPO, 'v0.2.0')
     const both = addWindows(done, 'WINSIG', SETUP, REPO, 'v0.2.0')
-    expect(tagDownloadUrls(both, [], REPO, 'v0.2.0')).toEqual(both)
+    const assets = [...ASSETS, { id: 103, name: SETUP }]
+    expect(tagDownloadUrls(both, assets, REPO, 'v0.2.0')).toEqual(both)
   })
 
   it('refuses anything but a signed NSIS installer', () => {
@@ -252,6 +271,18 @@ describe('the workflows', () => {
     expect(release).toContain("uploadUpdaterJson: ${{ steps.type.outputs.manifest == 'true' }}")
     expect(release).toContain('prerelease: ${{ steps.type.outputs.prerelease }}')
     expect(release).toContain('node scripts/release.ts flag-fix "$TAG"')
+  })
+
+  it('point the draft latest.json at the tag before it is published (#135)', () => {
+    const release = workflow('release.yml')
+    const record = release.indexOf('- name: Record the draft')
+    const tag = release.indexOf('node scripts/release.ts updater-urls "$dir/latest.json"')
+    const upload = release.indexOf('gh release upload "v$VERSION" "$dir/tagged/latest.json"')
+    const merge = release.indexOf('node scripts/release.ts add-windows')
+    expect(record).toBeGreaterThan(-1)
+    expect(tag).toBeGreaterThan(record)
+    expect(upload).toBeGreaterThan(tag)
+    expect(merge).toBeGreaterThan(upload)
   })
 
   it('make a release the latest only after latest.json is rewritten', () => {

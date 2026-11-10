@@ -10,7 +10,8 @@ name: Release
 # maintainer checks the draft and publishes it, which creates the tag (docs/releasing.md).
 # Developer ID signing and notarization switch on when the APPLE_CERTIFICATE secret is set.
 # Windows builds aren't code signed yet (#103).
-# When a release is published, the updater-urls job points latest.json at the tag's download URLs.
+# latest.json gets the tag's download URLs while still a draft, so it works the moment the release
+# is published; the updater-urls job then only checks them (and the prerelease flag).
 # A prerelease version (1.0.0-beta.0, from Changesets pre mode) is drafted as a GitHub prerelease
 # with no latest.json: releases/latest skips prereleases, and testers install betas by hand.
 
@@ -291,6 +292,26 @@ jobs:
           [ -n "$id" ] || { echo "::error::No v$VERSION draft after the build."; exit 1; }
           echo "id=$id" >> "$GITHUB_OUTPUT"
 
+      # tauri-action writes the draft's API asset URLs into latest.json, and the app refuses them.
+      # The tag doesn't exist yet, but its download URLs are known: write those now, so latest.json
+      # works the moment the release is published (#135). A failure here doesn't delete the built
+      # draft: windows-upload does the same rewrite before adding Windows.
+      - name: Point latest.json at the tag
+        if: steps.type.outputs.manifest == 'true'
+        continue-on-error: true
+        env:
+          RELEASE_ID: ${{ steps.draft.outputs.id }}
+        run: |
+          dir="$RUNNER_TEMP/updater"
+          mkdir -p "$dir/tagged"
+          gh release download "v$VERSION" --pattern latest.json --dir "$dir"
+          gh api "repos/$GH_REPO/releases/$RELEASE_ID/assets?per_page=100" \
+            --jq '[.[] | {id, name}]' > "$dir/assets.json"
+          node scripts/release.ts updater-urls "$dir/latest.json" "$dir/assets.json" \
+            "$GH_REPO" "v$VERSION" > "$dir/tagged/latest.json"
+          cat "$dir/tagged/latest.json"
+          gh release upload "v$VERSION" "$dir/tagged/latest.json" --clobber
+
       # Don't leave a half-built draft (e.g. a DMG that failed notarization) for someone to publish.
       # Only drafts this run may have created; a published release is never deleted.
       - name: Delete the unfinished draft
@@ -435,7 +456,18 @@ jobs:
             dir="$RUNNER_TEMP/updater"
             mkdir -p "$dir/merged"
             gh release download "v$VERSION" --pattern latest.json --dir "$dir"
-            node scripts/release.ts add-windows "$dir/latest.json" "$exe.sig" "$GH_REPO" \
+            gh api "repos/$GH_REPO/releases/$RELEASE_ID/assets?per_page=100" \
+              --jq '[.[] | {id, name}]' > "$dir/assets.json"
+            # The build job already pointed the macOS entries at the tag; this checks each names
+            # an asset of the draft, and points them at the tag if that step failed (#135).
+            if ! node scripts/release.ts updater-urls "$dir/latest.json" "$dir/assets.json" \
+              "$GH_REPO" "v$VERSION" > "$dir/tagged.json"; then
+              echo "stop=true" >> "$GITHUB_OUTPUT"
+              echo "::error::latest.json names an asset the draft doesn't have. Rebuild the" \
+                "draft: run Release from the Actions tab on main."
+              exit 1
+            fi
+            node scripts/release.ts add-windows "$dir/tagged.json" "$exe.sig" "$GH_REPO" \
               "v$VERSION" > "$dir/merged/latest.json"
             jq -e '.platforms | has("darwin-aarch64") and has("windows-x86_64")' \
               "$dir/merged/latest.json" > /dev/null
@@ -454,14 +486,12 @@ jobs:
           echo "::error::Windows wasn't added to the v$VERSION draft. Re-run the failed jobs;" \
             "don't publish while its title says (adding Windows)."
 
-  # tauri-action writes GitHub API asset URLs into latest.json, but the app only downloads from
-  # https://github.com/<repo>/releases/download/ (src-tauri/src/updates.rs). Once the release is
-  # published its tag exists, so rewrite each URL to the tag download URL of the same asset.
-  # Drafts are invisible to releases/latest, so the updater can only see the original file for
-  # the few seconds between publishing and this job finishing. The Windows entries already use the
-  # tag URL and are kept as they are.
+  # The app only downloads from https://github.com/<repo>/releases/download/
+  # (src-tauri/src/updates.rs). The build and windows-upload jobs already wrote the tag's download
+  # URLs into the draft's latest.json, so this only checks that each names one of the release's
+  # assets at its tag, and rewrites latest.json only if something differs.
   updater-urls:
-    name: Point latest.json at the tag
+    name: Check latest.json and the prerelease flag
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
     permissions:
@@ -507,7 +537,7 @@ jobs:
 
       # Unsigned macOS test builds (notes with UNSIGNED_MARKER, scripts/release.ts) and betas have
       # no latest.json. A signed release without one fails: nothing would update.
-      - name: Rewrite latest.json
+      - name: Check latest.json points at the tag
         env:
           BODY: ${{ github.event.release.body }}
         run: |
@@ -525,8 +555,15 @@ jobs:
           gh release download "$TAG" --pattern latest.json --dir "$dir"
           gh api "repos/$GH_REPO/releases/$RELEASE_ID/assets?per_page=100" \
             --jq '[.[] | {id, name}]' > "$dir/assets.json"
+          # Fails if a URL names an asset the release doesn't have.
           node scripts/release.ts updater-urls "$dir/latest.json" "$dir/assets.json" \
             "$GH_REPO" "$TAG" > "$dir/rewritten.json"
+          if jq -e --slurpfile new "$dir/rewritten.json" '. == $new[0]' "$dir/latest.json" \
+            > /dev/null; then
+            echo "latest.json already points at $TAG."; exit 0
+          fi
+          # E.g. a draft built before #135, or a tag changed when publishing.
+          echo "::warning::latest.json didn't point at $TAG's assets; rewriting it."
           mv "$dir/rewritten.json" "$dir/latest.json"
           cat "$dir/latest.json"
           gh release upload "$TAG" "$dir/latest.json" --clobber
