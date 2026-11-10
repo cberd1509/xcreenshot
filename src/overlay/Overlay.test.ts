@@ -1088,8 +1088,18 @@ describe('Overlay', () => {
       await userEvent.keyboard(ctrl('s'))
       await waitFor(() => expect(sent).toHaveLength(1))
       expect(sent[0].cmd).toBe('overlay_save')
-      expect(shapes()[0].attrs.stroke).toBe('#22C55E')
+      // The export stage, built for the save, drew the shape in the typed color.
+      expect(stages).toHaveLength(2)
+      expect(stages[1].children[0].children[0].attrs.stroke).toBe('#22C55E')
       await waitFor(() => expect(screen.queryByLabelText('Thick')).toBeNull())
+    })
+
+    it('leaves Copy and Save in the size fields to them, without an error', async () => {
+      await annotated()
+      field('Width').focus()
+      await userEvent.keyboard(`${ctrl('c')}${ctrl('s')}`)
+      await tick()
+      expect(sent).toHaveLength(0)
     })
 
     it('copies from the hex field, unless its text is selected', async () => {
