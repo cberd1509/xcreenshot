@@ -13,8 +13,77 @@ Use the [`xcap`](https://crates.io/crates/xcap) crate (0.9.8) on all platforms, 
   Compiles in CI; not run on Windows yet (M5).
 - Fastest option tested, plain Rust build, no Swift runtime to bundle.
 
-We stay on xcap for now. Moving macOS to ScreenCaptureKit is tracked in #49. The OS calls are
-two small functions (`capture_all`, `capture_display`), so that move does not touch the rest.
+xcap stays the default. Since #49, macOS 14+ also has a ScreenCaptureKit backend that takes over
+when xcap breaks (see below), so a macOS without `CGWindowListCreateImage` still captures.
+
+## ScreenCaptureKit backend (#49)
+
+`src-tauri/src/capture/sck.rs` calls `SCScreenshotManager captureImageWithFilter:` through
+`objc2-screen-capture-kit` (no Swift runtime). The decisions are in `capture/backend.rs`, pure and
+unit-tested; `capture_displays` is still the one entry point.
+
+- **Content:** `SCShareableContent` is fetched on first use and kept. It is fetched again after a
+  display reconfiguration (`CGDisplayRegisterReconfigurationCallback`, refetched off the main
+  thread right away) or when a wanted display is missing from it. Content fetched while the
+  displays changed is used once but not kept. Display threads that need it at once share one
+  fetch, and all stop waiting at its one deadline (1 s).
+- **Geometry:** bounds and scale come from CoreGraphics (`CGDisplayBounds`, the display mode),
+  not xcap, so a display xcap cannot describe can still fall back.
+- **Memory:** each screenshot runs in its own autorelease pool, since the worker threads have
+  none.
+- **Pixels:** the configuration asks for the display's native pixel size (points times the
+  display mode's pixel scale, so rotated displays work), BGRA, best resolution, no cursor, and the
+  display's colour space. The `CGImage` rows are copied to RGBA like xcap does, so frames have the
+  same size, bounds and density.
+- **Own windows:** the filter excludes xcreenshot's own app (overlays, toast, notices).
+- **Displays in parallel:** the same `capture_each` as xcap, with its own stuck-display list.
+
+**Choosing at runtime** (`backend::Chooser`):
+
+- Auto (default): xcap first. Every display xcap could not capture (an error, a timeout, or a
+  frame that is entirely black) is captured again with ScreenCaptureKit; the others keep their
+  xcap frame. Black means every pixel is exactly black, so a dark screen with any content is
+  never rejected; a really black display keeps its frame if ScreenCaptureKit does no better.
+- One deadline (1 s) covers the whole capture: ScreenCaptureKit only gets the time xcap left, so
+  a fallback never stacks a second timeout.
+- After 3 xcap captures in a row with nothing usable, ScreenCaptureKit goes first; xcap still goes
+  first once every 10 captures, and goes back to first when it works. Any xcap error falls back,
+  a timeout too, so a stalled display can be the first use of ScreenCaptureKit (and its alert,
+  below).
+- `CGWindowListCreateImage` missing: CoreGraphics is weakly linked (`build.rs`), so the app still
+  starts; `dlsym` finds the symbol missing and only ScreenCaptureKit is used.
+- `XCREENSHOT_CAPTURE_BACKEND=xcap` or `=screencapturekit` (`sck`) forces one, no fallback.
+- Every capture logs how many displays each backend captured and its time, or the error and
+  its time when it fails.
+- The warm-up warms only the backend that goes first. ScreenCaptureKit is not touched while xcap
+  works: using it showed the "requesting to bypass the system private window picker" alert for
+  the terminal (see below), which xcap alone did not.
+
+Measured with `cargo run --release --example capture` (each row a fresh process, so the first
+call is cold), same Mac, one 3600x2338 display, macOS 27, busy machine (other builds running):
+
+| Backend | Displays | First call | Warm (median, min–max of 10) |
+| --- | --- | --- | --- |
+| xcap | 1 (one) | 233 ms | 67 ms (52–92) |
+| xcap | 1 (all) | 142 ms | 60 ms (47–80) |
+| ScreenCaptureKit | 1 (one) | 410 ms | 104 ms (93–130) |
+| ScreenCaptureKit | 1 (all) | 363 ms | 105 ms (92–195) |
+
+Only one display was available, so "one" and "all" are the same capture; with more displays both
+backends capture in parallel. Both returned the same size and bounds; pixels differed by 1.5 per
+channel on average (4.9% by more than 2), partly the screen changing between the two captures.
+
+ScreenCaptureKit warm is about 40 ms slower than xcap and over the ~60 ms it would need to become
+the default, so xcap stays first. It is within the 150 ms hotkey budget only with little margin.
+The default path (xcap) is unchanged; ScreenCaptureKit adds its time only when xcap fails. Hotkey
+to painted with ScreenCaptureKit needs the running app with permission and is left as a manual
+check (`XCREENSHOT_CAPTURE_BACKEND=sck` with `XCREENSHOT_DEBUG_CAPTURE`).
+
+**Alert:** after the first ScreenCaptureKit runs, macOS showed "iTerm is requesting to bypass the
+system private window picker and directly access your screen and audio" (Allow / Open System
+Settings). While it was up, every ScreenCaptureKit call hung, so captures timed out after 1 s per
+display. Not answered here, so the time split (content, screenshot, copy) still needs
+measuring.
 
 ## Latency (capture all displays, 3600x2338 px)
 
@@ -22,6 +91,8 @@ two small functions (`capture_all`, `capture_display`), so that move does not to
 | ------------------------------------------------------ | ---------- | ---------- |
 | `xcap` (`CGWindowListCreateImage`), one thread/display | 125–190 ms | 39–44 ms   |
 | `screencapturekit` 11.1 (`SCScreenshotManager`) + RGBA | ~290 ms    | ~135 ms    |
+
+(The ScreenCaptureKit backend built in #49 is measured above.)
 
 Displays are captured in parallel, so with several displays the time should be the slowest one
 (only one display was available to measure). For ScreenCaptureKit, ~48 ms of each call was
@@ -329,6 +400,8 @@ every platform; only the registry reads are Windows-only.
 ## Open risks
 
 - `CGWindowListCreateImage` is deprecated (obsoleted in the macOS 15 SDK). It still works on
-  macOS 27, but Apple could remove it or prompt more often for it (#49).
+  macOS 27, but Apple could remove it or prompt more often for it. Capture then falls back to
+  ScreenCaptureKit (#49), about 40 ms slower, and it may show the window picker alert, which
+  blocks ScreenCaptureKit until answered.
 - Re-prompt behavior on macOS 26/27 needs checking on a signed build over a few weeks.
 - Windows mixed-DPI: logical origins are approximate; use the physical bounds (see Windows).

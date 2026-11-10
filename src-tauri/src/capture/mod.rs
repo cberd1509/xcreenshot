@@ -1,17 +1,40 @@
 //! Screen capture: grab every display at native resolution, then crop a selection.
 //!
-//! The OS calls (via the `xcap` crate) are the few functions at the bottom of this file.
-//! Geometry, cropping, error handling and encoding are pure and unit-tested.
+//! The OS calls (via the `xcap` crate, and ScreenCaptureKit in `sck.rs` on macOS) are the few
+//! functions at the bottom of this file. Geometry, cropping, error handling, encoding and the
+//! choice of backend (`backend.rs`) are pure and unit-tested.
 //! See `docs/spikes/capture.md` for the choice of `xcap` and measured latency.
 
+mod backend;
 mod geometry;
+#[cfg(target_os = "macos")]
+mod sck;
 
+/// ScreenCaptureKit is macOS only. Elsewhere `available` is false, so the rest never runs.
+#[cfg(not(target_os = "macos"))]
+mod sck {
+    use super::{Bounds, CaptureError};
+
+    pub fn available() -> bool {
+        false
+    }
+
+    pub fn capture(_id: u32) -> Result<(Bounds, f64, image::RgbaImage), CaptureError> {
+        Err(super::backend::no_backend())
+    }
+
+    pub fn warm_up(_id: u32) -> Result<(), CaptureError> {
+        Err(super::backend::no_backend())
+    }
+}
+
+pub use backend::Backend;
 pub use geometry::{Bounds, PixelRect, Rect, clamp_rect, crop, crop_pixels};
 
 use image::RgbaImage;
 use std::fmt;
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::{Arc, Mutex, PoisonError, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 /// A connected display, before capture.
@@ -149,8 +172,10 @@ fn to_frame(
 /// capture (its thread is left to finish on its own).
 const DISPLAY_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// Displays whose capture thread is still running (stalled past the timeout).
+/// Displays whose capture thread is still running (stalled past the timeout), per backend, so
+/// a display stuck in xcap can still fall back to ScreenCaptureKit.
 static IN_FLIGHT: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+static IN_FLIGHT_SCK: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
 /// The same for warm-ups. Kept apart, so a warm-up still running never makes a hotkey capture
 /// skip its display as stuck.
@@ -318,14 +343,59 @@ pub fn capture_all() -> Result<Vec<DisplayFrame>, CaptureError> {
     capture_displays(&ids)
 }
 
-/// Like [`capture_all`], for displays already listed with [`displays`].
+static CHOOSER: backend::Chooser = backend::Chooser::new();
+
+/// The backends to try, in order (see `backend.rs`).
+fn order() -> Vec<Backend> {
+    static PREFERENCE: OnceLock<backend::Preference> = OnceLock::new();
+    let preference = *PREFERENCE
+        .get_or_init(|| backend::Preference::parse(std::env::var(backend::ENV).ok().as_deref()));
+    CHOOSER.order(preference, support())
+}
+
+/// Like [`capture_all`], for displays already listed with [`displays`]. Uses xcap, and
+/// ScreenCaptureKit for the displays xcap could not capture (see `backend.rs`), all within one
+/// [`DISPLAY_TIMEOUT`]. Logs which backend captured how many displays, and the time.
 pub fn capture_displays(ids: &[u32]) -> Result<Vec<DisplayFrame>, CaptureError> {
-    keep_captured(capture_each(
+    let started = Instant::now();
+    let (result, used) = CHOOSER.run(&order(), ids, DISPLAY_TIMEOUT, |b, ids, left| {
+        capture_with(b, ids, left)
+    });
+    let ms = started.elapsed().as_secs_f64() * 1000.0;
+    match &result {
+        Ok(frames) => log::info!(
+            "captured {} display(s) with {} in {ms:.0} ms",
+            frames.len(),
+            backend::describe(&used)
+        ),
+        Err(e) => log::warn!("capture failed after {ms:.0} ms: {e}"),
+    }
+    result
+}
+
+/// Captures with one backend only, no fallback. For the benchmark (`examples/capture.rs`).
+pub fn capture_displays_with(
+    backend: Backend,
+    ids: &[u32],
+) -> Result<Vec<DisplayFrame>, CaptureError> {
+    keep_captured(capture_with(backend, ids, DISPLAY_TIMEOUT))
+}
+
+fn capture_with(
+    backend: Backend,
+    ids: &[u32],
+    timeout: Duration,
+) -> Vec<Result<DisplayFrame, CaptureError>> {
+    let in_flight = match backend {
+        Backend::Xcap => &IN_FLIGHT,
+        Backend::ScreenCaptureKit => &IN_FLIGHT_SCK,
+    };
+    capture_each(
         ids,
-        capture_display,
-        DISPLAY_TIMEOUT,
-        &IN_FLIGHT,
-    ))
+        move |id| capture_display(backend, id),
+        timeout,
+        in_flight,
+    )
 }
 
 /// The displays [`capture_all`] captures (mirrors excluded), with their OS bounds: points on
@@ -348,17 +418,19 @@ pub fn displays() -> Result<Vec<Display>, CaptureError> {
     Ok(out)
 }
 
-/// Captures one pixel of the first display and drops it. The first capture in a process pays a
-/// one-time OS setup (about 60–150 ms on macOS); doing it at startup keeps it off the hotkey.
-/// Same timeout as a capture, and its own stuck-display guard ([`WARMING`]), so a hotkey pressed
-/// meanwhile still captures. Needs permission like [`capture_all`].
+/// Captures one pixel of the first display with the backend that goes first, and drops it. The
+/// first capture in a process pays a one-time OS setup (about 60–150 ms on macOS); doing it at
+/// startup keeps it off the hotkey. ScreenCaptureKit as the fallback is left alone: touching it
+/// can show the system's screen recording alert, which a working xcap never needs. Same timeout
+/// as a capture, and its own stuck-display guard ([`WARMING`]), so a hotkey pressed meanwhile
+/// still captures. Needs permission like [`capture_all`].
 pub fn warm_up() -> Result<(), CaptureError> {
     let display = displays()?.first().ok_or(CaptureError::NoDisplays)?.id;
-    let pixel = |id| monitor(id)?.capture_region(0, 0, 1, 1).map_err(backend);
+    let first = *order().first().ok_or_else(backend::no_backend)?;
+    let pixel = move |id| warm_display(first, id);
     capture_each(&[display], pixel, DISPLAY_TIMEOUT, &WARMING)
         .pop()
         .unwrap_or(Err(CaptureError::NoDisplays))
-        .map(drop)
 }
 
 fn os_bounds(m: &xcap::Monitor) -> Result<Bounds, CaptureError> {
@@ -379,20 +451,69 @@ fn monitor(id: u32) -> Result<xcap::Monitor, CaptureError> {
         .ok_or_else(|| CaptureError::Backend(format!("display {id} disappeared")))
 }
 
-fn capture_display(id: u32) -> Result<DisplayFrame, CaptureError> {
-    let m = monitor(id)?;
-    let bounds = os_bounds(&m)?;
-    let scale = m.scale_factor().map_err(backend)?;
-    to_frame(
-        id,
-        bounds,
-        scale.into(),
-        m.capture_image().map_err(backend)?,
-    )
+/// ScreenCaptureKit reads the display's geometry itself, so a display xcap cannot describe
+/// can still fall back to it.
+fn capture_display(with: Backend, id: u32) -> Result<DisplayFrame, CaptureError> {
+    let (bounds, scale, image) = match with {
+        Backend::Xcap => {
+            let m = monitor(id)?;
+            let bounds = os_bounds(&m)?;
+            let scale = m.scale_factor().map_err(backend)?;
+            (bounds, scale.into(), m.capture_image().map_err(backend)?)
+        }
+        Backend::ScreenCaptureKit => sck::capture(id)?,
+    };
+    to_frame(id, bounds, scale, image)
+}
+
+fn warm_display(backend: Backend, id: u32) -> Result<(), CaptureError> {
+    match backend {
+        Backend::Xcap => monitor(id)?
+            .capture_region(0, 0, 1, 1)
+            .map(drop)
+            .map_err(self::backend),
+        Backend::ScreenCaptureKit => sck::warm_up(id),
+    }
 }
 
 fn backend(e: xcap::XCapError) -> CaptureError {
     CaptureError::Backend(e.to_string())
+}
+
+/// What can capture here: ScreenCaptureKit from macOS 14, and xcap while
+/// `CGWindowListCreateImage` exists. It is weakly linked (`build.rs`), so if a future macOS
+/// removes it the app still starts and this is false.
+fn support() -> backend::Support {
+    static XCAP: OnceLock<bool> = OnceLock::new();
+    let xcap = *XCAP.get_or_init(|| {
+        let found = symbol_exists(c"CGWindowListCreateImage");
+        if !found {
+            log::warn!("CGWindowListCreateImage is missing; capturing with ScreenCaptureKit");
+        }
+        found
+    });
+    backend::Support {
+        xcap,
+        sck: sck::available(),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+/// Only macOS can miss the symbol.
+fn symbol_exists(_name: &std::ffi::CStr) -> bool {
+    true
+}
+
+#[cfg(target_os = "macos")]
+fn symbol_exists(name: &std::ffi::CStr) -> bool {
+    use std::ffi::{c_char, c_void};
+    unsafe extern "C" {
+        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+    }
+    /// `RTLD_DEFAULT` on macOS: search every loaded image.
+    const RTLD_DEFAULT: *mut c_void = -2isize as *mut c_void;
+    // SAFETY: a lookup with a valid NUL-terminated name.
+    unsafe { !dlsym(RTLD_DEFAULT, name.as_ptr()).is_null() }
 }
 
 /// A display that shows another display's content (macOS mirroring).
@@ -716,5 +837,24 @@ mod tests {
     fn other_platforms_need_no_permission() {
         assert!(has_permission());
         assert!(request_permission());
+    }
+
+    #[test]
+    fn this_system_can_capture() {
+        // Today's macOS still has the old call, and macOS 14+ has ScreenCaptureKit.
+        let s = support();
+        assert!(s.xcap);
+        assert_eq!(s.sck, cfg!(target_os = "macos"));
+        assert_eq!(order().first(), Some(&Backend::Xcap));
+        if cfg!(target_os = "macos") {
+            assert!(!symbol_exists(c"XcreenshotNoSuchSymbol"));
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn screencapturekit_is_macos_only() {
+        assert!(sck::capture(1).is_err());
+        assert!(sck::warm_up(1).is_err());
     }
 }

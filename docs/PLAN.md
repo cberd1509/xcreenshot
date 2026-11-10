@@ -14,7 +14,7 @@
 | Backlog | Mac App Store, Microsoft Store, Linux, P2P device sync |
 
 ## Architecture
-1. **Hotkey** (tauri-plugin-global-shortcut) → Rust captures all displays at native resolution (ScreenCaptureKit on macOS, DXGI/GDI on Windows).
+1. **Hotkey** (tauri-plugin-global-shortcut) → Rust captures all displays at native resolution with xcap (`CGWindowListCreateImage` on macOS, GDI on Windows). On macOS 14+, ScreenCaptureKit is the fallback when xcap fails (#49).
 2. One borderless always-on-top **overlay window per display**, frozen screenshot as background → pixel-exact selection, no flicker.
 3. **Selection**: drag a region (region-only by design; drag around a window or the whole screen to capture those). Optional **remember last region**.
 4. **Inline toolbar** (Konva): pen, line, arrow, rect, ellipse, text, highlighter, blur/pixelate, color, stroke, undo/redo.
