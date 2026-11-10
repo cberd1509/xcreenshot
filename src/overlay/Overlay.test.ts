@@ -1909,6 +1909,16 @@ describe('Overlay', () => {
       expect(tipBar()).toBeNull()
     })
 
+    it('goes when quick copy is turned on in Settings', async () => {
+      await tipped()
+      // As a `prefs:changed` from the Settings window sets it.
+      settings.quickCopy = true
+      await waitFor(() => expect(tipBar()).toBeNull())
+      expect(bar()).toBeNull()
+      expect(screen.getByTestId('hint')).toBeInTheDocument()
+      resetSettings()
+    })
+
     it('is answered on every display, but not for an older capture', async () => {
       await twoTipped()
       await emit('overlay:tip', { session: 8, quick: true })

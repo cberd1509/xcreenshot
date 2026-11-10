@@ -125,6 +125,10 @@
   let quick = $state(false)
   /** The quick copy tip shows, in place of the key hint, until the drag. */
   let tip = $state(false)
+  // Quick copy turned on elsewhere (Settings) while the tip shows: it has nothing to offer.
+  $effect(() => {
+    if (settings.quickCopy) tip = false
+  })
   /** The last press started a draw on the frame, so a double-click there picks a window. */
   let pressedFrame = false
   /** Counts presses, so a window found for a double-click is dropped if another gesture began. */

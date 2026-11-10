@@ -185,19 +185,17 @@ pub(crate) async fn overlay_copy<R: Runtime>(
 /// and how it ended, for the quick copy tip. Faked in tests.
 pub(crate) type Remember = Box<dyn FnOnce(Option<Region>, tip::Output) + Send>;
 
-/// Saves the region and counts the output for the tip in the prefs, on a blocking thread, so
-/// nothing waits for the file.
+/// Counts the output for the tip at once, in order, then saves the region on a blocking
+/// thread, so nothing waits for the file.
 fn remember_in<R: Runtime>(app: &AppHandle<R>) -> Remember {
     let app = app.clone();
     Box::new(move |region, output| {
+        // In memory now, as the output succeeds, so the next capture sees it (see `tip`).
+        tip::record(&app, output);
+        let Some(region) = region else { return };
         // Numbered now, as the output succeeds, so saves that land late keep this order.
-        let region = region.map(|r| (r, region::ORDER.next()));
-        drop(spawn_blocking(move || {
-            if let Some((r, seq)) = region {
-                region::save(&app, r, seq);
-            }
-            tip::record(&app, output);
-        }));
+        let seq = region::ORDER.next();
+        drop(spawn_blocking(move || region::save(&app, region, seq)));
     })
 }
 

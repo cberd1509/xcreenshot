@@ -257,7 +257,7 @@ fn start_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) -> Option<u64
             start,
             WATCHDOG,
         );
-        // After the pages were told to draw: the prefs write waits for nothing on screen.
+        // Only once a page was told to draw it, and after: nothing on screen waits for this.
         if opened && tip {
             screen.tip_shown(&worker);
         }
@@ -277,7 +277,7 @@ fn start_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) -> Option<u64
 }
 
 /// Capture finished (worker thread). Opens the session and tells each window to draw. Returns
-/// whether the session opened.
+/// whether the session opened and at least one window was told to draw.
 fn finish<R: Runtime>(
     app: &AppHandle<R>,
     session: u64,
@@ -306,9 +306,11 @@ fn finish<R: Runtime>(
         sync_escape(app);
         stage_unpainted(app, session, &displays);
     });
+    let mut told = false;
     for (display, info) in shows {
-        if let Err(e) = app.emit_to(label(display).as_str(), SHOW_EVENT, info) {
-            log::warn!("could not tell overlay {display} to draw: {e}");
+        match app.emit_to(label(display).as_str(), SHOW_EVENT, info) {
+            Ok(()) => told = true,
+            Err(e) => log::warn!("could not tell overlay {display} to draw: {e}"),
         }
     }
     let app = app.clone();
@@ -324,7 +326,7 @@ fn finish<R: Runtime>(
         std::thread::sleep(watchdog - reveal);
         on_main(&app, move |app| rescue(app, session));
     });
-    true
+    told
 }
 
 /// When to show windows whose page hasn't reported its paint: [`REVEAL_AFTER`], never after

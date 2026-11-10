@@ -11,7 +11,7 @@
 //! rest of its start from the prefs already in memory (see `region::load`), so the hotkey waits
 //! for nothing. Recording a copy and counting a showing write the prefs, on a worker.
 
-use crate::prefs::{self, Prefs, Storage};
+use crate::prefs::{self, Storage};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Runtime};
 
@@ -47,6 +47,13 @@ pub enum Output {
     Other,
 }
 
+/// Whether a copy at `t` is in the window before `now`. One in the future (a clock set back)
+/// or too far off to subtract is not.
+fn recent(t: i64, now: i64) -> bool {
+    now.checked_sub(t)
+        .is_some_and(|age| (0..WINDOW_MS).contains(&age))
+}
+
 impl Tip {
     /// Whether the next capture shows the tip.
     pub fn shows(&self, quick_copy: bool) -> bool {
@@ -72,7 +79,7 @@ impl Tip {
             Output::PlainCopy => {
                 // Only copies within the window before this one count; a clock set back
                 // drops the ones now in the future.
-                self.copies.retain(|&t| t <= now && now - t < WINDOW_MS);
+                self.copies.retain(|&t| recent(t, now));
                 self.copies.push(now);
                 if self.copies.len() >= STREAK {
                     self.copies.clear();
@@ -101,52 +108,56 @@ impl Tip {
     }
 }
 
-/// Changes the tip in `storage`, saving only if it changed. A failed save is logged by `prefs`.
-fn change(storage: &impl Storage, f: impl FnOnce(&mut Tip, &Prefs)) {
-    let _ = prefs::modify_if(storage, |p| {
-        let before = p.quick_copy_tip.clone();
-        let mut tip = std::mem::take(&mut p.quick_copy_tip);
-        f(&mut tip, p);
-        p.quick_copy_tip = tip;
-        p.quick_copy_tip != before
-    });
+/// Changes the tip in `storage`'s memory at once, so the next capture reads it; changes are
+/// applied in call order, under the prefs lock. Returns whether it changed, and so whether the
+/// file needs writing. Kept in memory even if the file can't be written: it holds for this run,
+/// and the next save of the prefs writes it.
+fn change(storage: &impl Storage, f: impl FnOnce(&mut Tip, bool)) -> bool {
+    let mut prefs = storage.load();
+    let before = prefs.quick_copy_tip.clone();
+    f(&mut prefs.quick_copy_tip, prefs.quick_copy);
+    if prefs.quick_copy_tip == before {
+        return false;
+    }
+    storage
+        .stage(&prefs)
+        .inspect_err(|e| log::warn!("could not keep the quick copy tip: {e}"))
+        .is_ok()
 }
 
-fn record_in(storage: &impl Storage, output: Output, now: i64) {
-    change(storage, |tip, p| tip.record(output, p.quick_copy, now));
-}
-
-/// Runs `f` with the app's prefs store. Writes the file, so call it off the hot path.
-fn with_prefs<R: Runtime>(app: &AppHandle<R>, f: impl FnOnce(&tauri_plugin_store::Store<R>)) {
-    let opened = prefs::with_store(app, |store| {
-        f(store);
-        Ok(())
-    });
-    if let Err(e) = opened {
-        log::warn!("could not save the quick copy tip: {e}");
+/// [`change`] in the app's prefs, then writes the file on a worker.
+fn update<R: Runtime>(app: &AppHandle<R>, f: impl FnOnce(&mut Tip, bool)) {
+    let changed = prefs::with_store(app, |store| Ok(change(store, f)))
+        .inspect_err(|e| log::warn!("could not change the quick copy tip: {e}"))
+        .unwrap_or(false);
+    if changed {
+        let app = app.clone();
+        std::thread::spawn(move || prefs::flush(&app));
     }
 }
 
-/// Counts a copy, save or share that worked (see `overlay::export`).
+/// Counts a copy, save or share that just worked (see `overlay::export`). Call it as it
+/// happens: the time is taken now, and calls are counted in order.
 pub fn record<R: Runtime>(app: &AppHandle<R>, output: Output) {
     let now = chrono::Utc::now().timestamp_millis();
-    with_prefs(app, |store| record_in(store, output, now));
+    update(app, |tip, quick_copy| tip.record(output, quick_copy, now));
 }
 
-/// A capture opened with the tip.
+/// A capture showed the tip.
 pub fn showing<R: Runtime>(app: &AppHandle<R>) {
-    with_prefs(app, |store| change(store, |tip, _| tip.showing()));
+    update(app, |tip, _| tip.showing());
 }
 
 /// The tip's "Not now": it never shows again.
 #[tauri::command]
 pub async fn quick_copy_tip_not_now<R: Runtime>(app: AppHandle<R>) {
-    with_prefs(&app, |store| change(store, |tip, _| tip.end()));
+    update(&app, |tip, _| tip.end());
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prefs::Prefs;
     use crate::prefs::tests::FakeStorage;
     use serde_json::json;
 
@@ -282,21 +293,30 @@ mod tests {
         }
     }
 
+    /// [`change`] with a plain copy or another output at `now`.
+    fn record_in(storage: &impl Storage, output: Output, now: i64) -> bool {
+        change(storage, |tip, quick_copy| {
+            tip.record(output, quick_copy, now)
+        })
+    }
+
     #[test]
-    fn changes_are_saved_only_when_something_changed() {
+    fn changes_are_kept_in_memory_in_order_and_only_when_something_changed() {
         let storage = FakeStorage::default();
-        record_in(&storage, Output::Other, 0);
-        assert_eq!(storage.saves.get(), 0, "nothing to reset");
-        record_in(&storage, Output::PlainCopy, 0);
-        assert_eq!(storage.load().quick_copy_tip.copies, [0]);
-        change(&storage, |tip, _| tip.showing());
+        assert!(!record_in(&storage, Output::Other, 0), "nothing to reset");
+        assert_eq!(storage.staged.get(), 0);
+        for t in [0, 1, 2] {
+            assert!(record_in(&storage, Output::PlainCopy, t));
+        }
+        // Read at once, as the next capture does; nothing written yet.
+        assert!(storage.load().quick_copy_tip.shows(false));
+        assert_eq!((storage.staged.get(), storage.saves.get()), (3, 0));
+        assert!(change(&storage, |tip, _| tip.showing()));
         assert_eq!(storage.load().quick_copy_tip.shown, 1);
-        change(&storage, |tip, _| tip.end());
+        assert!(change(&storage, |tip, _| tip.end()));
+        assert!(!change(&storage, |tip, _| tip.end()));
+        assert!(!record_in(&storage, Output::PlainCopy, 3));
         assert!(storage.load().quick_copy_tip.done);
-        let saves = storage.saves.get();
-        change(&storage, |tip, _| tip.end());
-        record_in(&storage, Output::PlainCopy, 1);
-        assert_eq!(storage.saves.get(), saves);
 
         // Quick copy on in the prefs ends it.
         let on = FakeStorage::default();
@@ -304,9 +324,19 @@ mod tests {
         record_in(&on, Output::PlainCopy, 0);
         assert!(on.load().quick_copy_tip.done);
 
-        // A failed save is logged only.
-        let failing = FakeStorage::failing();
-        record_in(&failing, Output::PlainCopy, 0);
-        assert_eq!(failing.saves.get(), 1);
+        // Without a store nothing is kept (logged), and so nothing is written either.
+        assert!(!record_in(&prefs::Unsaved, Output::PlainCopy, 0));
+    }
+
+    #[test]
+    fn a_nonsense_copy_time_counts_as_old() {
+        let mut tip = Tip {
+            copies: vec![i64::MIN, i64::MAX, 2 * MIN],
+            ..Tip::default()
+        };
+        tip.record(Output::PlainCopy, false, 3 * MIN);
+        assert_eq!(tip.copies, [2 * MIN, 3 * MIN]);
+        assert!(!recent(i64::MIN, i64::MAX) && !recent(i64::MAX, i64::MIN));
+        assert!(recent(0, WINDOW_MS - 1) && !recent(0, WINDOW_MS));
     }
 }
