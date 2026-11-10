@@ -484,8 +484,8 @@
     // Keys typed in a field (the size badge, the hex color) are its own: Enter applies there.
     // Copy and Save there are the capture's, taking what was typed first (see `fieldShortcut`).
     const own = output ? fieldShortcut(e.target, output === 'overlay_copy') : typing(e.target)
-    const inBadge = e.target instanceof Element && !!e.target.closest('[data-size-badge]')
-    if (own || (inBadge && !output)) return
+    if (own || (!output && e.target instanceof Element && e.target.closest('[data-size-badge]')))
+      return
     // Enter and Space on a focused control (Save, a tool, a menu item) press that control only.
     if ((e.key === 'Enter' || e.key === ' ') && control(e.target)) return
     // Copy and Save always work, closing an open toolbar menu first, unless text is being

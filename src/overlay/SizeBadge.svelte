@@ -1,7 +1,7 @@
 <script lang="ts">
   import LockIcon from '@lucide/svelte/icons/link-2'
   import { lockedSize, type Size } from './geometry'
-  import { shortcut } from './keys'
+  import { fieldShortcut, shortcut } from './keys'
 
   /**
    * The selection size in physical px, as two fields: type an exact size and press Enter.
@@ -61,9 +61,13 @@
     apply()
   }
 
-  // Copy and Save go on to the capture (see `fieldShortcut`), with the size typed so far.
+  // Copy and Save that go on to the capture (see `fieldShortcut`) take the size typed so far,
+  // if it changed. This runs first: Svelte delegates it to the app root, below the overlay's
+  // window listener.
   function onkeydown(e: KeyboardEvent) {
-    if (shortcut(e, 'c') || shortcut(e, 's')) apply()
+    const copy = shortcut(e, 'c')
+    if (!(copy || shortcut(e, 's')) || fieldShortcut(e.currentTarget, copy)) return
+    if (width !== size.width || height !== size.height) apply()
   }
 
   // Leaving the form without Enter cancels the edit.

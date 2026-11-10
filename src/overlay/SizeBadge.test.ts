@@ -61,8 +61,10 @@ describe('SizeBadge', () => {
     await userEvent.type(width(), '120{Control>}c{/Control}')
     expect(onresize).toHaveBeenCalledWith({ width: 120, height: 200 }, false)
     expect(width()).not.toHaveFocus()
-    // Outside the fields (the lock toggle focused), they apply nothing.
+    // Outside the fields (the lock toggle focused), or with nothing changed, they apply nothing.
     lock().focus()
+    await userEvent.keyboard('{Control>}s{/Control}')
+    await userEvent.click(width())
     await userEvent.keyboard('{Control>}s{/Control}')
     expect(onresize).toHaveBeenCalledOnce()
     // Other shortcuts leave the edit alone.
