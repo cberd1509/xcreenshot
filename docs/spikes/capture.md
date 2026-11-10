@@ -13,8 +13,10 @@ Use the [`xcap`](https://crates.io/crates/xcap) crate (0.9.8) on all platforms, 
   Compiles in CI; not run on Windows yet (M5).
 - Fastest option tested, plain Rust build, no Swift runtime to bundle.
 
-xcap stays the default. Since #49, macOS 14+ also has a ScreenCaptureKit backend that takes over
-when xcap breaks (see below), so a macOS without `CGWindowListCreateImage` still captures.
+On macOS, a direct CoreGraphics capture now goes first and xcap takes over the displays
+it could not capture (#55, below): it makes the same call with fewer copies, so it holds less
+memory. Since #49, macOS 14+ also has a ScreenCaptureKit backend that takes over when both break
+(see below), so a macOS without `CGWindowListCreateImage` still captures.
 
 ## ScreenCaptureKit backend (#49)
 
@@ -40,24 +42,31 @@ unit-tested; `capture_displays` is still the one entry point.
 
 **Choosing at runtime** (`backend::Chooser`):
 
-- Auto (default): xcap first. Every display xcap could not capture (an error, a timeout, or a
-  frame that is entirely black) is captured again with ScreenCaptureKit; the others keep their
-  xcap frame. Black means every pixel is exactly black, so a dark screen with any content is
-  never rejected; a really black display keeps its frame if ScreenCaptureKit does no better.
-- One deadline (1 s) covers the whole capture: ScreenCaptureKit only gets the time xcap left, so
-  a fallback never stacks a second timeout.
-- After 3 xcap captures in a row with nothing usable, ScreenCaptureKit goes first; xcap still goes
-  first once every 10 captures, and goes back to first when it works. Any xcap error falls back,
-  a timeout too, so a stalled display can be the first use of ScreenCaptureKit (and its alert,
-  below).
+- Auto (default): CoreGraphics first on macOS (#55), then xcap. Every display one could not
+  capture (an error, a timeout, or a frame that is entirely black) is captured again with the
+  next, ScreenCaptureKit last; the others keep their frame. Each backend's first fallback in a
+  launch is logged as a warning, later ones at info. Black means every pixel is exactly black, so
+  a dark screen with any content is never rejected; a really black display keeps its frame if
+  ScreenCaptureKit does no better.
+- One deadline (1 s) covers the whole capture: each fallback only gets the time the backends
+  before it left, so a fallback never stacks a second timeout. CoreGraphics and xcap share one
+  stuck-display list (same call), so a display stuck in one goes straight to ScreenCaptureKit.
+- After 3 captures in a row in which CoreGraphics and xcap captured nothing usable,
+  ScreenCaptureKit goes first; they still go first once every 10 captures, and go back to first
+  when either works. Any error falls back, a timeout too, so a stalled display can be the first
+  use of ScreenCaptureKit (and its alert, below).
+- After 3 captures in a row in which CoreGraphics missed a display that xcap then captured (a
+  pixel format CoreGraphics refuses, for example), CoreGraphics is left out until the next
+  launch, with one warning, so it does not cost a second capture on every hotkey.
 - `CGWindowListCreateImage` missing: CoreGraphics is weakly linked (`build.rs`), so the app still
   starts; `dlsym` finds the symbol missing and only ScreenCaptureKit is used.
-- `XCREENSHOT_CAPTURE_BACKEND=xcap` or `=screencapturekit` (`sck`) forces one, no fallback.
-- Every capture logs how many displays each backend captured and its time, or the error and
-  its time when it fails.
-- The warm-up warms only the backend that goes first. ScreenCaptureKit is not touched while xcap
-  works: using it showed the "requesting to bypass the system private window picker" alert for
-  the terminal (see below), which xcap alone did not.
+- `XCREENSHOT_CAPTURE_BACKEND=cg`, `=xcap` or `=screencapturekit` (`sck`) forces one, no
+  fallback.
+- Every capture logs how many displays each backend captured and its time (`captured 1
+  display(s) with CoreGraphics (1) in 41 ms`), or the error and its time when it fails.
+- The warm-up warms only the backend that goes first. ScreenCaptureKit is not touched while the
+  old API works: using it showed the "requesting to bypass the system private window picker"
+  alert for the terminal (see below), which xcap alone did not.
 
 Measured with `cargo run --release --example capture` (each row a fresh process, so the first
 call is cold), same Mac, one 3600x2338 display, macOS 27, busy machine (other builds running):
@@ -193,11 +202,11 @@ frame dropped at once, same result in two runs each:
 | CoreGraphics | 10 MB | 79 MB | 47 MB |
 | xcap | 10 MB | 112 MB | 80 MB |
 
-**Decision:** xcap stays the default. CoreGraphics is 0–4 ms (up to 9%) faster at the median,
-below the 15% or 15 ms a switch needs, so the copies are not where the capture time goes. It does
-hold one frame (about 33 MB) less at the peak and 5 s after, which the allocator keeps either
-way. That is a reason to revisit it for memory alone, not for speed. It stays available for
-measuring: `XCREENSHOT_CAPTURE_BACKEND=cg`, and the `cg` rows of the example.
+**Decision:** CoreGraphics is now the macOS default, for memory. It is 0–4 ms (up to 9%)
+faster at the median, about equal, so the copies are not where the capture time goes. It holds
+one frame (about 33 MB) less at the peak and 5 s after, which the allocator keeps either way.
+xcap takes over any display it cannot capture, and `XCREENSHOT_CAPTURE_BACKEND=xcap` still forces
+xcap.
 
 ## Crop source (#9)
 
