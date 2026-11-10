@@ -14,11 +14,13 @@
 //! Rust holds Esc exactly when [`Phase::wants_escape`] says so: [`sync_escape`] runs after every
 //! phase change. Window and shortcut calls stay on the main thread.
 
-use super::{FrameInfo, Phase, captured_all, diff, display_at, display_id, label, ms_since};
+use super::{
+    FrameInfo, Phase, captured_all, diff, display_at, display_id, label, ms_since, paint_message,
+};
 use crate::capture::{self, Bounds, CaptureError, Display, DisplayFrame};
 use crate::focus;
 use crate::region::{self, Start};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 use tauri::ipc::Response;
@@ -49,6 +51,14 @@ const WATCHDOG: Duration = Duration::from_secs(2);
 
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 static NEXT_ESCAPE: AtomicU64 = AtomicU64::new(1);
+
+/// When the overlay was prewarmed (launch), until the first capture paints and logs it.
+static LAUNCHED: Mutex<Option<Instant>> = Mutex::new(None);
+/// Captures shown and closed since launch, for the memory log line.
+static CLOSED: AtomicU32 = AtomicU32::new(0);
+/// How long after a capture closes the app's memory is logged: once the frames are freed.
+/// The allocator may keep some for up to a minute (see `docs/spikes/capture.md`).
+const MEMORY_AFTER: Duration = Duration::from_secs(5);
 
 /// Overlay state, managed by the app.
 #[derive(Default)]
@@ -195,6 +205,7 @@ pub fn prewarm<R: Runtime>(app: &AppHandle<R>) {
 }
 
 fn prewarm_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) {
+    lock(&LAUNCHED).get_or_insert_with(Instant::now);
     let displays = match screen.displays() {
         Ok(displays) if !displays.is_empty() => displays,
         Ok(_) => return log::error!("no displays for the overlay"),
@@ -203,7 +214,34 @@ fn prewarm_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) {
     if let Err(e) = sync(app, &ids(&displays)) {
         log::error!("could not create overlay windows: {e}");
     }
-    std::thread::spawn(move || screen.warm_up());
+    std::thread::spawn(move || {
+        screen.warm_up();
+        // The baseline that memory after captures is compared with.
+        log_memory("after the startup warm-up");
+    });
+}
+
+/// Logs the app's own memory (the webviews are other processes). Nothing where it isn't read.
+fn log_memory(when: &str) {
+    if let Some(usage) = crate::memory::now() {
+        log::info!("memory {when}: {usage}");
+    }
+}
+
+/// Logs the memory [`MEMORY_AFTER`] the `closed`th capture closed, to show whether it
+/// returns to a steady level or grows with each capture. Not if another capture started
+/// meanwhile: its frames would count.
+fn log_memory_later<R: Runtime>(app: &AppHandle<R>, closed: u32) {
+    if crate::memory::now().is_none() {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(MEMORY_AFTER).await;
+        if matches!(*phase(&app), Phase::Idle) {
+            log_memory(&format!("{MEMORY_AFTER:?} after capture {closed} closed"));
+        }
+    });
 }
 
 /// Hotkey handler (main thread). Returns the session id if a capture started.
@@ -457,8 +495,11 @@ fn end_if<R: Runtime>(
     crate::notice::show_after_capture(app);
     // For any page that waits for a capture to end (onboarding's "Try it"). Only a capture
     // that was shown counts, not one that failed while capturing.
-    if shown && let Err(e) = app.emit(CAPTURE_CLOSED, ()) {
-        log::warn!("could not send {CAPTURE_CLOSED}: {e}");
+    if shown {
+        if let Err(e) = app.emit(CAPTURE_CLOSED, ()) {
+            log::warn!("could not send {CAPTURE_CLOSED}: {e}");
+        }
+        log_memory_later(app, CLOSED.fetch_add(1, Ordering::Relaxed) + 1);
     }
     // Last, so a waiting update restart sees the overlay gone.
     app.state::<Overlay>().idle.notify_waiters();
@@ -917,7 +958,8 @@ pub(crate) fn overlay_painted<R: Runtime>(
     }
     focus(app, paint.focus, paint.fallback);
     if let Some((total, capture)) = paint.first {
-        log::info!("overlay painted {total:.0} ms after the hotkey (capture {capture:.0} ms)");
+        let since_launch = lock(&LAUNCHED).take().map(|t| t.elapsed());
+        log::info!("{}", paint_message(total, capture, since_launch));
     }
 }
 

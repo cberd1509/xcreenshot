@@ -4,12 +4,17 @@
 //! Times each backend (xcap, ScreenCaptureKit) on the first display and on all displays, each in
 //! a fresh process so the first call is really cold, then compares what the two return and
 //! times the crop and PNG steps. `-- xcap all` (or `sck one`, ...) runs only that row.
+//!
+//! `-- first <seconds>` times the first capture after the startup warm-up, as the app does it:
+//! warm up, wait, then capture every display and copy each frame for its page. `-- memory <n>`
+//! prints this process's footprint over `n` such captures and while idle after them.
 
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::{ExtendedColorType, ImageEncoder};
 use std::process::Command;
 use std::time::{Duration, Instant};
 use xcreenshot_lib::capture::{self, Backend, CaptureError, DisplayFrame, PixelRect, Rect};
+use xcreenshot_lib::memory;
 
 const WARM_RUNS: usize = 10;
 
@@ -20,8 +25,11 @@ fn main() -> Result<(), CaptureError> {
         return Err(CaptureError::PermissionDenied);
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if let [backend, scope] = args.as_slice() {
-        return bench_row(backend, scope);
+    match args.as_slice() {
+        [mode, seconds] if mode == "first" => return first(seconds.parse().unwrap_or(2)),
+        [mode, runs] if mode == "memory" => return memory(runs.parse().unwrap_or(30)),
+        [backend, scope] => return bench_row(backend, scope),
+        _ => {}
     }
     let ids = ids()?;
     println!("{} display(s)", ids.len());
@@ -62,25 +70,83 @@ fn bench_row(name: &str, scope: &str) -> Result<(), CaptureError> {
     if scope == "one" {
         ids.truncate(1);
     }
-    let time = || -> Result<Duration, CaptureError> {
+    let (cold, warm) = cold_and_warm(|| {
         let t = Instant::now();
         capture::capture_displays_with(backend, &ids)?;
         Ok(t.elapsed())
-    };
+    })?;
+    println!(
+        "| {backend} | {} ({scope}) | {:.0} ms | {warm} |",
+        ids.len(),
+        ms(cold),
+    );
+    Ok(())
+}
+
+fn ms(d: Duration) -> f64 {
+    d.as_secs_f64() * 1000.0
+}
+
+/// One timed call, then [`WARM_RUNS`] more as "median ms (min–max)".
+fn cold_and_warm(
+    mut time: impl FnMut() -> Result<Duration, CaptureError>,
+) -> Result<(Duration, String), CaptureError> {
     let cold = time()?;
     let mut warm = (0..WARM_RUNS)
         .map(|_| time())
         .collect::<Result<Vec<_>, _>>()?;
     warm.sort_unstable();
-    let ms = |d: Duration| d.as_secs_f64() * 1000.0;
-    println!(
-        "| {backend} | {} ({scope}) | {:.0} ms | {:.0} ms ({:.0}–{:.0}) |",
-        ids.len(),
-        ms(cold),
+    let spread = format!(
+        "{:.0} ms ({:.0}–{:.0})",
         ms(warm[warm.len() / 2]),
         ms(warm[0]),
         ms(warm[warm.len() - 1]),
     );
+    Ok((cold, spread))
+}
+
+/// What the app does for one capture: every display, and a copy of each frame for its page
+/// (`overlay_frame`). Both are freed on return.
+fn capture_and_copy(ids: &[u32]) -> Result<Duration, CaptureError> {
+    let t = Instant::now();
+    let frames = capture::capture_displays(ids)?;
+    let _copies: Vec<Vec<u8>> = frames.iter().map(|f| f.image.as_raw().to_vec()).collect();
+    Ok(t.elapsed())
+}
+
+/// The first capture `seconds` after the warm-up (in a fresh process), then [`WARM_RUNS`] more.
+fn first(seconds: u64) -> Result<(), CaptureError> {
+    let ids = ids()?;
+    let t = Instant::now();
+    capture::warm_up()?;
+    let warm_up = t.elapsed();
+    std::thread::sleep(Duration::from_secs(seconds));
+    let (cold, warm) = cold_and_warm(|| capture_and_copy(&ids))?;
+    println!(
+        "warm-up {:.0} ms, first {seconds} s later {:.0} ms, warm {warm}",
+        ms(warm_up),
+        ms(cold),
+    );
+    Ok(())
+}
+
+/// This process's memory over `runs` captures (each as in [`first`]) and while idle after, as
+/// the app logs it.
+fn memory(runs: usize) -> Result<(), CaptureError> {
+    let usage = || memory::now().map_or_else(|| "unknown".to_owned(), |u| u.to_string());
+    let ids = ids()?;
+    capture::warm_up()?;
+    println!("after the warm-up: {}", usage());
+    for run in 1..=runs {
+        capture_and_copy(&ids)?;
+        if run == 1 || run % 10 == 0 {
+            println!("after {run} capture(s): {}", usage());
+        }
+    }
+    for idle in [1, 10, 60] {
+        std::thread::sleep(Duration::from_secs(idle));
+        println!("then idle {idle} s: {}", usage());
+    }
     Ok(())
 }
 

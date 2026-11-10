@@ -20,7 +20,7 @@ use crate::focus::Front;
 use crate::region::{self, LogicalRect, Mode, Monitor, Region};
 use image::RgbaImage;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const LABEL_PREFIX: &str = "overlay-";
 
@@ -205,6 +205,20 @@ pub struct Paint {
 
 fn ms_since(t: Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1000.0
+}
+
+/// The log line for a session's first paint: hotkey to paint and the capture's part, in ms.
+/// `since_launch` is set for the first capture since launch, which is slower (#55): the line
+/// says so, and how long after launch it came, since that changes its time.
+pub fn paint_message(total: f64, capture: f64, since_launch: Option<Duration>) -> String {
+    let line = format!("overlay painted {total:.0} ms after the hotkey (capture {capture:.0} ms)");
+    match since_launch {
+        Some(d) => format!(
+            "{line}; first capture since launch, {} s after it",
+            d.as_secs()
+        ),
+        None => line,
+    }
 }
 
 impl Phase {
@@ -631,6 +645,19 @@ pub(crate) mod tests {
         )
         .unwrap();
         p
+    }
+
+    #[test]
+    fn the_first_capture_since_launch_says_so() {
+        assert_eq!(
+            paint_message(120.4, 81.6, None),
+            "overlay painted 120 ms after the hotkey (capture 82 ms)"
+        );
+        assert_eq!(
+            paint_message(160.0, 95.0, Some(Duration::from_millis(62_900))),
+            "overlay painted 160 ms after the hotkey (capture 95 ms); first capture since \
+             launch, 62 s after it"
+        );
     }
 
     #[test]

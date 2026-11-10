@@ -30,6 +30,7 @@
   import { outputRequest } from './annotate/output'
   import type { Factor } from './annotate/upscale'
   import { control, fieldShortcut, keyLabels, modifier, shortcut, typing } from './keys'
+  import { release } from './buffer'
   import { afterPaint } from './paint'
   import { TOAST } from './panel'
   import Magnifier from './Magnifier.svelte'
@@ -213,16 +214,17 @@
     quick = info.quickCopy
     // Before the frame arrives, so the tip going on another display meanwhile is not undone.
     tip = info.quickCopyTip
+    let pixels: Uint8ClampedArray<ArrayBuffer> | undefined
     try {
       const data = await invoke<ArrayBuffer | Uint8Array<ArrayBuffer>>('overlay_frame', {
         session: info.session,
       })
-      if (current !== info.session || generation !== drawing) return
       // Raw RGBA. Tauri returns an ArrayBuffer; accept a view too.
-      const pixels =
+      pixels =
         data instanceof ArrayBuffer
           ? new Uint8ClampedArray(data)
           : new Uint8ClampedArray(data.buffer, data.byteOffset, data.byteLength)
+      if (current !== info.session || generation !== drawing) return
       // Empty: the session closed while this window was loading.
       if (pixels.length === 0) return
       canvas.width = info.width
@@ -247,6 +249,10 @@
       // Never leave the user on a dead overlay.
       console.error('overlay could not draw its frame', e)
       close(info.session)
+    } finally {
+      // Freed however the draw ends, once the paint is reported (off the hotkey's clock), so
+      // the page doesn't hold a second frame until the garbage collector runs.
+      if (pixels) release(pixels.buffer)
     }
   }
 

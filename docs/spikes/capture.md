@@ -143,6 +143,24 @@ it closed). It reaches a plateau after one or two captures and does not grow wit
   and a transparent page background saved nothing.
 - **GPU:** about 14 MB idle, 23–36 MB right after a capture, back to about 13 MB within 10 s.
 
+Since then, the page frees its copy of the frame once it has drawn it and reported the paint
+(`ArrayBuffer.prototype.transfer(0)`), instead of keeping it until garbage collection. That
+33 MB should no longer stay in WebContent after a capture; not yet measured in the app.
+
+The log now has what is needed to measure this in a release build:
+
+- `overlay painted … ms after the hotkey (capture … ms); first capture since launch, N s after
+  it` on the first capture shown, so a capture right after launch and one minutes later can be
+  told apart.
+- `memory after the startup warm-up: resident … MB, footprint … MB`, then the same 5 s after
+  each capture closes (`memory 5s after capture N closed: …`), skipped if another capture
+  started meanwhile. macOS only, and the app's own process; the WebContent processes still need
+  `footprint` or Activity Monitor.
+
+`cargo run --release --example capture -- first 60` times the first capture and frame copy 60 s
+after the warm-up, and `-- memory 30` prints the process footprint over 30 captures and the
+idle minute after them.
+
 ## Crop source (#9)
 
 The crop for copy and save (#12) needs the exact captured pixels. Two options:

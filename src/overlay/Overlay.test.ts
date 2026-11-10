@@ -251,6 +251,10 @@ describe('Overlay', () => {
   it('draws the frame on show, then reports the paint', async () => {
     const { container } = await mount()
     expect(called('overlay_frame')).toHaveLength(0)
+    let bytes = 0
+    context.putImageData.mockImplementation((image) => {
+      bytes = image.data.length
+    })
 
     await emit('overlay:show', small(3))
     await waitFor(() => expect(called('overlay_painted')).toHaveLength(1))
@@ -259,7 +263,9 @@ describe('Overlay', () => {
     const canvas = container.querySelector('canvas')!
     expect([canvas.width, canvas.height]).toEqual([4, 2])
     const [image, x, y] = context.putImageData.mock.calls[0]
-    expect([image.width, image.height, image.data.length, x, y]).toEqual([4, 2, 32, 0, 0])
+    expect([image.width, image.height, bytes, x, y]).toEqual([4, 2, 32, 0, 0])
+    // Once drawn, the page's copy of the frame is freed.
+    expect(image.data.buffer.byteLength).toBe(0)
   })
 
   it('draws a frame sent while it was loading', async () => {
