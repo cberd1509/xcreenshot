@@ -34,7 +34,10 @@ mod os {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSModalPanelWindowLevel, NSModalResponseOK, NSSavePanel};
     use objc2_foundation::{NSArray, NSPoint, NSString, NSURL};
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
+    use std::ptr::NonNull;
     use tauri::{Runtime, WebviewWindow};
 
     /// Shows the Save dialog in `dir` with `name` filled in, centred on the display `window`
@@ -61,8 +64,16 @@ mod os {
         panel.setAllowedFileTypes(Some(&png));
         panel.setCanCreateDirectories(true);
         panel.setNameFieldStringValue(&NSString::from_str(name));
-        if let Some(dir) = dir.and_then(Path::to_str) {
-            let url = NSURL::fileURLWithPath_isDirectory(&NSString::from_str(dir), true);
+        // From the path's bytes, so a folder whose name isn't UTF-8 still opens.
+        if let Some(dir) = dir.and_then(|d| CString::new(d.as_os_str().as_bytes()).ok()) {
+            // SAFETY: a NUL-terminated C string that outlives the call.
+            let url = unsafe {
+                NSURL::fileURLWithFileSystemRepresentation_isDirectory_relativeToURL(
+                    NonNull::from(dir.as_c_str()).cast(),
+                    true,
+                    None,
+                )
+            };
             panel.setDirectoryURL(Some(&url));
         }
         // A normal modal panel. The overlays are hidden while it is open; above them (1000) it
