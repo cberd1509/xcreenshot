@@ -51,24 +51,23 @@ pub fn show_window<'a, R: Runtime>(
 /// Whether one of the app's regular windows (Settings, a notice) other than `closing` is on
 /// screen. Overlay windows and the toasts don't count.
 pub fn window_open<R: Runtime>(app: &AppHandle<R>, closing: Option<&str>) -> bool {
-    !open_windows(app, closing).is_empty()
+    open_windows(app, closing).next().is_some()
 }
 
 /// The windows [`window_open`] counts.
-pub fn open_windows<R: Runtime>(
+pub fn open_windows<'a, R: Runtime>(
     app: &AppHandle<R>,
-    closing: Option<&str>,
-) -> Vec<WebviewWindow<R>> {
+    closing: Option<&'a str>,
+) -> impl Iterator<Item = WebviewWindow<R>> + 'a {
     app.webview_windows()
         .into_iter()
-        .filter(|(label, w)| {
+        .filter(move |(label, w)| {
             Some(label.as_str()) != closing
                 && crate::overlay::display_id(label).is_none()
                 && label != crate::toast::LABEL
                 && w.is_visible().unwrap_or(false)
         })
         .map(|(_, w)| w)
-        .collect()
 }
 
 #[cfg(test)]

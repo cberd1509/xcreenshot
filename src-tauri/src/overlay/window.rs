@@ -66,8 +66,9 @@ pub struct Overlay {
     phase: Mutex<Phase>,
     /// The displays whose overlay window is on screen, as Rust last showed or hid them.
     shown: Mutex<Vec<u32>>,
-    /// The displays whose overlay window is transparent and click-through ([`stage`]), on
-    /// screen while it renders its frame or hidden since.
+    /// The displays whose overlay window is transparent and click-through, so it must be
+    /// unstaged before it shows: staged for its paint ([`stage`]), on screen while it renders
+    /// its frame or hidden since, or concealed as the overlay closed ([`conceal`]).
     staged: Mutex<Vec<u32>>,
     /// Fired when the phase returns to Idle; the update restart waits for it.
     pub(crate) idle: tokio::sync::Notify,
@@ -484,17 +485,15 @@ fn end_if<R: Runtime>(
     sync_escape(app);
     // Before the overlay hides: AppKit would make the next window of ours key at once.
     let parked = share && before.is_some_and(|front| focus::park_for_share(app, front));
+    // Concealed and hidden before the page frees its frame.
     for (label, window) in app.webview_windows() {
-        if display_id(&label).is_some() {
-            conceal(&window);
+        if display_id(&label).is_none() {
+            continue;
         }
-    }
-    hide_if(app, |_| true);
-    for label in app
-        .webview_windows()
-        .keys()
-        .filter(|l| display_id(l).is_some())
-    {
+        conceal(&window);
+        if !hide_window(&label, &window) {
+            continue;
+        }
         if let Err(e) = app.emit_to(label.as_str(), CLOSED_EVENT, ()) {
             log::warn!("could not tell {label} to free its frame: {e}");
         }
@@ -529,14 +528,21 @@ pub(super) fn hide<R: Runtime>(app: &AppHandle<R>) {
 /// Hides the overlay windows of the displays where `which` holds. Main thread only.
 fn hide_if<R: Runtime>(app: &AppHandle<R>, which: impl Fn(u32) -> bool) {
     for (label, window) in app.webview_windows() {
-        if display_id(&label).is_some_and(&which)
-            && let Err(e) = set_shown(&window, false)
-        {
-            // A window left on screen would block input: remove it; `sync` rebuilds it.
-            log::warn!("could not hide {label}, destroying it: {e}");
-            let _ = window.destroy();
+        if display_id(&label).is_some_and(&which) {
+            hide_window(&label, &window);
         }
     }
+}
+
+/// Hides one overlay window, or destroys it if it can't be: a window left on screen would block
+/// input, and `sync` rebuilds it. Returns whether it was hidden. Main thread only.
+fn hide_window<R: Runtime>(label: &str, window: &WebviewWindow<R>) -> bool {
+    set_shown(window, false)
+        .inspect_err(|e| {
+            log::warn!("could not hide {label}, destroying it: {e}");
+            let _ = window.destroy();
+        })
+        .is_ok()
 }
 
 /// Shows `displays` again after [`hide`], focusing `focus`, and takes Esc back if Rust held it.

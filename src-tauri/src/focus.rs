@@ -138,8 +138,8 @@ pub trait Apps: Send + Sync {
 pub struct Focus {
     apps: Box<dyn Apps>,
     seen: Mutex<Seen>,
-    /// The windows a share put away, by label; `Some` (maybe empty, with the notices hidden for
-    /// the capture) until another app comes to the front.
+    /// The windows a share put away, by label; `Some` (maybe empty: the notices hidden for the
+    /// capture stay hidden too) until another app comes to the front.
     parked: Mutex<Option<Vec<String>>>,
 }
 
@@ -163,8 +163,8 @@ impl Focus {
         Self::new(Os)
     }
 
-    /// `app` came to the front. Returns the windows a share put away, to bring back, once it
-    /// isn't xcreenshot.
+    /// `app` came to the front. Once it isn't xcreenshot, returns what a share put away, to
+    /// bring back ([`unpark`]).
     pub fn activated(&self, app: AppId) -> Option<Vec<String>> {
         let mut seen = self.seen();
         seen.activated(app, std::process::id());
@@ -226,18 +226,19 @@ pub fn hand_back<R: Runtime>(app: &AppHandle<R>, before: Front, closing: Option<
     }
 }
 
-/// Only macOS raises our other windows when the overlay goes: Windows activates the window
-/// behind it, and the picked app takes the foreground.
-const PARKS: bool = cfg!(target_os = "macos");
-
 /// A service was picked in the share sheet and the overlay is about to hide (main thread):
 /// hides our open windows if [`parks_for_share`] says so, before macOS can make one key. The
 /// notices hidden for the capture count as open, and stay hidden. Returns whether it parked.
+/// macOS only: Windows activates the window behind the overlay, and the picked app takes the
+/// foreground.
 pub fn park_for_share<R: Runtime>(app: &AppHandle<R>, before: Front) -> bool {
-    let Some(focus) = app.try_state::<Focus>().filter(|_| PARKS) else {
+    if !cfg!(target_os = "macos") {
+        return false;
+    }
+    let Some(focus) = app.try_state::<Focus>() else {
         return false;
     };
-    let open = windows::open_windows(app, None);
+    let open: Vec<_> = windows::open_windows(app, None).collect();
     let window_open = !open.is_empty() || crate::notice::hidden_for_capture(app);
     let seen = *focus.seen();
     if !parks_for_share(before, &seen, window_open) {
@@ -255,10 +256,10 @@ pub fn park_for_share<R: Runtime>(app: &AppHandle<R>, before: Front) -> bool {
     true
 }
 
-/// Brings back the windows a share put away (see [`Focus::activated`]), behind the app now in
-/// front and without focus, then the notices hidden for the capture. A window shown again
-/// meanwhile (Settings from the menu) is left alone, and so are the notices while a capture is
-/// open: it shows them when it closes. Main thread only.
+/// Another app is in front: brings back the windows a share put away (see
+/// [`Focus::activated`]), behind it and without focus, then the notices it kept hidden. A
+/// window shown again meanwhile (Settings from the menu) is left alone, and so are the notices
+/// while a capture is open: it shows them when it closes. Main thread only.
 pub fn unpark<R: Runtime>(app: &AppHandle<R>, labels: &[String]) {
     for label in labels {
         if let Some(window) = app.get_webview_window(label)
@@ -742,13 +743,8 @@ pub(crate) mod tests {
         assert_eq!(focus.activated(SAFARI), Some(Vec::new()), "for the notices");
     }
 
-    fn mock_app() -> tauri::App<tauri::test::MockRuntime> {
-        tauri::test::mock_builder()
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .unwrap()
-    }
-
     #[test]
+    #[cfg(target_os = "macos")]
     fn a_share_hides_settings_without_handing_focus_back() {
         let fake = Fake::new(Some(SAFARI));
         let app = crate::overlay::window::tests::app();
@@ -769,8 +765,15 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_share_parks_nothing_without_focus_managed() {
-        assert!(!park_for_share(mock_app().handle(), Front::Other));
+    fn a_share_parks_nothing_without_focus_managed_or_off_macos() {
+        let app = crate::overlay::window::tests::app();
+        assert!(!park_for_share(app.handle(), Front::Other));
+        app.manage(Focus::new(Fake::new(Some(SAFARI))));
+        tauri::WebviewWindowBuilder::new(app.handle(), "settings", tauri::WebviewUrl::default())
+            .build()
+            .unwrap();
+        let parks = park_for_share(app.handle(), Front::Other);
+        assert_eq!(parks, cfg!(target_os = "macos"));
     }
 
     #[test]

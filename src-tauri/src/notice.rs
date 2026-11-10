@@ -498,6 +498,7 @@ pub(crate) mod tests {
         }
 
         #[test]
+        #[cfg(target_os = "macos")]
         fn a_share_puts_settings_and_the_notice_away_until_another_app_is_in_front() {
             use crate::overlay::window::{close_for_share, phase};
             let fake = Fake::new(Some(SAFARI));
