@@ -1,5 +1,19 @@
 # xcreenshot
 
+## 0.9.1
+
+### Patch Changes
+
+- [#143](https://github.com/cberd1509/xcreenshot/pull/143) [`e348f5e`](https://github.com/cberd1509/xcreenshot/commit/e348f5e1de70dee79fd1d95e5cb95bf4e2e439ec) Thanks [@cberd1509](https://github.com/cberd1509)! - The first capture after launch no longer flashes black.
+
+- [#139](https://github.com/cberd1509/xcreenshot/pull/139) [`811470c`](https://github.com/cberd1509/xcreenshot/commit/811470cf23bb416fc2dcc5a5a1ad2c06830b398c) Thanks [@cberd1509](https://github.com/cberd1509)! - The log keeps more history, so earlier lines aren't lost.
+
+- [#137](https://github.com/cberd1509/xcreenshot/pull/137) [`dc7dbf1`](https://github.com/cberd1509/xcreenshot/commit/dc7dbf172089c92b86ce64bcab964e230ea8d467) Thanks [@cberd1509](https://github.com/cberd1509)! - After you pick a service in the share menu, the screen no longer flashes black and Settings no longer takes focus from the service.
+
+- [#143](https://github.com/cberd1509/xcreenshot/pull/143) [`e348f5e`](https://github.com/cberd1509/xcreenshot/commit/e348f5e1de70dee79fd1d95e5cb95bf4e2e439ec) Thanks [@cberd1509](https://github.com/cberd1509)! - The Copied, Saved and Shared toasts sit above the taskbar or the Dock instead of under it.
+
+- [#139](https://github.com/cberd1509/xcreenshot/pull/139) [`811470c`](https://github.com/cberd1509/xcreenshot/commit/811470cf23bb416fc2dcc5a5a1ad2c06830b398c) Thanks [@cberd1509](https://github.com/cberd1509)! - The update check works as soon as a new version is out.
+
 ## 0.9.0
 
 ### Minor Changes
