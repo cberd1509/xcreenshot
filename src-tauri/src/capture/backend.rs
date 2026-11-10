@@ -145,12 +145,25 @@ impl Chooser {
         order: &[Backend],
         ids: &[u32],
         budget: Duration,
+        capture: impl FnMut(Backend, &[u32], Duration) -> Vec<Result<DisplayFrame, CaptureError>>,
+    ) -> (Result<Vec<DisplayFrame>, CaptureError>, Used) {
+        self.run_with_clock(order, ids, budget, capture, Instant::now)
+    }
+
+    /// [`Chooser::run`] with the time read from `now`, so tests do not depend on how fast the
+    /// machine is.
+    fn run_with_clock(
+        &self,
+        order: &[Backend],
+        ids: &[u32],
+        budget: Duration,
         mut capture: impl FnMut(Backend, &[u32], Duration) -> Vec<Result<DisplayFrame, CaptureError>>,
+        now: impl Fn() -> Instant,
     ) -> (Result<Vec<DisplayFrame>, CaptureError>, Used) {
         if self.struck_out() {
             self.sck_first.fetch_add(1, Ordering::Relaxed);
         }
-        let deadline = Instant::now() + budget;
+        let deadline = now() + budget;
         // `None` until a backend has tried the display.
         let mut results: Vec<Option<Result<DisplayFrame, CaptureError>>> =
             ids.iter().map(|_| None).collect();
@@ -162,7 +175,7 @@ impl Chooser {
             if missing.is_empty() {
                 break;
             }
-            let left = deadline.saturating_duration_since(Instant::now());
+            let left = deadline.saturating_duration_since(now());
             if left.is_zero() {
                 log::warn!("no time left to try {backend}");
                 break;
@@ -449,36 +462,38 @@ mod tests {
     #[test]
     fn the_fallback_only_gets_the_time_that_is_left() {
         let c = Chooser::new();
-        let budget = Duration::from_millis(200);
+        let ms = Duration::from_millis;
+        // A fake clock: each backend moves it on by the time it "took".
+        let clock = std::cell::Cell::new(Instant::now());
+        let now = || clock.get();
         let given = RefCell::new(vec![]);
-        let started = Instant::now();
-        let _ = c.run(&[XCAP, SCK], &[1], budget, |b, ids, left| {
-            given.borrow_mut().push((b, left));
-            if b == XCAP {
-                std::thread::sleep(Duration::from_millis(80));
-            }
-            each(ids, |_| Err(CaptureError::EmptyImage))
-        });
-        let given = given.into_inner();
-        assert_eq!(given[0].0, XCAP);
-        assert!(given[0].1 <= budget && given[0].1 > budget - Duration::from_millis(50));
-        assert_eq!(given[1].0, SCK);
-        assert!(given[1].1 <= budget - Duration::from_millis(80));
+        let _ = c.run_with_clock(
+            &[XCAP, SCK],
+            &[1],
+            ms(200),
+            |b, ids, left| {
+                given.borrow_mut().push((b, left));
+                clock.set(clock.get() + ms(80));
+                each(ids, |_| Err(CaptureError::EmptyImage))
+            },
+            now,
+        );
+        assert_eq!(*given.borrow(), [(XCAP, ms(200)), (SCK, ms(120))]);
 
         // A backend that uses up the whole budget leaves nothing to try.
         let tried = RefCell::new(vec![]);
-        let _ = c.run(
+        let _ = c.run_with_clock(
             &[XCAP, SCK],
             &[1],
-            Duration::from_millis(30),
+            ms(30),
             |b, ids, left| {
                 tried.borrow_mut().push(b);
-                std::thread::sleep(left + Duration::from_millis(5));
+                clock.set(clock.get() + left + ms(5));
                 each(ids, |_| Err(CaptureError::EmptyImage))
             },
+            now,
         );
         assert_eq!(*tried.borrow(), [XCAP]);
-        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]
