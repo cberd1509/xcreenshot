@@ -7,7 +7,7 @@
    - `xcreenshot_<version>_universal.dmg` for people to download
    - `xcreenshot_<version>_universal.app.tar.gz` and its `.sig`, used by the in-app updater
    - `xcreenshot_<version>_x64-setup.exe`, the Windows installer, which the updater also uses, and its `.sig`
-   - `latest.json`, the update manifest with the macOS and Windows entries (signed macOS builds only)
+   - `latest.json`, the update manifest with the macOS and Windows entries (signed macOS builds only, not betas)
    - release notes taken from that version's `CHANGELOG.md` section, with a note about the unsigned Windows installer
 3. Wait until the draft's title loses "(adding Windows)": the Windows installer and its `latest.json` entries go in last. Then download the DMG and the installer from the draft, install them and check that they work.
 4. Publish the draft. Publishing creates the `v<version>` tag. The workflow then points `latest.json` at the tag's download URLs (a few seconds), and the updater starts offering the new version.
@@ -21,6 +21,42 @@ The macOS job creates the draft. The Windows installer is built at the same time
 **Never publish while the title says "(adding Windows)"**: that draft has no Windows installer or `latest.json` entries. The job checks the release is still a draft right before each write, so it leaves a release published early alone; a publish in the second between a check and a write can still slip through, and the job reports it afterwards. Publishing without Windows also fails the run that publishing starts. Either way, add the installer and its `latest.json` entries by hand, or publish a patch release.
 
 To check the release's Windows build without a release, run **Release** with **dry-run** on `main` (`gh workflow run release.yml --ref main -f dry-run=true`). It builds and signs the installer with the updater key; nothing is uploaded and no release is created or changed. It refuses other branches, because the build has the updater key; to try a branch, use the Windows test build below.
+
+## Beta
+
+To ship `1.0.0-beta.N` before `1.0.0`, put Changesets in pre mode. Each version PR then makes the next beta.
+
+**Start** (on a new branch from an up-to-date `main`; open a PR and merge it):
+
+```sh
+pnpm changeset pre enter beta   # writes .changeset/pre.json
+pnpm changeset                  # pick "major", summary e.g. "Version 1.0"
+git add .changeset
+git commit -m "chore(release): enter beta for 1.0.0"
+```
+
+The `major` changeset turns `0.x` into `1.0.0`; without it the beta would be `0.x.y-beta.0`. The version PR is then titled "chore(release): version packages (beta)" and bumps `package.json` to `1.0.0-beta.0`. Each later version PR gives `-beta.1`, `-beta.2` and so on. Don't edit the version by hand.
+
+**What gets published:** the draft `v1.0.0-beta.N` is a GitHub **prerelease** (any version with a `-`) with the DMG, the Windows installer and the updater bundles, but no `latest.json`. Check and publish it as usual. Leave "Set as a pre-release" ticked. `releases/latest` skips prereleases, so:
+
+- stable users' updater keeps reading the stable `latest.json` and never sees the beta;
+- the landing page (which reads `releases/latest`) and the README's install links keep offering the stable release.
+
+If the flag is changed by hand when publishing, the `updater-urls` job fixes it. A beta published as a full release is marked a prerelease straight away. A stable version published as a prerelease becomes the latest release once its `latest.json` is rewritten, but only if it's newer than the current latest release; otherwise the job only warns. Either fix rebuilds the landing page.
+
+**Testing:** send testers the prerelease's page. They install the DMG or the Windows installer as usual. Betas don't update to newer betas: the updater only reads the stable `latest.json`, which is older, so testers install each beta by hand. When `1.0.0` is published they get it like everyone else, because `1.0.0` is newer than `1.0.0-beta.N`. The updater never downgrades, so leaving the beta early means reinstalling the stable release.
+
+**Version formats:** the app and the macOS `Info.plist` carry the full `1.0.0-beta.N` (Developer ID signing and notarization accept it). The NSIS installer's Windows file version is numeric, so Tauri derives it from the numbers only: `1.0.0.0` for every beta. An MSI (WiX) build would fail, because WiX rejects non-numeric prerelease versions; the workflow builds only NSIS, and locally use `pnpm tauri build --bundles nsis`.
+
+**Release 1.0.0** (on a new branch; open a PR and merge it):
+
+```sh
+pnpm changeset pre exit   # marks .changeset/pre.json for exit
+git add .changeset
+git commit -m "chore(release): exit beta for 1.0.0"
+```
+
+The next version PR bumps `package.json` to `1.0.0` and removes `pre.json` and the used changesets. Merge it and release as above: `1.0.0` is a normal release and the updater offers it.
 
 ## Secrets
 

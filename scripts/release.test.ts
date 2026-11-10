@@ -9,10 +9,15 @@ import {
   WINDOWS_NOTE,
   addWindows,
   changelogSection,
+  compareVersions,
+  flagFix,
+  isPrerelease,
   main,
+  parseVersion,
   releaseNotes,
   tagDownloadUrls,
   type UpdaterManifest,
+  wantsManifest,
 } from './release.ts'
 
 const CHANGELOG = `# xcreenshot
@@ -53,6 +58,9 @@ const ASSETS = [
   { id: 102, name: `${TARBALL}.sig` },
 ]
 
+const workflow = (name: string) =>
+  readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), 'utf8')
+
 describe('changelogSection', () => {
   it('returns the body of the matching version only', () => {
     expect(changelogSection(CHANGELOG, '0.2.0')).toBe(
@@ -82,11 +90,7 @@ describe('releaseNotes', () => {
   it('marks unsigned notes the way the publish check looks for them', () => {
     expect(releaseNotes('- a', true)).toContain(UNSIGNED_MARKER)
     expect(releaseNotes('- a', false)).not.toContain(UNSIGNED_MARKER)
-    const workflow = readFileSync(
-      new URL('../.github/workflows/release.yml', import.meta.url),
-      'utf8',
-    )
-    expect(workflow).toContain(`*"${UNSIGNED_MARKER}"*`)
+    expect(workflow('release.yml')).toContain(`*"${UNSIGNED_MARKER}"*`)
   })
 
   it('tells Windows users how to get past SmartScreen', () => {
@@ -162,6 +166,111 @@ describe('addWindows', () => {
   })
 })
 
+describe('parseVersion', () => {
+  it('reads versions and tags, with prerelease identifiers', () => {
+    expect(parseVersion('1.0.0-beta.2')).toEqual({ core: [1, 0, 0], pre: ['beta', '2'] })
+    expect(parseVersion('v0.4.0')).toEqual({ core: [0, 4, 0], pre: [] })
+    expect(parseVersion('1.2.3+build.5')).toEqual({ core: [1, 2, 3], pre: [] })
+  })
+
+  it('rejects anything else', () => {
+    for (const bad of ['', '1.0', 'v1.0.0-', 'latest']) {
+      expect(() => parseVersion(bad)).toThrow('not a SemVer version')
+    }
+  })
+})
+
+describe('compareVersions', () => {
+  it('orders versions by SemVer precedence', () => {
+    const ordered = [
+      '0.4.0',
+      '0.10.0',
+      '1.0.0-alpha',
+      '1.0.0-alpha.1',
+      '1.0.0-alpha.beta',
+      '1.0.0-beta',
+      '1.0.0-beta.2',
+      '1.0.0-beta.11',
+      '1.0.0-rc.1',
+      '1.0.0',
+      '1.0.1',
+      '2.0.0',
+    ]
+    for (let i = 1; i < ordered.length; i++) {
+      expect(compareVersions(ordered[i - 1], ordered[i])).toBeLessThan(0)
+      expect(compareVersions(ordered[i], ordered[i - 1])).toBeGreaterThan(0)
+    }
+  })
+
+  it('treats a tag and its version, or different build metadata, as equal', () => {
+    expect(compareVersions('v1.0.0-beta.1', '1.0.0-beta.1')).toBe(0)
+    expect(compareVersions('1.0.0+a', '1.0.0+b')).toBe(0)
+  })
+})
+
+describe('isPrerelease', () => {
+  it('is true only with prerelease identifiers', () => {
+    expect(isPrerelease('1.0.0-beta.0')).toBe(true)
+    expect(isPrerelease('v1.0.0-rc.1')).toBe(true)
+    expect(isPrerelease('1.0.0')).toBe(false)
+    expect(isPrerelease('1.0.0+build-1')).toBe(false)
+  })
+})
+
+describe('wantsManifest', () => {
+  it('gives latest.json to signed stable releases only', () => {
+    expect(wantsManifest('1.0.0', true)).toBe(true)
+    expect(wantsManifest('1.0.0', false)).toBe(false)
+    expect(wantsManifest('1.0.0-beta.0', true)).toBe(false)
+    expect(wantsManifest('1.0.0-beta.0', false)).toBe(false)
+  })
+})
+
+describe('flagFix', () => {
+  it('leaves a flag that matches the version', () => {
+    expect(flagFix('v1.0.0-beta.0', true, 'v0.4.0')).toBe('none')
+    expect(flagFix('v1.0.0', false, 'v1.0.0')).toBe('none')
+  })
+
+  it('marks a beta published as a full release a prerelease', () => {
+    expect(flagFix('v1.0.0-beta.0', false, 'v1.0.0-beta.0')).toBe('prerelease')
+    expect(flagFix('v1.0.0-beta.0', false)).toBe('prerelease')
+  })
+
+  it('makes a stable prerelease the latest release only when it is newer', () => {
+    expect(flagFix('v1.0.0', true, 'v0.4.0')).toBe('latest')
+    expect(flagFix('v1.0.0', true)).toBe('latest')
+    expect(flagFix('v0.4.1', true, 'v1.0.0')).toBe('older')
+    expect(flagFix('v1.0.0', true, 'v1.0.0')).toBe('older')
+  })
+})
+
+describe('the workflows', () => {
+  it('take the release decisions from this script', () => {
+    const release = workflow('release.yml')
+    expect(release).toContain('node scripts/release.ts release-type "$VERSION"')
+    expect(release).toContain("uploadUpdaterJson: ${{ steps.type.outputs.manifest == 'true' }}")
+    expect(release).toContain('prerelease: ${{ steps.type.outputs.prerelease }}')
+    expect(release).toContain('node scripts/release.ts flag-fix "$TAG"')
+  })
+
+  it('make a release the latest only after latest.json is rewritten', () => {
+    const release = workflow('release.yml')
+    const rewrite = release.indexOf('gh release upload "$TAG" "$dir/latest.json"')
+    const latest = release.indexOf('gh release edit "$TAG" --prerelease=false --latest')
+    const pages = release.indexOf('gh workflow run pages.yml')
+    expect(rewrite).toBeGreaterThan(-1)
+    expect(latest).toBeGreaterThan(rewrite)
+    expect(pages).toBeGreaterThan(latest)
+  })
+
+  it("doesn't rebuild the landing page for a prerelease", () => {
+    expect(workflow('pages.yml')).toContain(
+      "if: github.event_name == 'release' && !github.event.release.prerelease",
+    )
+  })
+})
+
 describe('main', () => {
   const dir = mkdtempSync(join(tmpdir(), 'release-'))
   const changelogPath = join(dir, 'CHANGELOG.md')
@@ -203,8 +312,26 @@ describe('main', () => {
     expect(out.platforms['darwin-aarch64']).toEqual(MANIFEST.platforms['darwin-aarch64'])
   })
 
+  it('prints the release type for $GITHUB_OUTPUT', () => {
+    expect(main(['release-type', '1.0.0', '--signed'])).toBe('prerelease=false\nmanifest=true\n')
+    expect(main(['release-type', '1.0.0'])).toBe('prerelease=false\nmanifest=false\n')
+    expect(main(['release-type', '1.0.0-beta.1', '--signed'])).toBe(
+      'prerelease=true\nmanifest=false\n',
+    )
+    expect(() => main(['release-type', '1.0.0', '--unsigned'])).toThrow('unknown flag')
+  })
+
+  it('prints the prerelease flag fix', () => {
+    expect(main(['flag-fix', 'v1.0.0-beta.0', 'false', 'v0.4.0'])).toBe('prerelease\n')
+    expect(main(['flag-fix', 'v1.0.0', 'true', ''])).toBe('latest\n')
+    expect(main(['flag-fix', 'v1.0.0', 'true'])).toBe('latest\n')
+    expect(() => main(['flag-fix', 'v1.0.0', 'yes'])).toThrow('expected true or false')
+  })
+
   it('rejects bad arguments', () => {
     expect(() => main([])).toThrow('usage')
+    expect(() => main(['release-type'])).toThrow('usage')
+    expect(() => main(['flag-fix', 'v1.0.0'])).toThrow('usage')
     expect(() => main(['notes'])).toThrow('usage')
     expect(() => main(['updater-urls', 'a'])).toThrow('usage')
     expect(() => main(['add-windows', 'a'])).toThrow('usage')

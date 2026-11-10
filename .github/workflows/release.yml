@@ -11,6 +11,8 @@ name: Release
 # Developer ID signing and notarization switch on when the APPLE_CERTIFICATE secret is set.
 # Windows builds aren't code signed yet (#103).
 # When a release is published, the updater-urls job points latest.json at the tag's download URLs.
+# A prerelease version (1.0.0-beta.0, from Changesets pre mode) is drafted as a GitHub prerelease
+# with no latest.json: releases/latest skips prereleases, and testers install betas by hand.
 
 on:
   push:
@@ -102,7 +104,8 @@ jobs:
     permissions:
       contents: write
     outputs:
-      signed: ${{ steps.secrets.outputs.signed }}
+      # Whether the release gets a latest.json (wantsManifest in scripts/release.ts).
+      manifest: ${{ steps.type.outputs.manifest }}
       release-id: ${{ steps.draft.outputs.id }}
     env:
       VERSION: ${{ needs.plan.outputs.version }}
@@ -179,6 +182,17 @@ jobs:
             echo 'END_OF_NOTES'
           } >> "$GITHUB_OUTPUT"
 
+      # A beta (1.0.0-beta.0, from Changesets pre mode) is drafted as a GitHub prerelease, which
+      # releases/latest skips, and gets no latest.json.
+      - name: Release type
+        id: type
+        env:
+          SIGNED: ${{ steps.secrets.outputs.signed }}
+        run: |
+          flags=()
+          [ "$SIGNED" = true ] && flags+=(--signed)
+          node scripts/release.ts release-type "$VERSION" "${flags[@]}" | tee -a "$GITHUB_OUTPUT"
+
       # Checked again right before building, since the maintainer may have published it meanwhile.
       # A published release is never touched. A failed rebuild leaves no draft until the next run.
       - name: Remove the existing draft
@@ -216,7 +230,8 @@ jobs:
           releaseName: ${{ env.DRAFT_TITLE }}
           releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: true
-          uploadUpdaterJson: ${{ steps.secrets.outputs.signed == 'true' }}
+          prerelease: ${{ steps.type.outputs.prerelease }}
+          uploadUpdaterJson: ${{ steps.type.outputs.manifest == 'true' }}
 
       # The Finder layout step can time out on hosted runners. If the app was built but the DMG
       # wasn't, retry once with the default DMG window. Any other failure stops here.
@@ -245,7 +260,8 @@ jobs:
           releaseName: ${{ env.DRAFT_TITLE }}
           releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: true
-          uploadUpdaterJson: ${{ steps.secrets.outputs.signed == 'true' }}
+          prerelease: ${{ steps.type.outputs.prerelease }}
+          uploadUpdaterJson: ${{ steps.type.outputs.manifest == 'true' }}
 
       - name: Report DMG layout
         env:
@@ -367,7 +383,7 @@ jobs:
       contents: write
     env:
       VERSION: ${{ needs.plan.outputs.version }}
-      SIGNED: ${{ needs.build.outputs.signed }}
+      MANIFEST: ${{ needs.build.outputs.manifest }}
       RELEASE_ID: ${{ needs.build.outputs.release-id }}
       WINDOWS: ${{ needs.windows.result }}
       GH_TOKEN: ${{ github.token }}
@@ -390,7 +406,7 @@ jobs:
           name: windows-installer
           path: out
 
-      # Unsigned macOS test builds have no latest.json, so the updater offers neither platform.
+      # Unsigned macOS test builds and betas have no latest.json, so the updater offers neither OS.
       # The merge happens first so the writes come together, each right after a check.
       - name: Add Windows to the draft and latest.json
         id: add
@@ -415,7 +431,7 @@ jobs:
           exe="out/xcreenshot_${VERSION}_x64-setup.exe"
           files=("$exe" "$exe.sig")
           own_draft
-          if [ "$SIGNED" = true ]; then
+          if [ "$MANIFEST" = true ]; then
             dir="$RUNNER_TEMP/updater"
             mkdir -p "$dir/merged"
             gh release download "v$VERSION" --pattern latest.json --dir "$dir"
@@ -450,6 +466,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # Only to rebuild the landing page after fixing the prerelease flag.
+      actions: write
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -460,16 +478,45 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
-      # Unsigned macOS test builds have no latest.json, and their notes carry UNSIGNED_MARKER
-      # (scripts/release.ts). A signed release without one fails: nothing would update.
-      - env:
+      # The draft already has the right flag, so this only catches it being changed by hand when
+      # publishing (flagFix in scripts/release.ts). A beta marked as a full release would become
+      # releases/latest: unmark it now. A stable one marked as a prerelease would never reach the
+      # updater: it becomes the latest release below, once its latest.json works.
+      - name: Check the prerelease flag
+        id: flag
+        env:
+          PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          err="$RUNNER_TEMP/gh.err"
+          if ! latest=$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name 2> "$err"); then
+            grep -q 'HTTP 404' "$err" || { cat "$err" >&2; exit 1; }
+            latest="" # No full release yet.
+          fi
+          fix=$(node scripts/release.ts flag-fix "$TAG" "$PRERELEASE" "$latest")
+          echo "fix=$fix" >> "$GITHUB_OUTPUT"
+          case "$fix" in
+            prerelease)
+              echo "::warning::$TAG was published as a full release; marking it a prerelease."
+              gh release edit "$TAG" --prerelease --latest=false ;;
+            latest)
+              echo "::warning::$TAG was published as a prerelease; it becomes the latest release." ;;
+            older)
+              echo "::warning::$TAG was published as a prerelease and isn't newer than $latest;" \
+                "left as it is." ;;
+          esac
+
+      # Unsigned macOS test builds (notes with UNSIGNED_MARKER, scripts/release.ts) and betas have
+      # no latest.json. A signed release without one fails: nothing would update.
+      - name: Rewrite latest.json
+        env:
           BODY: ${{ github.event.release.body }}
         run: |
           dir="$RUNNER_TEMP/updater"
           mkdir -p "$dir"
           if ! gh release view "$TAG" --json assets --jq '.assets[].name' | grep -qx latest.json; then
-            if [[ "$BODY" == *"<!-- xcreenshot:unsigned -->"* ]]; then
-              echo "No latest.json on $TAG (unsigned build), nothing to rewrite."; exit 0
+            if [[ "$BODY" == *"<!-- xcreenshot:unsigned -->"* ]] \
+              || node scripts/release.ts release-type "$TAG" | grep -qx prerelease=true; then
+              echo "No latest.json on $TAG (unsigned build or beta), nothing to rewrite."; exit 0
             fi
             # Reported here, failed after the Windows check so both problems show.
             echo "::error::$TAG is a signed release with no latest.json; see docs/releasing.md."
@@ -483,6 +530,20 @@ jobs:
           mv "$dir/rewritten.json" "$dir/latest.json"
           cat "$dir/latest.json"
           gh release upload "$TAG" "$dir/latest.json" --clobber
+
+      # Only after latest.json points at the tag, so the updater never reads API URLs it refuses.
+      - name: Make it the latest release
+        if: steps.flag.outputs.fix == 'latest' && !env.NO_MANIFEST
+        run: gh release edit "$TAG" --prerelease=false --latest
+
+      # pages.yml's own rebuild on this event may have read releases/latest before the fix. A
+      # failed dispatch only warns: run Pages by hand.
+      - name: Rebuild the landing page
+        if: steps.flag.outputs.fix == 'prerelease' || steps.flag.outputs.fix == 'latest'
+        continue-on-error: true
+        env:
+          BRANCH: ${{ github.event.repository.default_branch }}
+        run: gh workflow run pages.yml --ref "$BRANCH"
 
       # The macOS updates above still work, but say loudly that Windows is missing.
       - name: Check Windows was added

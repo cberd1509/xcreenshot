@@ -25,10 +25,11 @@ concurrency:
 
 jobs:
   # A release event runs on its tag, which the github-pages environment won't deploy from.
-  # Rebuild from the default branch instead.
+  # Rebuild from the default branch instead. A prerelease doesn't change releases/latest; if its
+  # flag was wrong, release.yml's updater-urls job fixes it and rebuilds.
   redeploy:
     name: Rebuild from main
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' && !github.event.release.prerelease
     runs-on: ubuntu-latest
     permissions:
       actions: write
