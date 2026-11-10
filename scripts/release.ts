@@ -3,7 +3,7 @@
 //   node scripts/release.ts notes <version> [--unsigned]
 //     Prints the GitHub Release notes for a version, taken from CHANGELOG.md.
 //   node scripts/release.ts updater-urls <latest.json> <assets.json> <owner/repo> <tag>
-//     Prints latest.json with every download URL pointing at the published tag.
+//     Prints latest.json with every download URL pointing at the tag (a draft's future tag too).
 //   node scripts/release.ts add-windows <latest.json> <installer.exe.sig> <owner/repo> <tag>
 //     Prints latest.json with the Windows installer added next to the macOS entries.
 //   node scripts/release.ts release-type <version> [--signed]
@@ -55,11 +55,26 @@ export interface ReleaseAsset {
 /**
  * tauri-action writes API asset URLs (`<api>/repos/<owner>/<repo>/releases/assets/<id>`) into
  * latest.json. The app only downloads from `https://github.com/<owner>/<repo>/releases/download/`,
- * so point every platform at the published tag's download URL for the same asset.
+ * so point every platform at the tag's download URL for the same asset. The tag needn't exist
+ * yet: a draft's latest.json gets the URLs its tag will have once published (#135).
  */
+const downloadRoot = (repo: string) => `https://github.com/${repo}/releases/download/`
 const downloadBase = (repo: string, tag: string) =>
-  `https://github.com/${repo}/releases/download/${encodeURIComponent(tag)}/`
+  `${downloadRoot(repo)}${encodeURIComponent(tag)}/`
 
+/** The asset an updater URL names: by id for an API URL, by name for a download URL (any tag). */
+function assetName(url: string, repo: string, byId: Map<number, string>): string | undefined {
+  const id = /\/repos\/[^/]+\/[^/]+\/releases\/assets\/(\d+)$/.exec(url)?.[1]
+  if (id !== undefined) return byId.get(Number(id))
+  const prefix = downloadRoot(repo)
+  const [tag, name, ...rest] = url.startsWith(prefix) ? url.slice(prefix.length).split('/') : []
+  return tag && name && !rest.length ? decodeURIComponent(name) : undefined
+}
+
+/**
+ * Points every platform at the tag's download URL of its asset, which must be one of `assets`.
+ * URLs already at the tag come back unchanged, so running it again changes nothing.
+ */
 export function tagDownloadUrls(
   manifest: UpdaterManifest,
   assets: ReleaseAsset[],
@@ -67,13 +82,14 @@ export function tagDownloadUrls(
   tag: string,
 ): UpdaterManifest {
   const base = downloadBase(repo, tag)
-  const names = new Map(assets.map((asset) => [asset.id, asset.name]))
+  const byId = new Map(assets.map((asset) => [asset.id, asset.name]))
+  const names = new Set(byId.values())
   const platforms = Object.fromEntries(
     Object.entries(manifest.platforms).map(([platform, entry]) => {
-      if (entry.url.startsWith(base)) return [platform, entry]
-      const id = /\/repos\/[^/]+\/[^/]+\/releases\/assets\/(\d+)$/.exec(entry.url)?.[1]
-      const name = id === undefined ? undefined : names.get(Number(id))
-      if (name === undefined) throw new Error(`${platform}: no release asset for ${entry.url}`)
+      const name = assetName(entry.url, repo, byId)
+      if (name === undefined || !names.has(name)) {
+        throw new Error(`${platform}: no release asset for ${entry.url}`)
+      }
       return [platform, { ...entry, url: base + encodeURIComponent(name) }]
     }),
   )

@@ -189,7 +189,12 @@ define_class!(
 
         #[unsafe(method(sharingService:didFailToShareItems:error:))]
         fn did_fail(&self, _service: &NSSharingService, _items: &NSArray, error: &NSError) {
-            log::warn!("sharing failed: {}", error.localizedDescription());
+            let (level, message) = picker::failure_log(
+                &error.domain().to_string(),
+                error.code(),
+                &error.localizedDescription().to_string(),
+            );
+            log::log!(level, "{message}");
             self.handle(Event::Finished);
         }
 

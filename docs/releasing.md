@@ -10,7 +10,7 @@
    - `latest.json`, the update manifest with the macOS and Windows entries (signed macOS builds only, not betas)
    - release notes taken from that version's `CHANGELOG.md` section, with a note about the unsigned Windows installer
 3. Wait until the draft's title loses "(adding Windows)": the Windows installer and its `latest.json` entries go in last. Then download the DMG and the installer from the draft, install them and check that they work.
-4. Publish the draft. Publishing creates the `v<version>` tag. The workflow then points `latest.json` at the tag's download URLs (a few seconds), and the updater starts offering the new version.
+4. Publish the draft. Publishing creates the `v<version>` tag, and the updater starts offering the new version right away: the draft's `latest.json` already points at the tag's download URLs. The workflow then checks them.
 
 A waiting draft is left alone by later merges that don't change the version. To rebuild it from the latest `main`, run **Release** from the Actions tab on `main`: it deletes the draft and builds a new one. If the macOS build fails or is cancelled, its unfinished draft is deleted too, so there's no draft until the next successful run. A Windows failure keeps the draft (below). A published release is never rebuilt or deleted.
 
@@ -42,7 +42,7 @@ The `major` changeset turns `0.x` into `1.0.0`; without it the beta would be `0.
 - stable users' updater keeps reading the stable `latest.json` and never sees the beta;
 - the landing page (which reads `releases/latest`) and the README's install links keep offering the stable release.
 
-If the flag is changed by hand when publishing, the `updater-urls` job fixes it. A beta published as a full release is marked a prerelease straight away. A stable version published as a prerelease becomes the latest release once its `latest.json` is rewritten, but only if it's newer than the current latest release; otherwise the job only warns. Either fix rebuilds the landing page.
+If the flag is changed by hand when publishing, the `updater-urls` job fixes it. A beta published as a full release is marked a prerelease straight away. A stable version published as a prerelease becomes the latest release once its `latest.json` is checked, but only if it's newer than the current latest release; otherwise the job only warns. Either fix rebuilds the landing page.
 
 **Testing:** send testers the prerelease's page. They install the DMG or the Windows installer as usual. Betas don't update to newer betas: the updater only reads the stable `latest.json`, which is older, so testers install each beta by hand. When `1.0.0` is published they get it like everyone else, because `1.0.0` is newer than `1.0.0-beta.N`. The updater never downgrades, so leaving the beta early means reinstalling the stable release.
 
