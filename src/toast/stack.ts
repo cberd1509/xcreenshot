@@ -19,7 +19,7 @@ export type Toast = {
   detail: string
   /** How many times the action ran while this toast was up. */
   count: number
-  /** When it starts to fade, in ms; `Infinity` while the mouse is on it. */
+  /** When it starts to fade, in ms. */
   fades: number
 }
 
@@ -27,6 +27,11 @@ export type Toast = {
 export const SHOWN = 1200
 /** How long a Saved toast stays, so its buttons can be reached, in ms. */
 export const SAVED_SHOWN = 4000
+/**
+ * How long a toast under the mouse stays at most, in ms: the mouse leaving brings back its
+ * usual time, and a leave the page never hears about can't keep it (and its clicks) up for good.
+ */
+export const HELD = 60_000
 /** How long the fade takes, in ms. */
 export const FADE = 200
 /** The most toasts on screen at once. */
@@ -71,8 +76,8 @@ export function push(stack: Toast[], event: ToastEvent, now: number): Toast[] {
     kind: event.kind,
     detail: detail(event),
     count: (same?.count ?? 0) + 1,
-    // Kept up while the mouse is on it.
-    fades: same?.fades === Infinity ? Infinity : now + shown(event.kind),
+    // Not sooner than it would have, if the mouse is on it.
+    fades: Math.max(now + shown(event.kind), same?.fades ?? 0),
   }
   const rest = stack.filter((t) => t !== same)
   const after = rest.findIndex((t) => t.seq > event.seq)
@@ -83,32 +88,27 @@ export function push(stack: Toast[], event: ToastEvent, now: number): Toast[] {
 /** The stack without the toasts done fading at `now`. */
 export const prune = (stack: Toast[], now: number) => stack.filter((t) => now < t.fades + FADE)
 
-/**
- * When the stack next changes (a toast starts or ends its fade), or `null` if nothing will
- * without the mouse: it is empty, or only toasts under the mouse are left.
- */
+/** When the stack next changes (a toast starts or ends its fade), or `null` if it is empty. */
 export function next(stack: Toast[], now: number): number | null {
-  const times = stack
-    .flatMap((t) => [t.fades, t.fades + FADE])
-    .filter((t) => t > now && Number.isFinite(t))
+  const times = stack.flatMap((t) => [t.fades, t.fades + FADE]).filter((t) => t > now)
   return times.length ? Math.min(...times) : null
 }
 
-/** Applies `change` to the toast keyed `id`, if it is still up at `now`. */
-const update = (stack: Toast[], id: number, now: number, change: (t: Toast) => Partial<Toast>) =>
-  stack.map((t) => (t.id === id && up(t, now) ? { ...t, ...change(t) } : t))
+/** Changes a stack at `now` for the toast keyed `id`. */
+export type Change = (stack: Toast[], id: number, now: number) => Toast[]
 
-/** The mouse is on toast `id`: it stays up until the mouse leaves. */
-export const hover = (stack: Toast[], id: number, now: number) =>
-  update(stack, id, now, () => ({ fades: Infinity }))
+/** Sets when the toast keyed `id` fades, if it is still up at `now`. */
+const refade = (stack: Toast[], id: number, now: number, fades: (t: Toast) => number) =>
+  stack.map((t) => (t.id === id && up(t, now) ? { ...t, fades: fades(t) } : t))
+
+/** The mouse is on toast `id`: it stays up until the mouse leaves (`HELD` at most). */
+export const hover: Change = (stack, id, now) => refade(stack, id, now, () => now + HELD)
 
 /** The mouse left toast `id`: it stays its full time again from `now`. */
-export const leave = (stack: Toast[], id: number, now: number) =>
-  update(stack, id, now, (t) => ({ fades: now + shown(t.kind) }))
+export const leave: Change = (stack, id, now) => refade(stack, id, now, (t) => now + shown(t.kind))
 
 /** Toast `id` was acted on: it fades now. */
-export const dismiss = (stack: Toast[], id: number, now: number) =>
-  update(stack, id, now, () => ({ fades: now }))
+export const dismiss: Change = (stack, id, now) => refade(stack, id, now, () => now)
 
 /** Whether the window takes clicks at `now`: only while a Saved toast is up. */
 export const clickable = (stack: Toast[], now: number) =>

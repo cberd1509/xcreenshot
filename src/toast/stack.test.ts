@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   FADE,
+  HELD,
   SAVED_SHOWN,
   SHOWN,
   TITLES,
@@ -114,13 +115,12 @@ describe('toast stack', () => {
   it('keeps a Saved toast up while the mouse is on it, then its full time again', () => {
     let stack = push(push([], saved(1), 0), copied(2), 0)
     stack = hover(stack, 1, 3000)
-    expect(up(stack[0], 1e9)).toBe(true)
-    // Only the copy is waited for; the hovered toast waits for the mouse.
-    expect(next(stack, 0)).toBe(SHOWN)
-    expect(next(stack, SHOWN + FADE)).toBe(null)
-    expect(prune(stack, 1e9)).toEqual([stack[0]])
-    // A repeat while hovered stays up.
-    expect(push(stack, saved(3), 5000)[1]).toMatchObject({ count: 2, fades: Infinity })
+    expect(up(stack[0], 3000 + HELD - 1)).toBe(true)
+    // At most HELD, in case the mouse leaving is never heard.
+    expect(up(stack[0], 3000 + HELD)).toBe(false)
+    expect(next(stack, SHOWN + FADE)).toBe(3000 + HELD)
+    // A repeat while hovered stays up as long.
+    expect(push(stack, saved(3), 5000)[1]).toMatchObject({ count: 2, fades: 3000 + HELD })
     stack = leave(stack, 1, 9000)
     expect(stack[0].fades).toBe(9000 + SAVED_SHOWN)
   })

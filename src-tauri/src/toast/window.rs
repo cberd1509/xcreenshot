@@ -216,6 +216,12 @@ fn hide<R: Runtime>(window: &WebviewWindow<R>) {
 }
 
 /// Makes the window take clicks (`on`) or let them through to what is under it.
+#[cfg(all(target_os = "windows", not(test)))]
+fn clickable<R: Runtime>(window: &WebviewWindow<R>, on: bool) {
+    native::clickable(window, on);
+}
+
+#[cfg(not(all(target_os = "windows", not(test))))]
 fn clickable<R: Runtime>(window: &WebviewWindow<R>, on: bool) {
     if let Err(e) = window.set_ignore_cursor_events(!on) {
         log::warn!("could not make the toasts take clicks ({on}): {e}");
@@ -314,13 +320,14 @@ mod native {
     /// button leaves the app the user is in active (Tauri can only build an `NSWindow`).
     fn make_panel(ns_window: &NSWindow) {
         let panel = ToastPanel::class();
-        // The panel class adds nothing to the window's memory; refuse if AppKit's NSPanel would
-        // need more than Tauri's window has.
-        if panel.instance_size() > ns_window.class().instance_size() {
+        // Only if neither NSPanel nor the panel class adds instance variables, so none can land
+        // on Tauri's own. Tauri's overrides go with its class: the panel makes the same two
+        // answers, and the rest (dragging) is for movable windows.
+        if panel.instance_size() != NSWindow::class().instance_size() {
             return log::warn!("the toast window can't be a panel; clicks will activate the app");
         }
-        // SAFETY: on the main thread, a live window whose class is an NSWindow subclass at
-        // least as large as the panel class (checked above), which only overrides two getters.
+        // SAFETY: on the main thread, a live NSWindow (subclass), turned into a class with the
+        // same instance variables as NSWindow (checked above) that only overrides two getters.
         unsafe {
             objc2::ffi::object_setClass(
                 std::ptr::from_ref(ns_window).cast::<AnyObject>().cast_mut(),
@@ -358,13 +365,40 @@ mod native {
     }
 }
 
-/// Showing without activating: Tauri's `show` activates the window.
+/// Showing without activating (Tauri's `show` activates the window), and clicks. The window is
+/// `WS_EX_NOACTIVATE` already (`focusable(false)`), so a click doesn't activate it.
 #[cfg(all(target_os = "windows", not(test)))]
 mod native {
     use tauri::{Runtime, WebviewWindow};
     use windows::Win32::UI::WindowsAndMessaging::{
-        SHOW_WINDOW_CMD, SW_HIDE, SW_SHOWNOACTIVATE, ShowWindow,
+        GWL_EXSTYLE, GetWindowLongW, SHOW_WINDOW_CMD, SW_HIDE, SW_SHOWNOACTIVATE, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongW, SetWindowPos,
+        ShowWindow, WS_EX_TRANSPARENT,
     };
+
+    /// Takes clicks (`on`) or lets them through, by hand: Tauri thinks the window is hidden (see
+    /// `conceal`), and changing its flags through Tauri would hide it again.
+    pub fn clickable<R: Runtime>(window: &WebviewWindow<R>, on: bool) {
+        let hwnd = match window.hwnd() {
+            Ok(hwnd) => hwnd,
+            Err(e) => return log::warn!("no window handle for the toasts: {e}"),
+        };
+        // SAFETY: a live window handle from Tauri; only its WS_EX_TRANSPARENT bit changes (Tauri
+        // made it layered and click-through when it built it).
+        unsafe {
+            let style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+            let style = if on {
+                style & !WS_EX_TRANSPARENT.0
+            } else {
+                style | WS_EX_TRANSPARENT.0
+            };
+            SetWindowLongW(hwnd, GWL_EXSTYLE, style as i32);
+            let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED;
+            if let Err(e) = SetWindowPos(hwnd, None, 0, 0, 0, 0, flags) {
+                log::warn!("could not make the toasts take clicks ({on}): {e}");
+            }
+        }
+    }
 
     fn set<R: Runtime>(window: &WebviewWindow<R>, how: SHOW_WINDOW_CMD) {
         match window.hwnd() {

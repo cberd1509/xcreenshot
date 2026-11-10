@@ -3,6 +3,7 @@
 //! xcreenshot does not.
 
 use std::path::Path;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::process::Command;
 
 /// What a Saved toast's button does with the file.
@@ -21,6 +22,7 @@ pub fn run(action: Action, path: &Path) -> Result<(), String> {
 }
 
 /// The command that shows `path` selected in its folder.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn reveal(path: &Path) -> Command {
     #[cfg(target_os = "macos")]
     {
@@ -37,19 +39,16 @@ fn reveal(path: &Path) -> Command {
         command.raw_arg(format!("/select,\"{}\"", path.display()));
         command
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        // No standard way to select a file: the folder it is in.
-        let mut command = Command::new("xdg-open");
-        command.arg(path.parent().unwrap_or(path));
-        command
-    }
 }
 
 #[cfg(not(test))]
 fn launch(action: Action, path: &Path) -> std::io::Result<()> {
     match action {
         Action::Open => ::open::that_detached(path),
+        // No standard way to select a file: the folder it is in.
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        Action::Reveal => ::open::that_detached(path.parent().unwrap_or(path)),
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         Action::Reveal => {
             let mut child = reveal(path).spawn()?;
             // Reaped off the main thread. Explorer exits with 1 even when it worked.
@@ -73,7 +72,6 @@ fn launch(action: Action, path: &Path) -> std::io::Result<()> {
 pub(crate) mod tests {
     use super::*;
     use std::cell::RefCell;
-    use std::ffi::OsStr;
     use std::path::PathBuf;
 
     thread_local! {
@@ -102,16 +100,13 @@ pub(crate) mod tests {
         assert!(failed.starts_with("could not Open"), "{failed}");
     }
 
-    fn args(command: &Command) -> Vec<&OsStr> {
-        command.get_args().collect()
-    }
-
     #[cfg(target_os = "macos")]
     #[test]
     fn finder_shows_the_file_selected() {
         let command = reveal(Path::new("/Users/me/Desktop/shot 1.png"));
         assert_eq!(command.get_program(), "/usr/bin/open");
-        assert_eq!(args(&command), ["-R", "/Users/me/Desktop/shot 1.png"]);
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args, ["-R", "/Users/me/Desktop/shot 1.png"]);
     }
 
     #[cfg(target_os = "windows")]
@@ -119,17 +114,7 @@ pub(crate) mod tests {
     fn explorer_shows_the_file_selected() {
         let command = reveal(Path::new(r"C:\Users\me\Pictures\shot 1.png"));
         assert_eq!(command.get_program(), "explorer.exe");
-        assert_eq!(
-            args(&command),
-            [r#"/select,"C:\Users\me\Pictures\shot 1.png""#]
-        );
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    #[test]
-    fn the_folder_opens() {
-        let command = reveal(Path::new("/home/me/shot.png"));
-        assert_eq!(command.get_program(), "xdg-open");
-        assert_eq!(args(&command), ["/home/me"]);
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args, [r#"/select,"C:\Users\me\Pictures\shot 1.png""#]);
     }
 }

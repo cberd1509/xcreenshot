@@ -121,9 +121,11 @@ pub fn place(area: Bounds, scale: f64) -> Bounds {
     }
 }
 
-/// Toasts kept for a page that has not loaded yet, and saved files kept for the Saved toasts'
-/// buttons: the page shows three toasts at most.
+/// Toasts kept for a page that has not loaded yet: it shows three at most.
 const PENDING: usize = 3;
+/// Saved files kept for the Saved toasts' buttons: as many as the page shows (`MOST` in
+/// `src/toast/stack.ts`).
+const SAVED: usize = 3;
 
 /// Which toasts went to the page, and whether the window is on screen.
 #[derive(Debug, Default)]
@@ -147,7 +149,7 @@ impl Queue {
         self.seq += 1;
         if let Toast::Saved { path, .. } = &toast {
             self.saved.push((self.seq, path.clone()));
-            if self.saved.len() > PENDING {
+            if self.saved.len() > SAVED {
                 self.saved.remove(0);
             }
         }

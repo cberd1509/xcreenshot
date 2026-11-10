@@ -3,6 +3,7 @@
   import { invoke } from '@tauri-apps/api/core'
   import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
   import { isMac } from '$lib/keys'
+  import { failed } from '$lib/log'
   import { onMount } from 'svelte'
   import {
     TITLES,
@@ -16,6 +17,7 @@
     push,
     reveal,
     up,
+    type Change,
     type Toast,
     type ToastEvent,
   } from './stack'
@@ -40,28 +42,33 @@
     const on = clickable(stack, now)
     if (on !== taking) {
       taking = on
-      invoke('toast_clickable', { on }).catch((e: unknown) => console.error(e))
+      invoke('toast_clickable', { on }).catch(failed('toast_clickable'))
     }
     const at = next(stack, now)
     if (at !== null) timer = setTimeout(tick, at - now)
-    else if (!stack.length)
-      invoke('toast_idle', { seq: newest }).catch((e: unknown) => console.error(e))
+    else invoke('toast_idle', { seq: newest }).catch(failed('toast_idle'))
   }
 
-  /** Changes the stack now (the mouse or a button), then catches up. */
-  function change(f: (stack: Toast[], now: number) => Toast[]) {
-    stack = f(stack, Date.now())
+  /** Changes toast `id` now (the mouse or a button), then catches up. */
+  function change(f: Change, id: number) {
+    stack = f(stack, id, Date.now())
     tick()
   }
 
   /** A Saved toast's button: Rust opens the file that toast is about, and the toast goes. */
   function act(toast: Toast, action: 'open' | 'reveal') {
-    invoke('toast_action', { seq: toast.seq, action }).catch((e: unknown) => console.error(e))
-    change((s, at) => dismiss(s, toast.id, at))
+    invoke('toast_action', { seq: toast.seq, action }).catch(failed('toast_action'))
+    change(dismiss, toast.id)
   }
 
   /** Keeps a click from focusing the button: the toasts never take keyboard focus. */
   const noFocus = (e: MouseEvent) => e.preventDefault()
+
+  /** The Saved toast's buttons, as designed: Open is white, the reveal button zinc. */
+  const buttons = [
+    { action: 'open', label: 'Open', tone: 'bg-zinc-50 font-semibold text-zinc-950' },
+    { action: 'reveal', label: reveal(isMac), tone: 'bg-zinc-700 font-medium text-zinc-50' },
+  ] as const
 
   /** The toasts received, by number: the load check and an event may both have one. */
   const got = new Set<number>()
@@ -116,8 +123,8 @@
       ]}
       style:opacity={up(toast, now) ? opacity : 0}
       style:transform="scale({scale})"
-      onmouseenter={saved ? () => change((s, at) => hover(s, toast.id, at)) : undefined}
-      onmouseleave={saved ? () => change((s, at) => leave(s, toast.id, at)) : undefined}
+      onmouseenter={saved ? () => change(hover, toast.id) : undefined}
+      onmouseleave={saved ? () => change(leave, toast.id) : undefined}
     >
       <span class="flex size-5 shrink-0 items-center justify-center rounded-full bg-zinc-50">
         <CheckIcon class="size-3 text-zinc-950" strokeWidth={3} aria-hidden="true" />
@@ -128,24 +135,17 @@
       {/if}
       {#if saved}
         <span class="ml-1 flex shrink-0 gap-1">
-          <button
-            type="button"
-            tabindex="-1"
-            class="h-[26px] rounded-full bg-zinc-50 px-2.5 text-xs font-semibold text-zinc-950"
-            onmousedown={noFocus}
-            onclick={() => act(toast, 'open')}
-          >
-            Open
-          </button>
-          <button
-            type="button"
-            tabindex="-1"
-            class="h-[26px] rounded-full bg-zinc-700 px-2.5 text-xs font-medium text-zinc-50"
-            onmousedown={noFocus}
-            onclick={() => act(toast, 'reveal')}
-          >
-            {reveal(isMac)}
-          </button>
+          {#each buttons as { action, label, tone } (action)}
+            <button
+              type="button"
+              tabindex="-1"
+              class={['h-[26px] rounded-full px-2.5 text-xs', tone]}
+              onmousedown={noFocus}
+              onclick={() => act(toast, action)}
+            >
+              {label}
+            </button>
+          {/each}
         </span>
       {/if}
       {#if toast.count > 1}

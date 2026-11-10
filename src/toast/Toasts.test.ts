@@ -5,15 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FADE, SAVED_SHOWN, SHOWN, type ToastEvent } from './stack'
 import Toasts from './Toasts.svelte'
 
-/** The platform the page sees. */
-const platform = vi.hoisted(() => ({ mac: true }))
-vi.mock('$lib/keys', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('$lib/keys')>()),
-  get isMac() {
-    return platform.mac
-  },
-}))
-
 let missed: ToastEvent[]
 let idle: number[]
 let failing: boolean
@@ -22,7 +13,15 @@ let calls: unknown[]
 
 const copied = (seq: number): ToastEvent => ({ seq, kind: 'copied', width: 1260, height: 1064 })
 const toasts = () => screen.queryAllByRole('status')
-const texts = () => toasts().map((t) => t.textContent!.replace(/\s+/g, ' ').trim())
+// jsdom is not a Mac: the reveal button says Show in folder (`reveal` in `stack.ts`).
+/** Each toast's words, a space between each piece of text (the buttons have none between). */
+const texts = () =>
+  toasts().map((t) => {
+    const walker = document.createTreeWalker(t, NodeFilter.SHOW_TEXT)
+    const words: string[] = []
+    while (walker.nextNode()) words.push(walker.currentNode.textContent!.trim())
+    return words.filter(Boolean).join(' ')
+  })
 /** Lets the mocked IPC and events settle, with the clock faked. */
 const settle = async () => {
   await vi.advanceTimersByTimeAsync(0)
@@ -42,7 +41,6 @@ describe('Toasts', () => {
     idle = []
     failing = false
     calls = []
-    platform.mac = true
     mockWindows('toast')
     mockIPC(
       (cmd, args) => {
@@ -68,7 +66,7 @@ describe('Toasts', () => {
     await mount()
     expect(texts()).toEqual([
       'Copied 1260 × 1064',
-      'Saved xcreenshot-2026-11-06-23.12.05.png Open Show in Finder',
+      'Saved xcreenshot-2026-11-06-23.12.05.png Open Show in folder',
     ])
     // The older one is smaller and dimmer.
     expect(toasts()[0].style.transform).toBe('scale(0.97)')
@@ -78,7 +76,7 @@ describe('Toasts', () => {
     await vi.advanceTimersByTimeAsync(SHOWN)
     expect(toasts().map((t) => t.style.opacity)).toEqual(['0', '1'])
     await vi.advanceTimersByTimeAsync(FADE)
-    expect(texts()).toEqual(['Saved xcreenshot-2026-11-06-23.12.05.png Open Show in Finder'])
+    expect(texts()).toEqual(['Saved xcreenshot-2026-11-06-23.12.05.png Open Show in folder'])
     await vi.advanceTimersByTimeAsync(SAVED_SHOWN - SHOWN - FADE)
     expect(toasts()[0].style.opacity).toBe('0')
     expect(idle).toEqual([])
@@ -95,7 +93,7 @@ describe('Toasts', () => {
     await emit('toast:show', copied(2))
     await settle()
     const open = screen.getByRole('button', { name: 'Open' })
-    const reveal = screen.getByRole('button', { name: 'Show in Finder' })
+    const reveal = screen.getByRole('button', { name: 'Show in folder' })
     // Never focused, by click or by keyboard.
     expect(open.tabIndex).toBe(-1)
     expect(reveal.tabIndex).toBe(-1)
@@ -120,13 +118,6 @@ describe('Toasts', () => {
       { toast_action: { seq: 3, action: 'open' } },
       { toast_clickable: { on: false } },
     ])
-  })
-
-  it('says Show in folder off macOS', async () => {
-    platform.mac = false
-    missed = [{ seq: 1, kind: 'saved', file: 'a.png' }]
-    await mount()
-    expect(screen.getByRole('button', { name: 'Show in folder' })).toBeTruthy()
   })
 
   it('keeps a Saved toast up while the mouse is on it', async () => {
@@ -166,7 +157,7 @@ describe('Toasts', () => {
     await emit('toast:show', copied(5))
     await settle()
     expect(texts()).toEqual([
-      'Saved a.png Open Show in Finder',
+      'Saved a.png Open Show in folder',
       'Shared AirDrop',
       'Copied 1260 × 1064 ×3',
     ])
@@ -193,7 +184,7 @@ describe('Toasts', () => {
     answer!([copied(1), { seq: 2, kind: 'saved', file: 'a.png' }])
     await settle()
     // In the order of the actions: the missed copy came first.
-    expect(texts()).toEqual(['Copied 1260 × 1064', 'Saved a.png Open Show in Finder'])
+    expect(texts()).toEqual(['Copied 1260 × 1064', 'Saved a.png Open Show in folder'])
   })
 
   it('shows Shared alone when the service is not known', async () => {
