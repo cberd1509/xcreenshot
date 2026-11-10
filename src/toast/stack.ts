@@ -1,5 +1,5 @@
-// The confirmation toasts' stack: what each says, the count on a repeat, when each fades and
-// how the older ones look. Pure, so the timing is tested without a clock.
+// The confirmation toasts' stack: what each says, the count on a repeat, when each fades, how
+// the older ones look and which take clicks. Pure, so the timing is tested without a clock.
 
 /** A toast as Rust sends it with `toast:show` (see `toast/mod.rs`). */
 export type ToastEvent = { seq: number } & (
@@ -19,12 +19,14 @@ export type Toast = {
   detail: string
   /** How many times the action ran while this toast was up. */
   count: number
-  /** When it starts to fade, in ms. */
+  /** When it starts to fade, in ms; `Infinity` while the mouse is on it. */
   fades: number
 }
 
 /** How long a toast stays before it fades, in ms. */
 export const SHOWN = 1200
+/** How long a Saved toast stays, so its buttons can be reached, in ms. */
+export const SAVED_SHOWN = 4000
 /** How long the fade takes, in ms. */
 export const FADE = 200
 /** The most toasts on screen at once. */
@@ -32,6 +34,12 @@ export const MOST = 3
 
 /** What each toast says first. */
 export const TITLES: Record<Kind, string> = { copied: 'Copied', saved: 'Saved', shared: 'Shared' }
+
+/** What the Saved toast's second button says. */
+export const reveal = (mac: boolean) => (mac ? 'Show in Finder' : 'Show in folder')
+
+/** How long a `kind` toast stays before it fades, in ms. */
+export const shown = (kind: Kind) => (kind === 'saved' ? SAVED_SHOWN : SHOWN)
 
 /** The toast's detail: the size, the file name or the service. */
 export function detail(event: ToastEvent): string {
@@ -63,7 +71,8 @@ export function push(stack: Toast[], event: ToastEvent, now: number): Toast[] {
     kind: event.kind,
     detail: detail(event),
     count: (same?.count ?? 0) + 1,
-    fades: now + SHOWN,
+    // Kept up while the mouse is on it.
+    fades: same?.fades === Infinity ? Infinity : now + shown(event.kind),
   }
   const rest = stack.filter((t) => t !== same)
   const after = rest.findIndex((t) => t.seq > event.seq)
@@ -74,11 +83,36 @@ export function push(stack: Toast[], event: ToastEvent, now: number): Toast[] {
 /** The stack without the toasts done fading at `now`. */
 export const prune = (stack: Toast[], now: number) => stack.filter((t) => now < t.fades + FADE)
 
-/** When the stack next changes (a toast starts or ends its fade), or `null` if it is empty. */
+/**
+ * When the stack next changes (a toast starts or ends its fade), or `null` if nothing will
+ * without the mouse: it is empty, or only toasts under the mouse are left.
+ */
 export function next(stack: Toast[], now: number): number | null {
-  const times = stack.flatMap((t) => [t.fades, t.fades + FADE]).filter((t) => t > now)
+  const times = stack
+    .flatMap((t) => [t.fades, t.fades + FADE])
+    .filter((t) => t > now && Number.isFinite(t))
   return times.length ? Math.min(...times) : null
 }
+
+/** Applies `change` to the toast keyed `id`, if it is still up at `now`. */
+const update = (stack: Toast[], id: number, now: number, change: (t: Toast) => Partial<Toast>) =>
+  stack.map((t) => (t.id === id && up(t, now) ? { ...t, ...change(t) } : t))
+
+/** The mouse is on toast `id`: it stays up until the mouse leaves. */
+export const hover = (stack: Toast[], id: number, now: number) =>
+  update(stack, id, now, () => ({ fades: Infinity }))
+
+/** The mouse left toast `id`: it stays its full time again from `now`. */
+export const leave = (stack: Toast[], id: number, now: number) =>
+  update(stack, id, now, (t) => ({ fades: now + shown(t.kind) }))
+
+/** Toast `id` was acted on: it fades now. */
+export const dismiss = (stack: Toast[], id: number, now: number) =>
+  update(stack, id, now, () => ({ fades: now }))
+
+/** Whether the window takes clicks at `now`: only while a Saved toast is up. */
+export const clickable = (stack: Toast[], now: number) =>
+  stack.some((t) => t.kind === 'saved' && up(t, now))
 
 /** How a toast `depth` places above the newest looks: smaller and dimmer, as designed. */
 export function look(depth: number): { scale: number; opacity: number } {
