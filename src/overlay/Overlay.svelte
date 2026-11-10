@@ -31,7 +31,7 @@
   import type { Factor } from './annotate/upscale'
   import { control, fieldShortcut, keyLabels, modifier, shortcut, typing } from './keys'
   import { release } from './buffer'
-  import { afterPaint } from './paint'
+  import { afterPaint, paintTimeout } from './paint'
   import { TOAST } from './panel'
   import Magnifier from './Magnifier.svelte'
   import QuickBar from './QuickBar.svelte'
@@ -94,6 +94,8 @@
   let current = -1
   // Bumped when the overlay closes, so a draw still fetching its frame never paints after.
   let generation = 0
+  // No frame drawn since the page loaded: the webview is cold and gets longer to render.
+  let firstDraw = true
   /** The drawn frame: its size in physical px and its display's size in logical px. */
   let frame = $state<Size>({ width: 0, height: 0 })
   let display = $state<Size>({ width: 0, height: 0 })
@@ -242,7 +244,8 @@
       }
       // Shown only once the frame is on screen: shown earlier, the window would flash what
       // the webview last rendered (black, or the previous capture).
-      const rendered = await afterPaint()
+      const rendered = await afterPaint(paintTimeout(firstDraw))
+      firstDraw = false
       if (current !== info.session || generation !== drawing) return
       await invoke('overlay_painted', { session: info.session, rendered })
     } catch (e) {

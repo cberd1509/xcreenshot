@@ -9,6 +9,7 @@ import { fakeFrames } from '../test/frames'
 import { stages } from '../test/konva'
 import { OUTPUT_HEADER } from './annotate/output'
 import type { Rect } from './geometry'
+import { FIRST_PAINT_TIMEOUT_MS, PAINT_TIMEOUT_MS } from './paint'
 
 type Invoke = (
   cmd: string,
@@ -16,6 +17,8 @@ type Invoke = (
   options?: { headers?: Record<string, string> },
 ) => Promise<unknown>
 import Overlay from './Overlay.svelte'
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /** The platform the overlay sees (`isMac`, `isWindows`). */
 const platform = vi.hoisted(() => ({ mac: false, windows: false }))
@@ -344,6 +347,28 @@ describe('Overlay', () => {
       frames.next()
       await tick()
       expect(called('overlay_painted')).toHaveLength(1)
+    } finally {
+      frames.restore()
+    }
+  })
+
+  it("waits longer for the page's first frame to render than for the next ones", async () => {
+    const frames = fakeFrames()
+    try {
+      await mount()
+      await emit('overlay:show', small(1))
+      await waitFor(() => expect(frames.pending()).toBe(1))
+      // Never rendered: the page gives up after its first-draw wait, not the usual one.
+      await sleep(PAINT_TIMEOUT_MS + 100)
+      expect(called('overlay_painted'), 'a cold webview gets longer').toHaveLength(0)
+      await waitFor(() => expect(called('overlay_painted')).toHaveLength(1), {
+        timeout: FIRST_PAINT_TIMEOUT_MS,
+      })
+      expect(called('overlay_painted')[0].args).toEqual({ session: 1, rendered: false })
+
+      await emit('overlay:show', small(2))
+      await sleep(PAINT_TIMEOUT_MS + 100)
+      expect(called('overlay_painted')[1].args).toEqual({ session: 2, rendered: false })
     } finally {
       frames.restore()
     }

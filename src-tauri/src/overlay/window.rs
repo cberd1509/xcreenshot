@@ -45,6 +45,10 @@ const ESCAPE_TIMEOUT: Duration = Duration::from_millis(300);
 /// ([`reveal_late`]): the page's own fallback (`PAINT_TIMEOUT_MS`, 200 ms) reports by then, so
 /// a later report may never come. It may flash, but the capture isn't lost.
 const REVEAL_AFTER: Duration = Duration::from_millis(300);
+/// [`REVEAL_AFTER`] for the first capture since launch, after the page's longer first wait
+/// (`FIRST_PAINT_TIMEOUT_MS`, 600 ms): a cold webview can take that long to render its first
+/// frame, and showing it before then flashes black. A late overlay beats a black flash.
+const FIRST_REVEAL_AFTER: Duration = Duration::from_millis(700);
 /// If no window paints within this time the overlay page is broken: close everything, so a
 /// hung page never locks the user out.
 const WATCHDOG: Duration = Duration::from_secs(2);
@@ -352,13 +356,21 @@ fn finish<R: Runtime>(
             Err(e) => log::warn!("could not tell overlay {display} to draw: {e}"),
         }
     }
+    // Until the first capture since launch paints (see `overlay_painted`).
+    let cold = lock(&LAUNCHED).is_some();
+    if cold {
+        log::info!(
+            "first capture since launch: showing overlays not yet painted after {:?}",
+            reveal_after(watchdog, true)
+        );
+    }
     let app = app.clone();
     std::thread::spawn(move || {
         // Tests reveal by hand, so their sessions never change under them.
         let reveal = if cfg!(test) {
             watchdog
         } else {
-            reveal_after(watchdog)
+            reveal_after(watchdog, cold)
         };
         std::thread::sleep(reveal);
         on_main(&app, move |app| reveal_late(app, session));
@@ -368,10 +380,16 @@ fn finish<R: Runtime>(
     told
 }
 
-/// When to show windows whose page hasn't reported its paint: [`REVEAL_AFTER`], never after
-/// the watchdog.
-fn reveal_after(watchdog: Duration) -> Duration {
-    REVEAL_AFTER.min(watchdog)
+/// When to show windows whose page hasn't reported its paint: [`REVEAL_AFTER`], or
+/// [`FIRST_REVEAL_AFTER`] for the first capture since launch (`cold`); never after the
+/// watchdog.
+fn reveal_after(watchdog: Duration, cold: bool) -> Duration {
+    let after = if cold {
+        FIRST_REVEAL_AFTER
+    } else {
+        REVEAL_AFTER
+    };
+    after.min(watchdog)
 }
 
 /// Shows `session`'s windows whose page hasn't reported its paint (see [`REVEAL_AFTER`]),
@@ -381,9 +399,7 @@ fn reveal_late<R: Runtime>(app: &AppHandle<R>, session: u64) {
     let Some((displays, focus_on)) = phase(app).unreported(session) else {
         return;
     };
-    log::warn!(
-        "overlays {displays:?} did not report their paint within {REVEAL_AFTER:?}; showing them"
-    );
+    log::warn!("overlays {displays:?} did not report their paint in time; showing them");
     for d in displays {
         let shown = app
             .get_webview_window(&label(d))
@@ -1626,14 +1642,23 @@ pub(crate) mod tests {
 
     #[test]
     fn unreported_windows_are_shown_after_the_page_fallback_and_before_the_watchdog() {
-        // After the page's own 200 ms fallback (`PAINT_TIMEOUT_MS` in paint.ts).
+        // After the page's own fallback (`PAINT_TIMEOUT_MS` in paint.ts, 200 ms, or 600 ms
+        // for its first draw: `FIRST_PAINT_TIMEOUT_MS`).
         assert!(REVEAL_AFTER > Duration::from_millis(200) && REVEAL_AFTER < WATCHDOG);
-        assert_eq!(reveal_after(WATCHDOG), REVEAL_AFTER);
+        assert!(FIRST_REVEAL_AFTER > Duration::from_millis(600) && FIRST_REVEAL_AFTER < WATCHDOG);
+        assert_eq!(reveal_after(WATCHDOG, false), REVEAL_AFTER);
         assert_eq!(
-            reveal_after(Duration::ZERO),
-            Duration::ZERO,
-            "never after the watchdog"
+            reveal_after(WATCHDOG, true),
+            FIRST_REVEAL_AFTER,
+            "a cold webview gets longer"
         );
+        for cold in [false, true] {
+            assert_eq!(
+                reveal_after(Duration::ZERO, cold),
+                Duration::ZERO,
+                "never after the watchdog"
+            );
+        }
 
         let app = app();
         let h = app.handle();
