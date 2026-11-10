@@ -8,6 +8,7 @@
 
 use crate::region::Region;
 use crate::shortcut;
+use crate::tip::Tip;
 use chrono::NaiveDateTime;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -64,6 +65,9 @@ pub struct Prefs {
         skip_serializing_if = "Option::is_none"
     )]
     pub onboarded: Option<bool>,
+    /// When to suggest quick copy (see `tip`).
+    #[serde(default, deserialize_with = "lenient")]
+    pub quick_copy_tip: Tip,
     /// The last region per display arrangement, newest first (see `region`).
     #[serde(default, deserialize_with = "lenient")]
     pub regions: Vec<Region>,
@@ -83,6 +87,7 @@ impl Default for Prefs {
             launch_agent_removed: false,
             print_screen_notice_shown: false,
             onboarded: Some(false),
+            quick_copy_tip: Tip::default(),
             regions: Vec::new(),
         }
     }
@@ -139,12 +144,29 @@ impl Prefs {
     pub fn load<R: Runtime>(store: &Store<R>) -> Self {
         store
             .get(KEY)
-            .and_then(|v| {
-                serde_json::from_value(v)
-                    .inspect_err(|e| log::warn!("ignoring invalid prefs: {e}"))
-                    .ok()
-            })
+            .and_then(Self::from_stored)
             .unwrap_or_default()
+    }
+
+    /// The prefs in a stored value, or `None` if it is not an object of them. Prefs from before
+    /// the quick copy tip, with quick copy on, have the tip over: the user knows the mode.
+    fn from_stored(value: Value) -> Option<Self> {
+        let legacy_quick_copy = value.get("quickCopyTip").is_none();
+        let mut prefs: Self = serde_json::from_value(value)
+            .inspect_err(|e| log::warn!("ignoring invalid prefs: {e}"))
+            .ok()?;
+        if legacy_quick_copy && prefs.quick_copy {
+            prefs.quick_copy_tip.end();
+        }
+        Some(prefs)
+    }
+
+    /// Stores the prefs in memory only, where every reader sees them at once. The file follows
+    /// with the next save (see [`flush`]).
+    pub fn stage<R: Runtime>(&self, store: &Store<R>) -> Result<(), String> {
+        let value = serde_json::to_value(self).map_err(|e| e.to_string())?;
+        store.set(KEY, value);
+        Ok(())
     }
 
     /// Stores the prefs and writes them to disk. If writing fails, the store keeps the previous
@@ -193,6 +215,8 @@ static CHANGING: Mutex<()> = Mutex::new(());
 pub trait Storage {
     fn load(&self) -> Prefs;
     fn save(&self, prefs: &Prefs) -> Result<(), String>;
+    /// Keeps `prefs` in memory without writing the file (see [`Prefs::stage`]).
+    fn stage(&self, prefs: &Prefs) -> Result<(), String>;
 }
 
 impl<R: Runtime> Storage for Store<R> {
@@ -202,6 +226,10 @@ impl<R: Runtime> Storage for Store<R> {
 
     fn save(&self, prefs: &Prefs) -> Result<(), String> {
         prefs.save(self)
+    }
+
+    fn stage(&self, prefs: &Prefs) -> Result<(), String> {
+        prefs.stage(self)
     }
 }
 
@@ -215,6 +243,10 @@ impl Storage for Unsaved {
 
     fn save(&self, _: &Prefs) -> Result<(), String> {
         Err(format!("{FILE} could not be opened"))
+    }
+
+    fn stage(&self, prefs: &Prefs) -> Result<(), String> {
+        self.save(prefs)
     }
 }
 
@@ -271,6 +303,34 @@ pub fn modify(
         NOT_SAVED
     })?;
     Ok(prefs)
+}
+
+/// Writes the prefs in memory to the file, after [`Prefs::stage`]. A failure is logged; the next
+/// save writes them again.
+pub fn flush<R: Runtime>(app: &AppHandle<R>) {
+    let written = with_store(app, |store| {
+        store.save().map_err(|e| {
+            log::error!("could not save prefs: {e}");
+            NOT_SAVED
+        })
+    });
+    if let Err(e) = written {
+        log::warn!("{e}");
+    }
+}
+
+/// [`modify`] with a `change` that says whether it changed anything: nothing is saved if not.
+/// Returns whether it saved.
+pub fn modify_if(
+    storage: &impl Storage,
+    change: impl FnOnce(&mut Prefs) -> bool,
+) -> Result<bool, &'static str> {
+    const UNCHANGED: &str = "unchanged";
+    match modify(storage, |p| change(p).then_some(()).ok_or(UNCHANGED)) {
+        Ok(_) => Ok(true),
+        Err(UNCHANGED) => Ok(false),
+        Err(e) => Err(e),
+    }
 }
 
 /// Whether the file was checked this run (see [`check`]); after that the open store is reused.
@@ -515,6 +575,7 @@ pub(crate) mod tests {
             launch_agent_removed: true,
             print_screen_notice_shown: true,
             onboarded: Some(true),
+            quick_copy_tip: Tip::default(),
             regions: Vec::new(),
         };
         prefs.save(&*s).unwrap();
@@ -567,6 +628,8 @@ pub(crate) mod tests {
         pub fail: bool,
         /// Calls to `save`, failed ones included.
         pub saves: std::cell::Cell<usize>,
+        /// Calls to `stage`, which always works.
+        pub staged: std::cell::Cell<usize>,
     }
 
     impl FakeStorage {
@@ -588,6 +651,12 @@ pub(crate) mod tests {
             if self.fail {
                 return Err("disk full".into());
             }
+            *self.prefs.borrow_mut() = prefs.clone();
+            Ok(())
+        }
+
+        fn stage(&self, prefs: &Prefs) -> Result<(), String> {
+            self.staged.set(self.staged.get() + 1);
             *self.prefs.borrow_mut() = prefs.clone();
             Ok(())
         }
@@ -620,6 +689,38 @@ pub(crate) mod tests {
     fn without_a_store_nothing_is_saved() {
         assert_eq!(Unsaved.load(), Prefs::default());
         assert!(Unsaved.save(&Prefs::default()).is_err());
+        assert!(Unsaved.stage(&Prefs::default()).is_err());
+    }
+
+    #[test]
+    fn staged_prefs_are_read_at_once_and_written_by_the_next_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app();
+        let s = store(&app, dir.path());
+        let staged = Prefs {
+            magnifier: true,
+            ..Prefs::default()
+        };
+        Storage::stage(&*s, &staged).unwrap();
+        assert_eq!(Storage::load(&*s), staged);
+        assert!(!dir.path().join(FILE).exists(), "not written yet");
+        s.save().unwrap();
+        let written: Value =
+            serde_json::from_slice(&fs::read(dir.path().join(FILE)).unwrap()).unwrap();
+        assert_eq!(written["prefs"]["magnifier"], json!(true));
+    }
+
+    #[test]
+    fn prefs_from_before_the_tip_with_quick_copy_on_have_it_over() {
+        let load = |v: Value| Prefs::from_stored(v).unwrap();
+        assert!(load(json!({ "quickCopy": true })).quick_copy_tip.done);
+        assert!(!load(json!({ "quickCopy": false })).quick_copy_tip.done);
+        let current = json!({ "quickCopy": true, "quickCopyTip": { "shown": 1 } });
+        assert!(
+            !load(current).quick_copy_tip.done,
+            "only prefs from before it"
+        );
+        assert!(Prefs::from_stored(json!("nope")).is_none());
     }
 
     #[test]

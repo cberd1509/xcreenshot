@@ -154,6 +154,29 @@ async function twoDisplays() {
   expect(bars()).toHaveLength(2)
 }
 
+const tipBar = () => screen.queryByRole('status')
+const tipBars = () => screen.queryAllByRole('status')
+const button = (name: 'Turn on' | 'Not now') => screen.getByRole('button', { name })
+
+/** Mounts and draws the 2x frame with the quick copy tip, starting from `region` if given. */
+async function tipped(region: Rect | null = null) {
+  frame = () => rgba(info.width, info.height)
+  await mount()
+  await emit('overlay:show', { ...info, region, quickCopyTip: true })
+  await waitFor(() => expect(called('overlay_painted')).toHaveLength(1))
+}
+
+/** Two displays' pages, both drawn with the quick copy tip. */
+async function twoTipped() {
+  frame = () => rgba(info.width, info.height)
+  render(Overlay)
+  render(Overlay)
+  await waitFor(() => expect(called('overlay_ready')).toHaveLength(2))
+  await emit('overlay:show', { ...info, quickCopyTip: true })
+  await waitFor(() => expect(called('overlay_painted')).toHaveLength(2))
+  expect(tipBars()).toHaveLength(2)
+}
+
 const layer = () => screen.getByTestId('annotations')
 /** The annotation shapes on the Konva stage. */
 const shapes = () => stages[0].children[0].children.filter((n) => n.className !== 'Transformer')
@@ -1800,6 +1823,146 @@ describe('Overlay', () => {
       await waitFor(() => expect(called('overlay_painted')).toHaveLength(2))
       expect(bar()).toBeNull()
       expect(screen.getByTestId('hint')).toBeInTheDocument()
+    })
+  })
+
+  describe('quick copy tip', () => {
+    beforeEach(() => {
+      stages.length = 0
+    })
+
+    it('shows instead of the key hint, as designed', async () => {
+      await tipped()
+      expect(tipBar()).toHaveTextContent(
+        'Just copying? Quick copy copies as soon as you drag. Turn on Not now',
+      )
+      expect(tipBar()!.querySelector('svg')).toHaveAttribute('aria-hidden', 'true')
+      expect(screen.queryByTestId('hint')).toBeNull()
+      expect(bar()).toBeNull()
+    })
+
+    it('is not shown unless Rust says so', async () => {
+      await shown()
+      expect(tipBar()).toBeNull()
+      expect(screen.getByTestId('hint')).toBeInTheDocument()
+    })
+
+    it('goes once the drag starts, and the capture goes on as usual', async () => {
+      await tipped()
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      await waitFor(() => expect(tipBar()).toBeNull())
+      expect(hint()[0]).toBe('Enter copy')
+      await waitFor(() => expect(stages).toHaveLength(1))
+      expect(called('overlay_copy')).toHaveLength(0)
+    })
+
+    it('stays over a remembered region until the drag', async () => {
+      await tipped({ x: 10, y: 10, width: 100, height: 50 })
+      expect(selection()).not.toBeNull()
+      expect(tipBar()).toBeInTheDocument()
+    })
+
+    it('leaves the tip alone when pressed', async () => {
+      await tipped()
+      fireEvent.pointerDown(tipBar()!, point({ x: 500, y: 680 }))
+      fireEvent.pointerMove(overlay(), point({ x: 600, y: 600 }))
+      fireEvent.pointerUp(overlay(), point({ x: 600, y: 600 }))
+      await tick()
+      expect(selection()).toBeNull()
+      expect(tipBar()).toBeInTheDocument()
+    })
+
+    it('turns quick copy on, and this capture goes on in quick copy', async () => {
+      await tipped()
+      await userEvent.click(button('Turn on'))
+      await waitFor(() => expect(bar()).toBeInTheDocument())
+      expect(tipBar()).toBeNull()
+      expect(called('set_capture_option')[0].args).toEqual({ key: 'quickCopy', on: true })
+      expect(called('quick_copy_tip_not_now')).toHaveLength(0)
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      await waitFor(() => expect(output('overlay_copy', 0)).toMatchObject({ remember: false }))
+      resetSettings()
+    })
+
+    it('drops a remembered region when quick copy goes on, as quick copy starts', async () => {
+      await tipped({ x: 10, y: 10, width: 100, height: 50 })
+      await userEvent.click(button('Turn on'))
+      await waitFor(() => expect(bar()).toBeInTheDocument())
+      expect(selection()).toBeNull()
+      resetSettings()
+    })
+
+    it('hides for good with Not now, and the capture goes on as usual', async () => {
+      await tipped()
+      await userEvent.click(button('Not now'))
+      await waitFor(() => expect(tipBar()).toBeNull())
+      expect(called('quick_copy_tip_not_now')).toHaveLength(1)
+      expect(called('set_capture_option')).toHaveLength(0)
+      expect(screen.getByTestId('hint')).toBeInTheDocument()
+      expect(bar()).toBeNull()
+    })
+
+    it('logs a Not now that could not be saved', async () => {
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+      mockIPC(
+        (cmd, args) => {
+          calls.push({ cmd, args })
+          if (cmd === 'overlay_frame') return frame(args as { session: number })
+          if (cmd === 'quick_copy_tip_not_now') throw new Error('disk full')
+        },
+        { shouldMockEvents: true },
+      )
+      await tipped()
+      await userEvent.click(button('Not now'))
+      await waitFor(() =>
+        expect(error).toHaveBeenCalledWith('quick_copy_tip_not_now failed', expect.anything()),
+      )
+      expect(tipBar()).toBeNull()
+    })
+
+    it('goes when quick copy is turned on in Settings', async () => {
+      await tipped()
+      // As a `prefs:changed` from the Settings window sets it.
+      settings.quickCopy = true
+      await waitFor(() => expect(tipBar()).toBeNull())
+      expect(bar()).toBeNull()
+      expect(screen.getByTestId('hint')).toBeInTheDocument()
+      resetSettings()
+    })
+
+    it('is answered on every display, but not for an older capture', async () => {
+      await twoTipped()
+      await emit('overlay:tip', { session: 8, quick: true })
+      await tick()
+      expect(tipBars()).toHaveLength(2)
+      const [notNow] = screen.getAllByRole('button', { name: 'Not now' })
+      await userEvent.click(notNow)
+      await waitFor(() => expect(tipBars()).toHaveLength(0))
+      expect(screen.getAllByTestId('hint')).toHaveLength(2)
+    })
+
+    it('goes on every display once a drag starts on one', async () => {
+      await twoTipped()
+      const [first] = screen.getAllByTestId('overlay')
+      fireEvent.pointerDown(first, point({ x: 10, y: 10 }))
+      fireEvent.pointerMove(first, point({ x: 110, y: 60 }))
+      fireEvent.pointerUp(first, point({ x: 110, y: 60 }))
+      await waitFor(() => expect(tipBars()).toHaveLength(0))
+    })
+
+    it('stays when another display starts from a remembered region', async () => {
+      await tipped()
+      await other(true)
+      await tick()
+      expect(tipBar()).toBeInTheDocument()
+    })
+
+    it('is gone for the next capture unless Rust says so', async () => {
+      await tipped()
+      await emit('overlay:closed')
+      await emit('overlay:show', { ...info, session: 10 })
+      await waitFor(() => expect(called('overlay_painted')).toHaveLength(2))
+      expect(tipBar()).toBeNull()
     })
   })
 })

@@ -200,22 +200,36 @@ pub struct Start {
     /// The saved regions to start from, or `None` while Remember region is off (then the
     /// session remembers nothing either).
     pub regions: Option<Vec<Region>>,
+    pub mode: Mode,
+}
+
+/// How a capture starts, sent to the pages with each frame.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Mode {
     /// Quick copy is on: the drag copies at once. The capture starts with no region then.
     pub quick_copy: bool,
+    /// The quick copy tip shows, in place of the key hint, until the drag (see `tip`).
+    pub quick_copy_tip: bool,
 }
 
 impl Start {
     pub fn of(prefs: Prefs) -> Self {
+        let quick_copy = prefs.quick_copy;
+        let mode = Mode {
+            quick_copy,
+            quick_copy_tip: prefs.quick_copy_tip.shows(quick_copy),
+        };
         // With quick copy on, nothing is restored, but a capture annotated this time may still
         // be remembered.
-        let regions = if prefs.quick_copy {
+        let regions = if quick_copy {
             Vec::new()
         } else {
             prefs.regions
         };
         Self {
             regions: prefs.remember_region.then_some(regions),
-            quick_copy: prefs.quick_copy,
+            mode,
         }
     }
 }
@@ -241,21 +255,12 @@ fn save_to(
     seq: u64,
     order: &Order,
 ) -> Result<(), &'static str> {
-    const UNCHANGED: &str = "unchanged";
     // Under the prefs lock, which orders this with other saves and with `forget`.
-    let change = |p: &mut Prefs| {
-        (order.admits(seq) && remember(p, region))
-            .then_some(())
-            .ok_or(UNCHANGED)
-    };
-    match prefs::modify(storage, change) {
-        Ok(_) => {
-            order.written(seq);
-            Ok(())
-        }
-        Err(UNCHANGED) => Ok(()),
-        Err(e) => Err(e),
+    let saved = prefs::modify_if(storage, |p| order.admits(seq) && remember(p, region))?;
+    if saved {
+        order.written(seq);
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -263,6 +268,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::overlay::tests::frame;
     use crate::prefs::tests::FakeStorage;
+    use crate::tip::Tip;
 
     pub(crate) fn monitor(id: u32) -> Monitor {
         Monitor {
@@ -429,7 +435,10 @@ pub(crate) mod tests {
         };
         let start = |regions, quick_copy| Start {
             regions,
-            quick_copy,
+            mode: Mode {
+                quick_copy,
+                quick_copy_tip: false,
+            },
         };
         assert_eq!(
             Start::of(prefs(true, false)),
@@ -438,6 +447,22 @@ pub(crate) mod tests {
         assert_eq!(Start::of(prefs(false, false)), start(None, false));
         assert_eq!(Start::of(prefs(true, true)), start(Some(Vec::new()), true));
         assert_eq!(Start::of(prefs(false, true)), start(None, true));
+    }
+
+    #[test]
+    fn a_capture_shows_the_quick_copy_tip_when_due_and_quick_copy_is_off() {
+        let due = Tip {
+            due: true,
+            ..Tip::default()
+        };
+        let prefs = |quick_copy| Prefs {
+            quick_copy,
+            quick_copy_tip: due.clone(),
+            ..Prefs::default()
+        };
+        assert!(Start::of(prefs(false)).mode.quick_copy_tip);
+        assert!(!Start::of(prefs(true)).mode.quick_copy_tip);
+        assert!(!Start::of(Prefs::default()).mode.quick_copy_tip);
     }
 
     #[test]

@@ -24,6 +24,7 @@ mod settings;
 /// Public so the overlay (and later commands) can call it; see `docs/share.md`.
 pub mod share;
 mod shortcut;
+mod tip;
 mod toast;
 mod updates;
 mod windows;
@@ -115,6 +116,7 @@ pub fn run() {
             settings::get_prefs,
             settings::set_pref,
             settings::set_capture_option,
+            tip::quick_copy_tip_not_now,
             login::login_item_needs_approval,
             #[cfg(target_os = "macos")]
             login::open_login_items,

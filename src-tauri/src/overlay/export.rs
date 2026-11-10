@@ -23,7 +23,8 @@
 //!
 //! A copy, save or share that worked remembers the selection (see `region`), after the
 //! clipboard write, the file or the choice of a service, on another thread; a quick copy does
-//! not. Then it shows a toast (see `toast`).
+//! not. It also tells the quick copy tip how the capture ended (see `tip`). Then it shows a
+//! toast (see `toast`).
 
 use super::display_id;
 use super::window::{
@@ -35,6 +36,7 @@ use crate::output::{self, Clipboard, Target, upscale};
 use crate::prefs;
 use crate::region::{self, Region};
 use crate::share::{self, OnDone, Opened, ShareError, ShareOutcome};
+use crate::tip;
 use crate::toast::{self, Toast};
 use chrono::NaiveDateTime;
 use image::RgbaImage;
@@ -180,17 +182,33 @@ pub(crate) async fn overlay_copy<R: Runtime>(
     copy_with(&window, &state, &out, clipboard, remember_in(app)).await
 }
 
-/// Keeps the region of a copy or save that worked. Faked in tests.
-pub(crate) type Remember = Box<dyn FnOnce(Region) + Send>;
+/// Keeps what a copy, save or share that worked leaves: its region, if it may be remembered,
+/// and how it ended, for the quick copy tip. Faked in tests.
+pub(crate) type Remember = Box<dyn FnOnce(Option<Region>, tip::Output) + Send>;
 
-/// Saves the region to the prefs on a blocking thread, so nothing waits for the file.
+/// Counts the output for the tip at once, in order, then saves the region on a blocking
+/// thread, so nothing waits for the file.
 fn remember_in<R: Runtime>(app: &AppHandle<R>) -> Remember {
     let app = app.clone();
-    Box::new(move |r| {
+    Box::new(move |region, output| {
+        // In memory now, as the output succeeds, so the next capture sees it (see `tip`).
+        tip::record(&app, output);
+        let Some(region) = region else { return };
         // Numbered now, as the output succeeds, so saves that land late keep this order.
         let seq = region::ORDER.next();
-        drop(spawn_blocking(move || region::save(&app, r, seq)));
+        drop(spawn_blocking(move || region::save(&app, region, seq)));
     })
+}
+
+/// How a copy ended, for the tip: plain, or with annotations. A capture where a save was started
+/// stays open after a copy (see `Phase::copy_may_close`), so it may copy again: it never counts
+/// as plain, or one capture could make a whole streak.
+fn copy_output(marks: &Marks, saves: u32) -> tip::Output {
+    if saves == 0 && marks.layer.is_none() && marks.blurs.is_empty() {
+        tip::Output::PlainCopy
+    } else {
+        tip::Output::Other
+    }
 }
 
 async fn copy_with<R: Runtime>(
@@ -235,9 +253,7 @@ async fn copy_with<R: Runtime>(
     };
     let ms = started.elapsed().as_secs_f64() * 1000.0;
     log::info!("copied {width}x{height} px ({factor}x) in {ms:.0} ms");
-    if let Some(region) = region {
-        remember(region);
-    }
+    remember(region, copy_output(&out.marks, saves));
     // Only if nothing happened meanwhile: a save started (even cancelled) keeps the overlay.
     // The clipboard changed either way, so the copy gets its toast even if Esc ended its
     // capture, unless a newer one started: its frame may not be taken yet, and the toast would
@@ -408,8 +424,8 @@ async fn save_with<R: Runtime>(
     let written = write_when_encoded(encoding, path.clone(), saver, &mut steps).await;
     let failed = written.is_err();
     // Before the close, which lets a waiting update restart the app.
-    if let Some(region) = region.filter(|_| !failed) {
-        remember(region);
+    if !failed {
+        remember(region, tip::Output::Other);
     }
     let anchor = window.clone();
     on_main(&app, move |app| {
@@ -631,9 +647,7 @@ fn shared<R: Runtime>(
             // Only for the session still sharing: a stale answer changes nothing, not even
             // the level of a window a newer sheet lowered.
             if close_for_share(app, session) {
-                if let Some(region) = region {
-                    remember(region);
-                }
+                remember(region, tip::Output::Other);
                 // The sheet left the window lowered, so the service's UI shows over it.
                 share::restore_level(window);
                 let service = Some(service).filter(|s| !s.is_empty());
@@ -771,13 +785,13 @@ mod tests {
     fn remembering() -> (Remember, Arc<Mutex<Vec<Region>>>) {
         let regions = Arc::new(Mutex::new(Vec::new()));
         let record = Arc::clone(&regions);
-        let remember: Remember = Box::new(move |r| record.lock().unwrap().push(r));
+        let remember: Remember = Box::new(move |r, _| record.lock().unwrap().extend(r));
         (remember, regions)
     }
 
     /// Ignores the region.
     fn forget() -> Remember {
-        Box::new(drop)
+        Box::new(|_, _| {})
     }
 
     fn copy_in<R: Runtime>(
@@ -867,6 +881,42 @@ mod tests {
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].display.id, 1);
         assert_eq!(regions[0].rect, region::tests::rect(0.5, 0.0, 1.0, 1.0));
+    }
+
+    #[test]
+    fn a_copy_tells_the_tip_whether_it_had_annotations() {
+        let pixels = [0u8; 4];
+        let layer = || Layer {
+            x: 0,
+            y: 0,
+            pixels: image::ImageBuffer::from_raw(1, 1, std::borrow::Cow::Borrowed(&pixels[..]))
+                .unwrap(),
+        };
+        let marks = |layer, blurs| Marks { layer, blurs };
+        assert_eq!(copy_output(&marks(None, vec![]), 0), tip::Output::PlainCopy);
+        assert_eq!(copy_output(&marks(None, vec![]), 1), tip::Output::Other);
+        assert_eq!(
+            copy_output(&marks(Some(layer()), vec![]), 0),
+            tip::Output::Other
+        );
+        assert_eq!(
+            copy_output(&marks(None, vec![px(0, 0, 1, 1)]), 0),
+            tip::Output::Other
+        );
+
+        let app = app();
+        let h = app.handle();
+        let session = shown(h, &[1]);
+        let state = h.state::<Overlay>();
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let record = Arc::clone(&outputs);
+        let remember: Remember = Box::new(move |_, o| record.lock().unwrap().push(o));
+        let out = plain(session, px(1, 0, 2, 2));
+        let (c, _) = clipboard(false);
+        let w = window(h, 1);
+        let copied = copy_with(&w, &state, &out, c, remember);
+        assert_eq!(tauri::async_runtime::block_on(copied), Ok(()));
+        assert_eq!(*outputs.lock().unwrap(), [tip::Output::PlainCopy]);
     }
 
     #[test]
@@ -1082,7 +1132,7 @@ mod tests {
         let w = window(h, 1);
         let default = Some(default.to_owned());
         let regions = Arc::clone(&saver.regions);
-        let remember: Remember = Box::new(move |r| regions.lock().unwrap().push(r));
+        let remember: Remember = Box::new(move |r, _| regions.lock().unwrap().extend(r));
         let saver = Arc::clone(saver);
         let saving = save_with(&w, &state, out, saver, now(), default, remember);
         tauri::async_runtime::block_on(saving)

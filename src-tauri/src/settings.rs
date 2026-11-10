@@ -110,7 +110,13 @@ impl Change {
                 }
             }
             Change::Magnifier(on) => prefs.magnifier = on,
-            Change::QuickCopy(on) => prefs.quick_copy = on,
+            Change::QuickCopy(on) => {
+                prefs.quick_copy = on;
+                // The user knows the mode now: no more tip (see `tip`).
+                if on {
+                    prefs.quick_copy_tip.end();
+                }
+            }
             Change::OpenAtLogin(on) => login::set(os.login, prefs, on)?,
             Change::CheckForUpdates(on) => prefs.check_for_updates = on,
         }
@@ -444,6 +450,17 @@ mod tests {
         assert!(s.quick_copy);
         fakes.apply(&mut p, "openAtLogin", json!(true)).unwrap();
         assert!(fakes.login.on.get() && p.open_at_login && p.login_item_added);
+    }
+
+    #[test]
+    fn turning_quick_copy_on_ends_the_tip() {
+        let fakes = Fakes::new();
+        let mut p = Prefs::default();
+        p.quick_copy_tip.due = true;
+        fakes.apply(&mut p, "quickCopy", json!(false)).unwrap();
+        assert!(!p.quick_copy_tip.done, "off leaves it");
+        fakes.apply(&mut p, "quickCopy", json!(true)).unwrap();
+        assert!(p.quick_copy_tip.done && !p.quick_copy_tip.due);
     }
 
     #[test]

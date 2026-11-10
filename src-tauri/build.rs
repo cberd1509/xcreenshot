@@ -21,6 +21,7 @@ fn main() {
         "get_prefs",
         "set_pref",
         "set_capture_option",
+        "quick_copy_tip_not_now",
         "pause_capture_shortcut",
         "resume_capture_shortcut",
         "login_item_needs_approval",
