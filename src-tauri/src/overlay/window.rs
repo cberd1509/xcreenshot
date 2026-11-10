@@ -499,7 +499,7 @@ fn end_if<R: Runtime>(
         let shown = matches!(*phase, Phase::Open(_));
         (phase.end(), shown)
     };
-    let started = Instant::now();
+    let started = share.then(Instant::now);
     sync_escape(app);
     // Before the overlay hides: AppKit would make the next window of ours key at once.
     let parked = share && before.is_some_and(|front| focus::park_for_share(app, front));
@@ -516,11 +516,13 @@ fn end_if<R: Runtime>(
         if let Err(e) = app.emit_to(label.as_str(), CLOSED_EVENT, ()) {
             log::warn!("could not tell {label} to free its frame: {e}");
         }
-        hidden.push(label);
+        if share {
+            hidden.push(label);
+        }
     }
     // A share closes inside the share sheet's callback: these lines time it against the
     // service's UI, and tell whether anything put an overlay back on screen (#118).
-    if share {
+    if let Some(started) = started {
         hidden.sort_unstable();
         log::info!(
             "overlay closed for the share in {:.1} ms: {hidden:?} transparent, then hidden",
@@ -554,13 +556,17 @@ const AFTER_SHARE: [Duration; 2] = [Duration::from_millis(100), Duration::from_s
 const AFTER_SHARE: [Duration; 2] = [Duration::from_millis(1), Duration::from_millis(2)];
 
 /// Logs, at each of [`AFTER_SHARE`], the overlay windows on screen again after a share closed
-/// them. None should be: one that is would show over the service's UI (#118).
+/// them. None should be: one that is would show over the service's UI (#118). Stops once a new
+/// capture starts: its windows are meant to show.
 fn watch_after_share<R: Runtime>(app: &AppHandle<R>) {
     let app = app.clone();
-    std::thread::spawn(move || {
+    tauri::async_runtime::spawn(async move {
         let started = Instant::now();
         for after in AFTER_SHARE {
-            std::thread::sleep(after.saturating_sub(started.elapsed()));
+            tokio::time::sleep(after.saturating_sub(started.elapsed())).await;
+            if !matches!(*phase(&app), Phase::Idle) {
+                return;
+            }
             on_main(&app, move |app| {
                 let back = app
                     .webview_windows()
@@ -789,14 +795,6 @@ fn sync<R: Runtime>(app: &AppHandle<R>, displays: &[u32]) -> tauri::Result<()> {
     Ok(())
 }
 
-/// What an overlay window shows where its page draws nothing: clear on macOS (see [`build`]),
-/// black elsewhere.
-const BACKGROUND: tauri::window::Color = if cfg!(target_os = "macos") {
-    tauri::window::Color(0, 0, 0, 0)
-} else {
-    tauri::window::Color(0, 0, 0, 255)
-};
-
 fn build<R: Runtime>(app: &AppHandle<R>, display: u32) -> tauri::Result<WebviewWindow<R>> {
     // A new page: cold until it paints.
     if let Some(overlay) = app.try_state::<Overlay>() {
@@ -813,19 +811,19 @@ fn build<R: Runtime>(app: &AppHandle<R>, display: u32) -> tauri::Result<WebviewW
         .skip_taskbar(true)
         .always_on_top(true)
         .visible_on_all_workspaces(true)
-        .background_color(BACKGROUND);
-    // Clear on macOS: whenever WebKit isn't drawing the page (as a service picked in the share
-    // sheet takes over, say), the window shows what is under it instead of a black screen
-    // (#118). The page's frame covers the whole window, so a capture looks the same.
-    #[cfg(target_os = "macos")]
-    let builder = builder.transparent(true);
-    let builder = builder
+        .background_color(tauri::window::Color(0, 0, 0, 255))
         // The page fetches and draws its frame while the window is hidden or transparent;
         // WebKit would otherwise throttle it.
         .background_throttling(BackgroundThrottlingPolicy::Disabled);
-    // The first click on the overlay starts the selection instead of only focusing it.
+    // The first click on the overlay starts the selection instead of only focusing it. Clear
+    // on macOS: whenever WebKit isn't drawing the page (as a service picked in the share sheet
+    // takes over, say), the window shows what is under it instead of a black screen (#118). The
+    // page's frame covers the whole window, so a capture looks the same.
     #[cfg(target_os = "macos")]
-    let builder = builder.accept_first_mouse(true);
+    let builder = builder
+        .accept_first_mouse(true)
+        .transparent(true)
+        .background_color(tauri::window::Color(0, 0, 0, 0));
     let window = builder.build()?;
     // A user close (Alt+F4) closes the overlay and keeps the window for the next capture.
     // Quitting the app does not send CloseRequested, so it is never blocked.
@@ -836,13 +834,11 @@ fn build<R: Runtime>(app: &AppHandle<R>, display: u32) -> tauri::Result<WebviewW
             api.prevent_close();
             close(&handle);
         }
-        // Times a pick in the share sheet against its callback, "shared with …" (#118). Never
-        // waits for the phase: just a log line.
+        // Focus moving while the sheet is open (a pick, say), to time against its callback,
+        // "shared with …" (#118). Never waits for the phase: just a log line.
         WindowEvent::Focused(focused) if sharing(&handle) => {
-            log::info!(
-                "{name} {} while the share sheet is open",
-                focus_change(*focused)
-            );
+            let change = if *focused { "got" } else { "lost" };
+            log::info!("{name} {change} focus while the share sheet is open");
         }
         _ => {}
     });
@@ -854,12 +850,8 @@ fn build<R: Runtime>(app: &AppHandle<R>, display: u32) -> tauri::Result<WebviewW
 
 /// Whether the share sheet is open; `false` if the phase is locked right now.
 fn sharing<R: Runtime>(app: &AppHandle<R>) -> bool {
-    let overlay = app.state::<Overlay>();
-    overlay.phase.try_lock().is_ok_and(|p| p.sharing())
-}
-
-fn focus_change(focused: bool) -> &'static str {
-    if focused { "got focus" } else { "lost focus" }
+    app.try_state::<Overlay>()
+        .is_some_and(|overlay| overlay.phase.try_lock().is_ok_and(|p| p.sharing()))
 }
 
 /// Stages a hidden overlay window: on screen but fully transparent and click-through, so its
@@ -1586,7 +1578,8 @@ pub(crate) mod tests {
         assert!(super::shown(h).is_empty());
         assert_eq!(staged(h), [1, 2], "transparent before hiding");
         assert!(!close_for_share(h, session), "closed once");
-        // The checks after the share run on their own thread.
+        assert_eq!(on_screen("overlay-1", &window(h, 1)), "overlay-1");
+        // Let the checks after the share run (on the async runtime) while the app lives.
         std::thread::sleep(Duration::from_millis(20));
     }
 
@@ -1603,12 +1596,6 @@ pub(crate) mod tests {
             message.ends_with(r#"on screen again: ["overlay-1 (alpha 0)", "overlay-2"]"#),
             "{message}"
         );
-        let app = app();
-        let h = app.handle();
-        open(h, &[1]);
-        assert_eq!(on_screen("overlay-1", &window(h, 1)), "overlay-1");
-        assert_eq!(focus_change(true), "got focus");
-        assert_eq!(focus_change(false), "lost focus");
     }
 
     /// A step that fails its first `fails` calls, recording each call's argument.

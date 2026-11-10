@@ -37,8 +37,8 @@ fn targets(debug: bool) -> Vec<TargetKind> {
 }
 
 /// `[2026-11-10][13:22:05.123]`, in UTC like the plugin's own format.
-fn timestamp(now: chrono::DateTime<chrono::Utc>) -> String {
-    now.format("[%Y-%m-%d][%H:%M:%S%.3f]").to_string()
+fn timestamp(now: chrono::DateTime<chrono::Utc>) -> impl std::fmt::Display {
+    now.format("[%Y-%m-%d][%H:%M:%S%.3f]")
 }
 
 #[cfg(test)]
@@ -69,7 +69,7 @@ mod tests {
             .with_ymd_and_hms(2026, 11, 10, 13, 22, 5)
             .unwrap()
             + chrono::Duration::milliseconds(7);
-        assert_eq!(timestamp(now), "[2026-11-10][13:22:05.007]");
+        assert_eq!(timestamp(now).to_string(), "[2026-11-10][13:22:05.007]");
     }
 
     #[test]
