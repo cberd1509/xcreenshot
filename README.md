@@ -28,11 +28,12 @@ Website: https://cberd1509.github.io/xcreenshot/
 ## Features
 
 - **One shortcut.** <kbd>⌃</kbd> <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>S</kbd> on macOS, <kbd>PrtSc</kbd> on Windows (<kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>PrtSc</kbd> if Snipping Tool uses <kbd>PrtSc</kbd>). Change it anytime.
-- **Drag to capture.** Select any part of the screen, across multiple monitors and Retina displays, pixel-exact.
+- **Drag to capture.** Select any part of the screen, across multiple monitors and Retina displays, pixel-exact. Or double-click a window to take all of it.
 - **Exact sizes.** Type a width and height, or lock the aspect ratio.
 - **Remember region.** Reopen with your last selection, ready to go.
 - **Annotate in place.** Arrows, lines, rectangles, circles, pen, highlighter, text and blur, in any color.
-- **Copy or save.** Straight to the clipboard or a PNG file, at the size you saw it or at 2×, 3× or 4×.
+- **Copy, save or share.** Straight to the clipboard or a PNG file, at the size you saw it or at 2×, 3× or 4×. Share opens the system share sheet on macOS and Windows.
+- **Quick copy.** Copies the region as soon as you finish dragging, for when you just need a copy.
 - **Private by design.** No accounts, no tracking, no uploads.
 - **Tiny and native-feeling.** A small menu bar and system tray app, not a browser in disguise.
 

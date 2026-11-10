@@ -90,12 +90,12 @@ a{color:#09090b}a:visited{color:#09090b}
       <div style="padding: 24px 24px 0; display: flex; flex-direction: column; gap: 12px; border-left: 1px solid #e4e4e7;">
         <div style="height: 26px; display: flex; align-items: center; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; font-weight: 700; color: #09090b;">1260 × 1064</div>
         <div style="font-size: 16px; font-weight: 600;">Drag a region</div>
-        <div style="font-size: 14px; line-height: 22px; color: #52525b;">Add arrows, boxes, text, a highlighter or a blur. Undo with {{undo}}.</div>
+        <div style="font-size: 14px; line-height: 22px; color: #52525b;">Or double-click a window to take all of it. Add arrows, boxes, text, a highlighter or a blur. Undo with {{undo}}.</div>
       </div>
       <div style="padding: 24px 0 0 24px; display: flex; flex-direction: column; gap: 12px; border-left: 1px solid #e4e4e7;">
         <div style="display: flex; gap: 4px;"><span class="kbd">{{mod}}</span><span class="kbd">C</span><span style="width: 8px;"></span><span class="kbd">{{mod}}</span><span class="kbd">S</span></div>
         <div style="font-size: 16px; font-weight: 600;">Copy or save</div>
-        <div style="font-size: 14px; line-height: 22px; color: #52525b;">Paste it anywhere at the size you saw it, or save a PNG.</div>
+        <div style="font-size: 14px; line-height: 22px; color: #52525b;">Paste it anywhere at the size you saw it, or at 2×, 3× or 4×. Save a PNG or share it.</div>
       </div>
     </div>
   </section>
@@ -135,7 +135,7 @@ a{color:#09090b}a:visited{color:#09090b}
   <section style="max-width: 1120px; margin: 0 auto; padding: 96px 24px 0; box-sizing: border-box; display: flex; flex-wrap: wrap; gap: 48px; align-items: center;">
     <div style="flex: 1 1 320px; display: flex; flex-direction: column; gap: 12px;">
       <h2 style="margin: 0; font-size: 32px; font-weight: 300; letter-spacing: -0.02em;"><span style="font-weight: 800;">Small</span> on purpose</h2>
-      <p style="margin: 0; font-size: 15px; line-height: 24px; color: #52525b;">A handful of settings: your shortcut, whether it remembers the last region, a magnifier for exact pixels, and whether it opens at login.</p>
+      <p style="margin: 0; font-size: 15px; line-height: 24px; color: #52525b;">A handful of settings: your shortcut, quick copy for when you just need a copy, whether it remembers the last region, a magnifier for exact pixels, and whether it opens at login.</p>
     </div>
     <!-- the frame is exactly the scaled window (880×800 × 0.68), so there's no empty margin -->
     <div style="flex: 0 0 auto; width: 598px; height: 544px; margin-left: auto; position: relative; overflow: hidden; border-radius: 12px; border: 1px solid #e4e4e7; box-shadow: 0 24px 48px -16px rgba(0,0,0,0.16);">
@@ -159,7 +159,7 @@ a{color:#09090b}a:visited{color:#09090b}
   </footer>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props="{&quot;os&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;mac&quot;,&quot;windows&quot;],&quot;default&quot;:&quot;windows&quot;},&quot;$preview&quot;:{&quot;width&quot;:1280,&quot;height&quot;:2600}}">
+<script type="text/x-dc" data-dc-script data-props="{&quot;os&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;mac&quot;,&quot;windows&quot;],&quot;default&quot;:&quot;mac&quot;},&quot;$preview&quot;:{&quot;width&quot;:1280,&quot;height&quot;:2600}}">
 class Component extends DCLogic {
   renderVals() {
     const os = this.state?.os ?? this.props.os ?? 'mac';
