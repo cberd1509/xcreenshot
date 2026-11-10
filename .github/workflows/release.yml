@@ -11,8 +11,8 @@ name: Release
 # Developer ID signing and notarization switch on when the APPLE_CERTIFICATE secret is set.
 # Windows builds aren't code signed yet (#103).
 # When a release is published, the updater-urls job points latest.json at the tag's download URLs.
-# A prerelease version (1.0.0-beta.0, from Changesets pre mode) is drafted as a GitHub prerelease:
-# releases/latest skips prereleases, so neither the updater nor the landing page offers it.
+# A prerelease version (1.0.0-beta.0, from Changesets pre mode) is drafted as a GitHub prerelease
+# with no latest.json: releases/latest skips prereleases, and testers install betas by hand.
 
 on:
   push:
@@ -110,7 +110,8 @@ jobs:
       VERSION: ${{ needs.plan.outputs.version }}
       # windows-upload drops "(adding Windows)" once the installer is in.
       DRAFT_TITLE: xcreenshot __VERSION__ (adding Windows)
-      # 1.0.0-beta.0 and the like: keeps it out of releases/latest (the updater's endpoint).
+      # 1.0.0-beta.0 and the like: kept out of releases/latest (the updater's endpoint), and
+      # without latest.json, so even a beta published by mistake as a full release updates no one.
       PRERELEASE: ${{ contains(needs.plan.outputs.version, '-') }}
       DMG: src-tauri/target/universal-apple-darwin/release/bundle/dmg/xcreenshot_${{ needs.plan.outputs.version }}_universal.dmg
       APP: src-tauri/target/universal-apple-darwin/release/bundle/macos/xcreenshot.app
@@ -221,7 +222,7 @@ jobs:
           releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: true
           prerelease: ${{ env.PRERELEASE }}
-          uploadUpdaterJson: ${{ steps.secrets.outputs.signed == 'true' }}
+          uploadUpdaterJson: ${{ steps.secrets.outputs.signed == 'true' && env.PRERELEASE != 'true' }}
 
       # The Finder layout step can time out on hosted runners. If the app was built but the DMG
       # wasn't, retry once with the default DMG window. Any other failure stops here.
@@ -251,7 +252,7 @@ jobs:
           releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: true
           prerelease: ${{ env.PRERELEASE }}
-          uploadUpdaterJson: ${{ steps.secrets.outputs.signed == 'true' }}
+          uploadUpdaterJson: ${{ steps.secrets.outputs.signed == 'true' && env.PRERELEASE != 'true' }}
 
       - name: Report DMG layout
         env:
@@ -396,7 +397,8 @@ jobs:
           name: windows-installer
           path: out
 
-      # Unsigned macOS test builds have no latest.json, so the updater offers neither platform.
+      # Unsigned macOS test builds and betas have no latest.json, so the updater offers neither
+      # platform.
       # The merge happens first so the writes come together, each right after a check.
       - name: Add Windows to the draft and latest.json
         id: add
@@ -421,7 +423,7 @@ jobs:
           exe="out/xcreenshot_${VERSION}_x64-setup.exe"
           files=("$exe" "$exe.sig")
           own_draft
-          if [ "$SIGNED" = true ]; then
+          if [ "$SIGNED" = true ] && [[ "$VERSION" != *-* ]]; then
             dir="$RUNNER_TEMP/updater"
             mkdir -p "$dir/merged"
             gh release download "v$VERSION" --pattern latest.json --dir "$dir"
@@ -456,31 +458,39 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # Only to rebuild the landing page after fixing the prerelease flag.
+      actions: write
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       TAG: ${{ github.event.release.tag_name }}
       RELEASE_ID: ${{ github.event.release.id }}
     steps:
-      # A beta published as a full release would become releases/latest and reach every user. Fix
-      # that before the URLs below make its latest.json usable (the app refuses API URLs).
-      - name: Keep prereleases out of releases/latest
+      # The prerelease flag must match the version: a beta marked as a full release would become
+      # releases/latest (the landing page's download), and a stable one marked as a prerelease
+      # would never reach the updater. Fix it, and rebuild the landing page from the result.
+      - name: Match the prerelease flag to the version
         env:
           PRERELEASE: ${{ github.event.release.prerelease }}
+          BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           if [[ "$TAG" == *-* ]] && [ "$PRERELEASE" != true ]; then
-            echo "::warning::$TAG was published as a full release; marking it a prerelease." \
-              "Run Pages again if the landing page picked it up."
-            gh release edit "$TAG" --prerelease
+            echo "::warning::$TAG was published as a full release; marking it a prerelease."
+            gh release edit "$TAG" --prerelease --latest=false
           elif [[ "$TAG" != *-* ]] && [ "$PRERELEASE" = true ]; then
-            echo "::warning::$TAG is a prerelease, so the updater won't offer it."
+            echo "::warning::$TAG was published as a prerelease; marking it the latest release."
+            gh release edit "$TAG" --prerelease=false --latest
+          else
+            exit 0
           fi
+          gh workflow run pages.yml --ref "$BRANCH"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
-      # Unsigned macOS test builds have no latest.json, and their notes carry UNSIGNED_MARKER
-      # (scripts/release.ts). A signed release without one fails: nothing would update.
+      # Unsigned macOS test builds and betas have no latest.json; unsigned notes carry
+      # UNSIGNED_MARKER (scripts/release.ts). A signed release without one fails: nothing would
+      # update.
       - env:
           BODY: ${{ github.event.release.body }}
         run: |
@@ -489,6 +499,9 @@ jobs:
           if ! gh release view "$TAG" --json assets --jq '.assets[].name' | grep -qx latest.json; then
             if [[ "$BODY" == *"<!-- xcreenshot:unsigned -->"* ]]; then
               echo "No latest.json on $TAG (unsigned build), nothing to rewrite."; exit 0
+            fi
+            if [[ "$TAG" == *-* ]]; then
+              echo "No latest.json on $TAG (prerelease), nothing to rewrite."; exit 0
             fi
             # Reported here, failed after the Windows check so both problems show.
             echo "::error::$TAG is a signed release with no latest.json; see docs/releasing.md."

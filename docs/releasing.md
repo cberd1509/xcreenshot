@@ -7,7 +7,7 @@
    - `xcreenshot_<version>_universal.dmg` for people to download
    - `xcreenshot_<version>_universal.app.tar.gz` and its `.sig`, used by the in-app updater
    - `xcreenshot_<version>_x64-setup.exe`, the Windows installer, which the updater also uses, and its `.sig`
-   - `latest.json`, the update manifest with the macOS and Windows entries (signed macOS builds only)
+   - `latest.json`, the update manifest with the macOS and Windows entries (signed macOS builds only, not betas)
    - release notes taken from that version's `CHANGELOG.md` section, with a note about the unsigned Windows installer
 3. Wait until the draft's title loses "(adding Windows)": the Windows installer and its `latest.json` entries go in last. Then download the DMG and the installer from the draft, install them and check that they work.
 4. Publish the draft. Publishing creates the `v<version>` tag. The workflow then points `latest.json` at the tag's download URLs (a few seconds), and the updater starts offering the new version.
@@ -30,19 +30,19 @@ To ship `1.0.0-beta.N` before `1.0.0`, put Changesets in pre mode. Each version 
 
 ```sh
 pnpm changeset pre enter beta   # writes .changeset/pre.json
-pnpm changeset                  # pick "major", summary e.g. "xcreenshot 1.0."
+pnpm changeset                  # pick "major", summary e.g. "Version 1.0"
 git add .changeset
 git commit -m "chore(release): enter beta for 1.0.0"
 ```
 
 The `major` changeset turns `0.x` into `1.0.0`; without it the beta would be `0.x.y-beta.0`. The version PR is then titled "chore(release): version packages (beta)" and bumps `package.json` to `1.0.0-beta.0`. Each later version PR gives `-beta.1`, `-beta.2` and so on. Don't edit the version by hand.
 
-**What gets published:** the same files as a release, but the draft `v1.0.0-beta.N` is a GitHub **prerelease** (the workflow marks every version with a `-` as one). Check and publish it as usual, leaving "Set as a pre-release" ticked. `releases/latest` skips prereleases, so:
+**What gets published:** the draft `v1.0.0-beta.N` is a GitHub **prerelease** (the workflow marks every version with a `-` as one) with the DMG, the Windows installer and the updater bundles, but no `latest.json`. Check and publish it as usual, leaving "Set as a pre-release" ticked. `releases/latest` skips prereleases, so:
 
 - stable users' updater keeps reading the stable `latest.json` and never sees the beta;
 - the landing page (which reads `releases/latest`) and the README's install links keep offering the stable release.
 
-If a beta is published as a full release anyway, the `updater-urls` job marks it a prerelease again before its `latest.json` URLs work, and warns. Run **Pages** again in case the landing page picked it up.
+The prerelease flag is fixed if it's wrong: when a release is published, the `updater-urls` job marks a beta published as a full release a prerelease, and a stable version published as a prerelease the latest release, then rebuilds the landing page. With no `latest.json`, a beta published by mistake updates no one in the meantime.
 
 **Testing:** send testers the prerelease's page. They install the DMG or the Windows installer as usual. Betas don't update to newer betas: the updater only reads the stable `latest.json`, which is older, so testers install each beta by hand. When `1.0.0` is published they get it like everyone else, because `1.0.0` is newer than `1.0.0-beta.N`. The updater never downgrades, so leaving the beta early means reinstalling the stable release.
 
