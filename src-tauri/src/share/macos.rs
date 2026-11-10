@@ -1,7 +1,8 @@
 //! AppKit glue for `NSSharingServicePicker`: FFI calls only, on the main thread. The decisions
-//! (levels, edge, events, which pickers to keep) are in `picker.rs` and `session.rs`.
+//! (levels, edge, events, which pickers to keep) are in `picker.rs`, `open.rs` and `session.rs`.
 
-use super::picker::{self, Edge, Entry, Levels, Open};
+use super::open::{Entry, Open, TIMEOUT};
+use super::picker::{self, Edge, Levels};
 use super::session::{Event, Session};
 use super::{Rect, ShareError};
 use crate::macos::ns_window;
@@ -107,7 +108,7 @@ fn present<R: Runtime>(
     }
     let delegate = Delegate::new(mtm, session, picker.clone(), ns_window.retain());
     picker.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-    delegate.prune_after(picker::TIMEOUT.as_secs_f64());
+    delegate.prune_after(TIMEOUT.as_secs_f64());
     let dropped = OPEN.with_borrow_mut(|open| open.push(Instant::now(), delegate));
     drop(dropped);
     // Returns at once: the menu is shown without a nested tracking loop (checked on macOS 26).

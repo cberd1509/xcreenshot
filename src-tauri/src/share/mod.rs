@@ -1,5 +1,6 @@
-//! Native share sheet. macOS shows `NSSharingServicePicker`; Windows (#30) is not done yet and
-//! returns [`ShareError::Unsupported`]. See `docs/share.md` for what callers must do.
+//! Native share sheet: `NSSharingServicePicker` on macOS, the `DataTransferManager` share sheet
+//! on Windows. Elsewhere it returns [`ShareError::Unsupported`]. See `docs/share.md` for what
+//! callers must do.
 //!
 //! The PNG goes to a temp file in the app's cache dir (`share/`), which is deleted when the
 //! user cancels or soon after the chosen service reports back, and swept at the next startup
@@ -9,12 +10,18 @@
 pub mod debug;
 #[cfg(all(target_os = "macos", not(test)))]
 mod macos;
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
+mod open;
 #[cfg(any(test, target_os = "macos"))]
 mod picker;
-// Only the macOS sheet drives sessions so far (Windows: #30).
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+// Only the native sheets drive sessions.
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 mod session;
 mod temp;
+#[cfg(any(test, target_os = "windows"))]
+mod transfer;
+#[cfg(all(target_os = "windows", not(test)))]
+mod windows;
 
 pub use session::{OnDone, ShareOutcome};
 
@@ -51,7 +58,7 @@ impl Rect {
 
 #[derive(Debug)]
 pub enum ShareError {
-    /// No share sheet on this platform yet.
+    /// No share sheet on this platform.
     Unsupported,
     /// [`init`] was not called at startup.
     NotReady,
@@ -75,7 +82,7 @@ impl ShareError {
 impl fmt::Display for ShareError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Unsupported => f.write_str("sharing is not supported on this platform yet"),
+            Self::Unsupported => f.write_str("sharing is not supported on this platform"),
             Self::NotReady => f.write_str("sharing was not set up"),
             Self::Io(e) => write!(f, "could not write the file to share: {e}"),
             Self::Window(e) => write!(f, "could not show the share sheet: {e}"),
@@ -110,7 +117,7 @@ impl serde::Serialize for ShareError {
 }
 
 /// How long opening the sheet took, for the log: writing the temp file, then showing the menu
-/// on the main thread (waiting for it included).
+/// on the main thread (waiting for it included; on Windows, looking the file up too).
 #[derive(Debug, Default)]
 pub struct Opened {
     pub write: Duration,
@@ -118,7 +125,10 @@ pub struct Opened {
 }
 
 /// After a service reports back, the file is kept this long: some read it late.
-#[cfg_attr(not(all(target_os = "macos", not(test))), allow(dead_code))]
+#[cfg_attr(
+    not(all(any(target_os = "macos", target_os = "windows"), not(test))),
+    allow(dead_code)
+)]
 const GRACE: Duration = Duration::from_secs(30);
 
 /// Startup: manages the temp file tracker and, off the startup path, deletes files a previous
@@ -158,8 +168,10 @@ fn manage<R: Runtime>(app: &AppHandle<R>, dir: PathBuf) -> JoinHandle<()> {
 ///
 /// A window above the pop-up menu level (the overlay) would hide the menu, so it is lowered
 /// just below it. `Cancelled` puts it back; after `Chosen` it stays lowered until the caller
-/// closes it and calls [`restore_level`]. A global Esc shortcut would steal Esc from the menu:
-/// release it before calling this and take it back in `on_done`.
+/// closes it and calls [`restore_level`]. On Windows a topmost window leaves the topmost band
+/// instead, and only [`restore_level`] puts it back, after either outcome. A global Esc
+/// shortcut would steal Esc from the menu: release it before calling this and take it back in
+/// `on_done`.
 pub fn share_png<R: Runtime>(
     window: &WebviewWindow<R>,
     png: &[u8],
@@ -172,7 +184,22 @@ pub fn share_png<R: Runtime>(
         let on_done = Box::new(on_done);
         share_with(window, png, anchor, on_done, now, GRACE, macos::show)
     }
-    #[cfg(not(all(target_os = "macos", not(test))))]
+    // The Windows sheet opens over the window, not under an anchor.
+    #[cfg(all(target_os = "windows", not(test)))]
+    {
+        let now = chrono::Local::now().naive_local();
+        let on_done = Box::new(on_done);
+        share_with(
+            window,
+            png,
+            anchor,
+            on_done,
+            now,
+            GRACE,
+            |w, _, path, session| windows::show(w, path, session),
+        )
+    }
+    #[cfg(not(all(any(target_os = "macos", target_os = "windows"), not(test))))]
     {
         let _ = (window, png, anchor, on_done);
         Err(ShareError::Unsupported)
@@ -181,7 +208,10 @@ pub fn share_png<R: Runtime>(
 
 /// Writes the temp file and hands it to `show` with the session that will report the outcome
 /// and delete the file. Deletes it again if `show` fails.
-#[cfg_attr(not(all(target_os = "macos", not(test))), allow(dead_code))]
+#[cfg_attr(
+    not(all(any(target_os = "macos", target_os = "windows"), not(test))),
+    allow(dead_code)
+)]
 fn share_with<R: Runtime>(
     window: &WebviewWindow<R>,
     png: &[u8],
@@ -219,12 +249,15 @@ fn share_with<R: Runtime>(
 }
 
 /// Puts `window` back at the level it had before a share lowered it, unless its level has
-/// changed since. Call it after closing the window when `on_done` reported `Chosen`. No-op off
-/// macOS, or when no share lowered the window.
+/// changed since. Call it after closing the window when `on_done` reported `Chosen`, and when
+/// it reported `Cancelled` (Windows puts it back only then). No-op where there is no share
+/// sheet, or when no share lowered the window. Main thread.
 pub fn restore_level<R: Runtime>(window: &WebviewWindow<R>) {
     #[cfg(all(target_os = "macos", not(test)))]
     macos::restore_level(window);
-    #[cfg(not(all(target_os = "macos", not(test))))]
+    #[cfg(all(target_os = "windows", not(test)))]
+    windows::restore_level(window);
+    #[cfg(not(all(any(target_os = "macos", target_os = "windows"), not(test))))]
     let _ = window;
 }
 

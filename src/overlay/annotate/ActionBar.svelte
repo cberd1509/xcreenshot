@@ -38,7 +38,7 @@
     keepFocus: boolean
     /** How the platform writes ⌘ in a shortcut. */
     mod: string
-    /** Whether the platform has a share sheet (macOS; Windows is #30). */
+    /** Whether the platform has a share sheet (macOS and Windows). */
     canShare: boolean
   } = $props()
 

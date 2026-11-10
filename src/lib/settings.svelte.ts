@@ -3,7 +3,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 
-export { isMac, shortcutKeys } from './keys'
+export { isMac, isWindows, shortcutKeys } from './keys'
 
 export type Settings = {
   /** Tauri global-shortcut accelerator, e.g. "Control+Shift+Super+S". Empty until loaded. */
