@@ -749,9 +749,6 @@ describe('Overlay', () => {
       expect(rect()).toEqual([10, 10, 150, 50])
       expect(field('Width')).not.toHaveFocus()
       expect(size()).toBe('300 × 100')
-      await userEvent.click(field('Height'))
-      await userEvent.keyboard('{Control>}c{/Control}{Control>}s{/Control}{Escape}')
-      expect(calls.filter((c) => c.cmd === 'overlay_copy' || c.cmd === 'overlay_save')).toEqual([])
       // Clicks on the badge do not start a new selection.
       fireEvent.pointerDown(screen.getByTestId('size-badge'), point({ x: 20, y: 5 }))
       expect(rect()).toEqual([10, 10, 150, 50])
@@ -1114,12 +1111,37 @@ describe('Overlay', () => {
       await waitFor(() => expect(screen.queryByLabelText('Thick')).toBeNull())
     })
 
-    it('leaves Copy and Save in the size fields to them, without an error', async () => {
+    it('copies from the width field, even with its text selected', async () => {
       await annotated()
-      field('Width').focus()
-      await userEvent.keyboard(`${ctrl('c')}${ctrl('s')}`)
-      await tick()
-      expect(sent).toHaveLength(0)
+      field('Width').select()
+      await userEvent.keyboard(ctrl('c'))
+      await waitFor(() => expect(sent).toHaveLength(1))
+      expect(output('overlay_copy', 0)).toMatchObject({ rect: rect200 })
+      await waitFor(() => expect(field('Width')).not.toHaveFocus())
+    })
+
+    it('saves from the height field, with the size typed there', async () => {
+      await annotated()
+      await userEvent.clear(field('Height'))
+      await userEvent.type(field('Height'), '50')
+      await userEvent.keyboard(ctrl('s'))
+      await waitFor(() => expect(sent).toHaveLength(1))
+      expect(output('overlay_save', 0)).toMatchObject({ rect: { ...rect200, height: 50 } })
+      expect(size()).toBe('200 × 50')
+      expect(field('Height')).not.toHaveFocus()
+    })
+
+    it('cancels a size edit with Esc, so a later Copy takes the old size', async () => {
+      await annotated()
+      await userEvent.clear(field('Width'))
+      await userEvent.type(field('Width'), '50')
+      await esc()
+      await waitFor(() => expect(field('Width')).not.toHaveFocus())
+      expect(size()).toBe('200 × 100')
+      expect(answers()).toEqual([{ session: 9, token: 1, handled: true }])
+      await userEvent.keyboard(ctrl('c'))
+      await waitFor(() => expect(sent).toHaveLength(1))
+      expect(output('overlay_copy', 0)).toMatchObject({ rect: rect200 })
     })
 
     it('copies from the hex field, unless its text is selected', async () => {

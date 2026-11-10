@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest'
 import SizeBadge from './SizeBadge.svelte'
 import type { Size } from './geometry'
 
+vi.mock('$lib/settings.svelte', () => ({ isMac: false }))
+
 function badge(size: Size = { width: 400, height: 200 }) {
   const onresize = vi.fn<(size: Size, keepRatio: boolean) => void>()
   const view = render(SizeBadge, { props: { size, onresize } })
@@ -51,6 +53,21 @@ describe('SizeBadge', () => {
     expect(width().value).toBe('100')
     await userEvent.type(height(), '30{Enter}')
     expect(onresize).toHaveBeenCalledWith({ width: 60, height: 30 }, true)
+  })
+
+  it('applies the typed size before Copy and Save go on', async () => {
+    const { onresize } = badge()
+    await userEvent.clear(width())
+    await userEvent.type(width(), '120{Control>}c{/Control}')
+    expect(onresize).toHaveBeenCalledWith({ width: 120, height: 200 }, false)
+    expect(width()).not.toHaveFocus()
+    // Outside the fields (the lock toggle focused), they apply nothing.
+    lock().focus()
+    await userEvent.keyboard('{Control>}s{/Control}')
+    expect(onresize).toHaveBeenCalledOnce()
+    // Other shortcuts leave the edit alone.
+    await userEvent.type(height(), '{Control>}a{/Control}')
+    expect(onresize).toHaveBeenCalledOnce()
   })
 
   it('ignores an empty size', async () => {

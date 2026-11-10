@@ -1,6 +1,7 @@
 <script lang="ts">
   import LockIcon from '@lucide/svelte/icons/link-2'
   import { lockedSize, type Size } from './geometry'
+  import { shortcut } from './keys'
 
   /**
    * The selection size in physical px, as two fields: type an exact size and press Enter.
@@ -49,11 +50,20 @@
     ;({ width, height } = lockedSize(side, value, ratio))
   }
 
-  function apply(e: SubmitEvent) {
-    e.preventDefault()
+  function apply() {
     const next = { width: width ?? 0, height: height ?? 0 }
     editing = false
     if (next.width >= 1 && next.height >= 1) onresize(next, lock)
+  }
+
+  function onsubmit(e: SubmitEvent) {
+    e.preventDefault()
+    apply()
+  }
+
+  // Copy and Save go on to the capture (see `fieldShortcut`), with the size typed so far.
+  function onkeydown(e: KeyboardEvent) {
+    if (shortcut(e, 'c') || shortcut(e, 's')) apply()
   }
 
   // Leaving the form without Enter cancels the edit.
@@ -77,7 +87,7 @@
   aria-label="Selection size"
   data-testid="size-badge"
   data-size-badge
-  onsubmit={apply}
+  {onsubmit}
   {onfocusin}
   {onfocusout}
 >
@@ -91,6 +101,7 @@
     aria-label="Width"
     bind:value={width}
     oninput={() => typed('width')}
+    {onkeydown}
   />
   <button
     type="button"
@@ -115,6 +126,7 @@
     aria-label="Height"
     bind:value={height}
     oninput={() => typed('height')}
+    {onkeydown}
   />
   <span class="pr-1.5">px</span>
   <button type="submit" hidden aria-hidden="true"></button>

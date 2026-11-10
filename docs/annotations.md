@@ -83,11 +83,12 @@ the overlay. The overlay focuses its window on every press, in the capture phase
 
 The overlay owns the keyboard. Copy and Save (⌘C / ⌘S, Ctrl elsewhere) always work: they close
 an open toolbar menu (`closeMenus()`) first, unless text is being typed (`typingText()`), when
-they are the text box's. In the color menu's hex field they work too, taking the color typed
-there first, except ⌘C with text selected in the field: that copies the selected text
-(`fieldShortcut()` in `keys.ts`). An open toolbar menu owns the other keys (`menuOpen()`); otherwise the
-overlay asks the annotator first. A press on the board closes an open menu too, so drawing
-dismisses it like a click outside:
+they are the text box's. In the color menu's hex field and the size badge's fields they work
+too, taking the color or size typed there first, except ⌘C with text selected in the hex field:
+that copies the selected text. Number fields have no text selection to read, so in the size
+fields ⌘C always copies the capture (`fieldShortcut()` in `keys.ts`). An open toolbar menu owns
+the other keys (`menuOpen()`); otherwise the overlay asks the annotator first. A press on the
+board closes an open menu too, so drawing dismisses it like a click outside:
 
 - `key(e)` handles undo and redo (⌘Z / ⇧⌘Z on macOS, Ctrl elsewhere), Delete/Backspace and arrow
   keys on the selected shape, and the tool letters. It returns whether it handled the key.
