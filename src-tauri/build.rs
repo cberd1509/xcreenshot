@@ -10,6 +10,7 @@ fn main() {
         "overlay_save",
         "overlay_share",
         "close_overlay",
+        "overlay_window_at",
         "notice",
         "notice_answer",
         "permission_granted",

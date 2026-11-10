@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { control, fieldShortcut, keyLabels, shortcut, typing } from './keys'
+import { control, fieldShortcut, keyLabels, modifier, shortcut, typing } from './keys'
 
 const platform = vi.hoisted(() => ({ mac: true }))
 vi.mock('$lib/settings.svelte', () => ({
@@ -8,6 +8,7 @@ vi.mock('$lib/settings.svelte', () => ({
   },
 }))
 
+const click = (init: MouseEventInit) => new MouseEvent('dblclick', init)
 const key = (k: string, init: KeyboardEventInit = {}) =>
   new KeyboardEvent('keydown', { key: k, ...init })
 
@@ -36,10 +37,22 @@ describe('shortcut', () => {
   })
 })
 
+describe('modifier', () => {
+  it('is ⌘ on macOS and Ctrl elsewhere', () => {
+    platform.mac = true
+    expect(modifier(click({ metaKey: true }))).toBe(true)
+    expect(modifier(click({ ctrlKey: true }))).toBe(false)
+    platform.mac = false
+    expect(modifier(click({ ctrlKey: true }))).toBe(true)
+    expect(modifier(click({ metaKey: true }))).toBe(false)
+    platform.mac = true
+  })
+})
+
 describe('keyLabels', () => {
   it('writes ⌘ and ⇧ on macOS, Ctrl+ and Shift+ elsewhere', () => {
-    expect(keyLabels(true)).toEqual({ mod: '⌘', shift: '⇧' })
-    expect(keyLabels(false)).toEqual({ mod: 'Ctrl+', shift: 'Shift+' })
+    expect(keyLabels(true)).toEqual({ mod: '⌘', shift: '⇧', key: '⌘' })
+    expect(keyLabels(false)).toEqual({ mod: 'Ctrl+', shift: 'Shift+', key: 'Ctrl' })
     platform.mac = true
     expect(keyLabels().mod).toBe('⌘')
   })

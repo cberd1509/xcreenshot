@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-overlay-window-at"
+description = "Enables the overlay_window_at command without any pre-configured scope."
+commands.allow = ["overlay_window_at"]
+
+[[permission]]
+identifier = "deny-overlay-window-at"
+description = "Denies the overlay_window_at command without any pre-configured scope."
+commands.deny = ["overlay_window_at"]

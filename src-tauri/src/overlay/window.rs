@@ -232,6 +232,8 @@ fn start_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) -> Option<u64
             WATCHDOG,
         );
     });
+    // Once the capture is under way, in parallel with it, so a double-click can pick a window.
+    crate::pick::snapshot(app, session, &displays);
     if let Err(e) = place(app, &displays) {
         log::error!("could not place the overlay windows: {e}");
         close(app);

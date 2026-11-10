@@ -11,9 +11,12 @@ export function shortcut(e: KeyboardEvent, key: string, shift = false): boolean 
   return mod && !e.altKey && e.shiftKey === shift && pressed
 }
 
-/** How a shortcut writes ⌘ (Ctrl+ off the Mac) and ⇧ (Shift+). */
+/** Whether ⌘ (Ctrl off the Mac) is held. */
+export const modifier = (e: MouseEvent | KeyboardEvent) => (isMac ? e.metaKey : e.ctrlKey)
+
+/** How a shortcut writes ⌘ (Ctrl+ off the Mac) and ⇧ (Shift+); `key` is ⌘ or Ctrl on its own. */
 export const keyLabels = (mac = isMac) =>
-  mac ? { mod: '⌘', shift: '⇧' } : { mod: 'Ctrl+', shift: 'Shift+' }
+  mac ? { mod: '⌘', shift: '⇧', key: '⌘' } : { mod: 'Ctrl+', shift: 'Shift+', key: 'Ctrl' }
 
 /** Whether keys pressed in `target` type into it: a field, or editable text. */
 export const typing = (target: EventTarget | null) =>

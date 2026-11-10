@@ -14,6 +14,8 @@ mod onboarding;
 pub mod output;
 mod overlay;
 mod permission;
+/// Public for `examples/windows.rs`.
+pub mod pick;
 mod prefs;
 mod print_screen;
 mod region;
@@ -78,6 +80,7 @@ pub fn run() {
     let builder = builder.manage(focus::Focus::os());
     builder
         .manage(overlay::Overlay::default())
+        .manage(pick::Windows::default())
         .manage(notice::Notices::default())
         .manage(toast::Toasts::default())
         .manage(shortcut::Registered::default())
@@ -93,6 +96,7 @@ pub fn run() {
             overlay::export::overlay_save,
             overlay::export::overlay_share,
             overlay::window::close_overlay,
+            pick::overlay_window_at,
             notice::notice,
             notice::notice_answer,
             permission::permission_granted,
