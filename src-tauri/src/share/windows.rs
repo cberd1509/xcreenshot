@@ -21,7 +21,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tauri::async_runtime::JoinHandle;
-use tauri::{AppHandle, Runtime, WebviewWindow};
+use tauri::{AppHandle, Manager, Runtime, WebviewWindow};
 use windows_collections::IIterable;
 
 type Sheet = transfer::Sheet<Registered>;
