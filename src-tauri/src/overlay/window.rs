@@ -66,8 +66,9 @@ pub struct Overlay {
     phase: Mutex<Phase>,
     /// The displays whose overlay window is on screen, as Rust last showed or hid them.
     shown: Mutex<Vec<u32>>,
-    /// The displays whose overlay window is transparent and click-through ([`stage`]), on
-    /// screen while it renders its frame or hidden since.
+    /// The displays whose overlay window is transparent and click-through, so it must be
+    /// unstaged before it shows: staged for its paint ([`stage`]), on screen while it renders
+    /// its frame or hidden since, or concealed as the overlay closed ([`conceal`]).
     staged: Mutex<Vec<u32>>,
     /// Fired when the phase returns to Idle; the update restart waits for it.
     pub(crate) idle: tokio::sync::Notify,
@@ -442,7 +443,7 @@ pub fn close<R: Runtime>(app: &AppHandle<R>) {
 /// [`close`], only if `ok` holds for the phase. Checked and closed under one lock, so nothing
 /// can start in between (a save, say).
 pub fn close_if<R: Runtime>(app: &AppHandle<R>, ok: impl FnOnce(&Phase) -> bool) {
-    let before = end_if(app, |phase| {
+    let before = end_if(app, false, |phase| {
         if phase.in_dialog() {
             log::info!("not closing the overlay while the Save dialog or share sheet is open");
             return false;
@@ -458,17 +459,19 @@ pub fn close_if<R: Runtime>(app: &AppHandle<R>, ok: impl FnOnce(&Phase) -> bool)
 
 /// Ends `session`'s share sheet and closes the overlay in one step, so nothing can start or
 /// close in between. The app stays active: a service chosen in the sheet shows its UI
-/// (AirDrop, Mail…) in this app, and hiding the app would hide it too. Returns whether
-/// `session` was the one sharing. Main thread only.
+/// (AirDrop, Mail…) in this app, and hiding the app would hide it too. Our other windows are
+/// put away first if focus would land on them instead (see [`focus::park_for_share`]).
+/// Returns whether `session` was the one sharing. Main thread only.
 pub(crate) fn close_for_share<R: Runtime>(app: &AppHandle<R>, session: u64) -> bool {
-    end_if(app, |phase| phase.end_share(session)).is_some()
+    end_if(app, true, |phase| phase.end_share(session)).is_some()
 }
 
 /// Closes if `ok` (which may change the phase first) holds, under one lock. Returns the app
 /// that was in front at the capture's hotkey if this ended a capture; `None` if `ok` failed
-/// or nothing was open (see [`Phase::end`]).
+/// or nothing was open (see [`Phase::end`]). `share`: a service was picked in the share sheet.
 fn end_if<R: Runtime>(
     app: &AppHandle<R>,
+    share: bool,
     ok: impl FnOnce(&mut Phase) -> bool,
 ) -> Option<focus::Front> {
     let (before, shown) = {
@@ -480,19 +483,27 @@ fn end_if<R: Runtime>(
         (phase.end(), shown)
     };
     sync_escape(app);
-    hide_if(app, |_| true);
-    for label in app
-        .webview_windows()
-        .keys()
-        .filter(|l| display_id(l).is_some())
-    {
+    // Before the overlay hides: AppKit would make the next window of ours key at once.
+    let parked = share && before.is_some_and(|front| focus::park_for_share(app, front));
+    // Concealed and hidden before the page frees its frame.
+    for (label, window) in app.webview_windows() {
+        if display_id(&label).is_none() {
+            continue;
+        }
+        conceal(&window);
+        if !hide_window(&label, &window) {
+            continue;
+        }
         if let Err(e) = app.emit_to(label.as_str(), CLOSED_EVENT, ()) {
             log::warn!("could not tell {label} to free its frame: {e}");
         }
     }
-    // A notice hidden for the capture comes back after a share too; only giving focus back
-    // (in `close_if`) is skipped. First, so a notice shown again counts as an open window.
-    crate::notice::show_after_capture(app);
+    // A notice hidden for the capture comes back after a share too, unless the share put our
+    // windows away (it comes back with them); only giving focus back (in `close_if`) is
+    // skipped. First, so a notice shown again counts as an open window.
+    if !parked {
+        crate::notice::show_after_capture(app);
+    }
     // For any page that waits for a capture to end (onboarding's "Try it"). Only a capture
     // that was shown counts, not one that failed while capturing.
     if shown {
@@ -517,14 +528,21 @@ pub(super) fn hide<R: Runtime>(app: &AppHandle<R>) {
 /// Hides the overlay windows of the displays where `which` holds. Main thread only.
 fn hide_if<R: Runtime>(app: &AppHandle<R>, which: impl Fn(u32) -> bool) {
     for (label, window) in app.webview_windows() {
-        if display_id(&label).is_some_and(&which)
-            && let Err(e) = set_shown(&window, false)
-        {
-            // A window left on screen would block input: remove it; `sync` rebuilds it.
-            log::warn!("could not hide {label}, destroying it: {e}");
-            let _ = window.destroy();
+        if display_id(&label).is_some_and(&which) {
+            hide_window(&label, &window);
         }
     }
+}
+
+/// Hides one overlay window, or destroys it if it can't be: a window left on screen would block
+/// input, and `sync` rebuilds it. Returns whether it was hidden. Main thread only.
+fn hide_window<R: Runtime>(label: &str, window: &WebviewWindow<R>) -> bool {
+    set_shown(window, false)
+        .inspect_err(|e| {
+            log::warn!("could not hide {label}, destroying it: {e}");
+            let _ = window.destroy();
+        })
+        .is_ok()
 }
 
 /// Shows `displays` again after [`hide`], focusing `focus`, and takes Esc back if Rust held it.
@@ -730,13 +748,28 @@ fn build<R: Runtime>(app: &AppHandle<R>, display: u32) -> tauri::Result<WebviewW
 /// the previous capture). The page reports the paint once the frame is rendered, and
 /// [`set_shown`] unstages it (opaque, taking clicks again). Main thread only.
 fn stage<R: Runtime>(window: &WebviewWindow<R>) {
+    make_transparent(window, true);
+}
+
+/// Makes an overlay window transparent and click-through as it closes, where it is. Anything
+/// that puts it back on screen before the next capture (AppKit, as a service picked in the
+/// share sheet shows its UI) then shows nothing and takes no clicks, instead of its unpainted,
+/// black page (#118). The next capture stages it again, and its paint unstages it. Main
+/// thread only.
+fn conceal<R: Runtime>(window: &WebviewWindow<R>) {
+    make_transparent(window, false);
+}
+
+/// Click-through, then alpha 0 (see [`stage_steps`]), and on screen too if `order_in`. Listed
+/// as staged, so it is unstaged before it shows.
+fn make_transparent<R: Runtime>(window: &WebviewWindow<R>, order_in: bool) {
     let Some(display) = display_id(window.label()) else {
         return;
     };
     let staged = stage_steps(
         window.label(),
         |on| click_through(window, on),
-        || present(window, true),
+        || present(window, true, order_in),
     );
     // A window already listed stays listed: it may still be transparent from before.
     let overlay = window.state::<Overlay>();
@@ -756,7 +789,11 @@ fn unstage<R: Runtime>(window: &WebviewWindow<R>) -> Result<(), String> {
     if !lock(&overlay.staged).contains(&display) {
         return Ok(());
     }
-    unstage_steps(|| present(window, false), |on| click_through(window, on)).map_err(|e| {
+    unstage_steps(
+        || present(window, false, false),
+        |on| click_through(window, on),
+    )
+    .map_err(|e| {
         format!(
             "could not make {} opaque and clickable: {e}",
             window.label()
@@ -766,11 +803,11 @@ fn unstage<R: Runtime>(window: &WebviewWindow<R>) -> Result<(), String> {
     Ok(())
 }
 
-/// Staging, in order: click-through, then on screen at alpha 0 (`present`). If click-through
-/// fails the window isn't staged: a transparent window taking clicks would swallow them, so it
-/// stays hidden and shows opaque on its paint, as before staging. If it can't go on screen
-/// transparent, click-through is undone. Returns whether the window must be unstaged before it
-/// shows: staged, or still click-through because undoing that failed too.
+/// Staging, in order: click-through, then alpha 0 (`present`, which puts it on screen when
+/// staging for a paint). If click-through fails the window isn't staged: a transparent window
+/// taking clicks would swallow them, so it shows opaque on its paint, as before staging. If it
+/// can't turn transparent, click-through is undone. Returns whether the window must be
+/// unstaged before it shows: staged, or still click-through because undoing that failed too.
 fn stage_steps(
     label: &str,
     mut click_through: impl FnMut(bool) -> Result<(), String>,
@@ -805,20 +842,25 @@ fn click_through<R: Runtime>(window: &WebviewWindow<R>, on: bool) -> Result<(), 
         .map_err(|e| e.to_string())
 }
 
-/// The platform half of staging: on screen at alpha 0 (`staged`), or opaque again.
-fn present<R: Runtime>(window: &WebviewWindow<R>, staged: bool) -> Result<(), String> {
+/// The platform half of staging: alpha 0 (`transparent`) and, if `order_in`, on screen
+/// without focus; or opaque again.
+fn present<R: Runtime>(
+    window: &WebviewWindow<R>,
+    transparent: bool,
+    order_in: bool,
+) -> Result<(), String> {
     #[cfg(all(target_os = "macos", not(test)))]
     {
-        macos::stage(window, staged)
+        macos::stage(window, transparent, order_in)
     }
     #[cfg(all(target_os = "windows", not(test)))]
     {
-        win::stage(window, staged)
+        win::stage(window, transparent, order_in)
     }
     // The mock runtime has no native window.
     #[cfg(any(test, not(any(target_os = "macos", target_os = "windows"))))]
     {
-        let _ = (window, staged);
+        let _ = (window, transparent, order_in);
         Ok(())
     }
 }
@@ -830,11 +872,15 @@ mod macos {
     use objc2_app_kit::NSWindowCollectionBehavior;
     use tauri::{Runtime, WebviewWindow};
 
-    /// Staged: ordered in at alpha 0 without taking focus. Unstaged: opaque.
-    pub fn stage<R: Runtime>(window: &WebviewWindow<R>, staged: bool) -> Result<(), String> {
+    /// Alpha 0 or opaque; `order_in`: ordered in too, without taking focus.
+    pub fn stage<R: Runtime>(
+        window: &WebviewWindow<R>,
+        transparent: bool,
+        order_in: bool,
+    ) -> Result<(), String> {
         let ns_window = main_ns_window(window).ok_or("no NSWindow on the main thread")?;
-        ns_window.setAlphaValue(if staged { 0.0 } else { 1.0 });
-        if staged {
+        ns_window.setAlphaValue(if transparent { 0.0 } else { 1.0 });
+        if order_in {
             ns_window.orderFrontRegardless();
         }
         Ok(())
@@ -859,18 +905,22 @@ mod win {
     use windows::Win32::Foundation::COLORREF;
     use windows::Win32::UI::WindowsAndMessaging::{LWA_ALPHA, SetLayeredWindowAttributes};
 
-    /// Staged: shown at alpha 0. Click-through (`set_ignore_cursor_events`) already made the
-    /// window layered, and Tauri keeps that style while it is set. Shown through Tauri, which
+    /// Alpha 0 (`transparent`) or 255. Click-through (`set_ignore_cursor_events`) already made
+    /// the window layered, and Tauri keeps that style while it is set; opaque comes before
+    /// click-through goes and with it the layered style. `order_in`: shown through Tauri, which
     /// activates it, so Tauri's own style updates keep it visible; the capture is already taken
-    /// and the overlay takes focus anyway once revealed. Unstaged: alpha 255, before
-    /// click-through goes and with it the layered style.
-    pub fn stage<R: Runtime>(window: &WebviewWindow<R>, staged: bool) -> Result<(), String> {
+    /// and the overlay takes focus anyway once revealed.
+    pub fn stage<R: Runtime>(
+        window: &WebviewWindow<R>,
+        transparent: bool,
+        order_in: bool,
+    ) -> Result<(), String> {
         let hwnd = window.hwnd().map_err(|e| format!("no HWND: {e}"))?;
-        let alpha = if staged { 0 } else { 255 };
+        let alpha = if transparent { 0 } else { 255 };
         // SAFETY: Tauri returns the live HWND of this window, and we are on its thread.
         unsafe { SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA) }
             .map_err(|e| format!("could not set the alpha: {e}"))?;
-        if staged {
+        if order_in {
             window.show().map_err(|e| e.to_string())?;
         }
         Ok(())
@@ -1372,7 +1422,23 @@ pub(crate) mod tests {
         assert!(staged(h).is_empty(), "shown means unstaged");
         close(h);
         stage_unpainted(h, session, &[1, 2]);
-        assert!(staged(h).is_empty(), "closed first");
+        assert!(super::shown(h).is_empty(), "closed first");
+    }
+
+    #[test]
+    fn closing_leaves_the_windows_transparent_until_the_next_paint() {
+        let app = app();
+        let h = app.handle();
+        let session = open(h, &[1, 2]);
+        overlay_painted(window(h, 1), h.state(), session, true);
+        overlay_painted(window(h, 2), h.state(), session, true);
+        close(h);
+        // Nothing black if something puts them back on screen (#118).
+        assert_eq!(staged(h), [1, 2], "concealed as they hide");
+        let session = open(h, &[1]);
+        overlay_painted(window(h, 1), h.state(), session, true);
+        assert_eq!(super::shown(h), [1]);
+        assert_eq!(staged(h), [2], "opaque again once painted");
     }
 
     /// A step that fails its first `fails` calls, recording each call's argument.

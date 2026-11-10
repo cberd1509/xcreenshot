@@ -173,6 +173,12 @@ fn set_hidden<R: Runtime>(app: &AppHandle<R>, hide: bool) {
     }
 }
 
+/// Whether a notice is hidden for the capture, to show again once it ends.
+pub fn hidden_for_capture<R: Runtime>(app: &AppHandle<R>) -> bool {
+    app.try_state::<Notices>()
+        .is_some_and(|notices| notices.lock().values().any(|p| p.hidden))
+}
+
 /// A capture is starting: hides the open notices. Main thread only.
 pub fn hide_for_capture<R: Runtime>(app: &AppHandle<R>) {
     set_hidden(app, true);
@@ -489,6 +495,46 @@ pub(crate) mod tests {
             notice_answer(window, false).unwrap();
             assert_eq!(block_on(task).unwrap(), Some(false));
             assert_eq!(fake.calls(), ["activate 8", "activate 8"]);
+        }
+
+        #[test]
+        #[cfg(target_os = "macos")]
+        fn a_share_puts_settings_and_the_notice_away_until_another_app_is_in_front() {
+            use crate::overlay::window::{close_for_share, phase};
+            let fake = Fake::new(Some(SAFARI));
+            let app = app_with(&fake);
+            let h = app.handle();
+            let (task, window) = asking(h, update());
+            let session = overlay::shown(h, &[1]);
+            assert!(phase(h).begin_share(session));
+            assert!(close_for_share(h, session));
+            assert_eq!(hidden(h), [window.label()], "not over the service's UI");
+            assert!(fake.calls().is_empty(), "the service takes focus");
+            let parked = app.state::<Focus>().activated(SAFARI).unwrap();
+            assert!(parked.contains(&"settings".to_owned()), "{parked:?}");
+            crate::focus::unpark(h, &parked);
+            assert!(hidden(h).is_empty(), "shown again");
+            forget(h, window.label());
+            assert_eq!(block_on(task).unwrap(), None);
+        }
+
+        #[test]
+        fn notices_parked_by_a_share_wait_for_a_capture_under_way() {
+            let fake = Fake::new(Some(SAFARI));
+            let app = app_with(&fake);
+            let h = app.handle();
+            let (task, window) = asking(h, update());
+            let session = overlay::open(h, &[1]);
+            crate::focus::unpark(h, &[]);
+            assert_eq!(
+                hidden(h),
+                [window.label()],
+                "the capture shows it as it ends"
+            );
+            crate::overlay::window::close_session(h, session);
+            assert!(hidden(h).is_empty());
+            forget(h, window.label());
+            assert_eq!(block_on(task).unwrap(), None);
         }
     }
 }

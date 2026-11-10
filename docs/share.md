@@ -36,6 +36,8 @@ The overlay sits at the screen saver level (1000), which would hide the menu (a 
 1. Releases its global Esc shortcut before calling `share_png`, or Esc goes to the overlay instead of closing the menu. While the sheet is open, copy, save, another share, Esc from the page and closing the overlay do nothing.
 2. In `on_done`:
    - `Chosen`: remembers the region (like Copy and Save), closes the overlay right away without hiding the app, then calls `restore_level(&window)`. The window stays at 100 until then, so the service's own UI (AirDrop, Mail…) is not hidden behind it. Hiding the app, as other closes do to give focus back, would hide that UI too.
+     - Nothing hands focus back: the service's UI takes it. But xcreenshot stays active, so on macOS AppKit would make our next window key as the overlay goes, and bring Settings (or a notice) forward over the service. So just before the overlay hides, `focus::park_for_share` hides Settings and keeps the notices hidden for the capture. They come back once another app is in front: Settings behind it without focus, the notices on top. Not when the capture started in Settings: the user was there.
+     - Every close makes the overlay windows transparent and click-through before they hide (as staging does), and the next capture's paint makes them opaque again. If anything puts one back on screen after a share, it shows nothing instead of its unpainted, black page (#118).
    - `Cancelled`: the level is already back. It takes Esc back (or closes, if it can't); the overlay stays open with the selection.
 
 The level is only restored if nobody changed it since, and a second share while the window is still lowered keeps the original level on record.
