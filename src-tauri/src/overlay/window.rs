@@ -75,8 +75,8 @@ pub struct Overlay {
     /// unstaged before it shows: staged for its paint ([`stage`]), on screen while it renders
     /// its frame or hidden since, or concealed as the overlay closed ([`conceal`]).
     staged: Mutex<Vec<u32>>,
-    /// The displays whose overlay window has reported a paint since it was built.
-    warm: Mutex<Vec<u32>>,
+    /// The displays whose overlay window hasn't rendered a frame since it was built.
+    cold: Mutex<Vec<u32>>,
     /// Fired when the phase returns to Idle; the update restart waits for it.
     pub(crate) idle: tokio::sync::Notify,
 }
@@ -348,7 +348,7 @@ fn finish<R: Runtime>(
         return false;
     };
     let displays: Vec<u32> = shows.iter().map(|(d, _)| *d).collect();
-    let cold = is_cold(&lock(&app.state::<Overlay>().warm), &displays);
+    let cold = is_cold(&lock(&app.state::<Overlay>().cold), &displays);
     on_main(app, move |app| {
         sync_escape(app);
         stage_unpainted(app, session, &displays);
@@ -366,23 +366,20 @@ fn finish<R: Runtime>(
     } else {
         reveal_after(watchdog, cold)
     };
-    if cold {
-        log::info!("first paint of an overlay window: showing it unpainted after {reveal:?}");
-    }
     let app = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(reveal);
-        on_main(&app, move |app| reveal_late(app, session));
+        on_main(&app, move |app| reveal_late(app, session, reveal));
         std::thread::sleep(watchdog - reveal);
         on_main(&app, move |app| rescue(app, session));
     });
     told
 }
 
-/// Whether a capture on `displays` waits for a window that has never painted (`warm` lists
-/// those that have): the first capture since launch, or on a display added since.
-fn is_cold(warm: &[u32], displays: &[u32]) -> bool {
-    displays.iter().any(|d| !warm.contains(d))
+/// Whether a capture on `displays` waits for a `cold` window, one that hasn't rendered a frame
+/// yet: the first capture since launch, or on a display added since.
+fn is_cold(cold: &[u32], displays: &[u32]) -> bool {
+    displays.iter().any(|d| cold.contains(d))
 }
 
 /// When to show windows whose page hasn't reported its paint: [`REVEAL_AFTER`], or
@@ -399,11 +396,11 @@ fn reveal_after(watchdog: Duration, cold: bool) -> Duration {
 /// Shows `session`'s windows whose page hasn't reported its paint (see [`REVEAL_AFTER`]),
 /// focusing one if nothing painted. The watchdog still closes the overlay if no page ever
 /// reports: that page is dead.
-fn reveal_late<R: Runtime>(app: &AppHandle<R>, session: u64) {
+fn reveal_late<R: Runtime>(app: &AppHandle<R>, session: u64, after: Duration) {
     let Some((displays, focus_on)) = phase(app).unreported(session) else {
         return;
     };
-    log::warn!("overlays {displays:?} did not report their paint in time; showing them");
+    log::warn!("overlays {displays:?} did not report their paint within {after:?}; showing them");
     for d in displays {
         let shown = app
             .get_webview_window(&label(d))
@@ -730,7 +727,7 @@ fn sync<R: Runtime>(app: &AppHandle<R>, displays: &[u32]) -> tauri::Result<()> {
 fn build<R: Runtime>(app: &AppHandle<R>, display: u32) -> tauri::Result<WebviewWindow<R>> {
     // A new page: cold until it paints.
     if let Some(overlay) = app.try_state::<Overlay>() {
-        lock(&overlay.warm).retain(|&d| d != display);
+        lock(&overlay.cold).push(display);
     }
     let url = WebviewUrl::App("overlay.html".into());
     let builder = WebviewWindowBuilder::new(app, label(display), url)
@@ -1019,11 +1016,9 @@ pub(crate) fn overlay_painted<R: Runtime>(
     let Some(paint) = state.phase().painted(session, display) else {
         return;
     };
-    let mut warm = lock(&state.warm);
-    if !warm.contains(&display) {
-        warm.push(display);
+    if rendered {
+        lock(&state.cold).retain(|&d| d != display);
     }
-    drop(warm);
     if paint.hidden {
         return;
     }
@@ -1678,9 +1673,9 @@ pub(crate) mod tests {
         let session = open(h, &[1, 2]);
         stage_unpainted(h, session, &[1, 2]);
         overlay_painted(window(h, 1), h.state(), session, true);
-        reveal_late(h, session + 1);
+        reveal_late(h, session + 1, REVEAL_AFTER);
         assert_eq!(super::shown(h), [1], "other session");
-        reveal_late(h, session);
+        reveal_late(h, session, REVEAL_AFTER);
         assert_eq!(super::shown(h), [1, 2], "shown though it never reported");
         assert!(staged(h).is_empty());
         overlay_painted(window(h, 2), h.state(), session, true);
@@ -1689,30 +1684,35 @@ pub(crate) mod tests {
         // Nothing reported: shown, but the watchdog still closes a dead page.
         close(h);
         let session = open(h, &[1]);
-        reveal_late(h, session);
+        reveal_late(h, session, REVEAL_AFTER);
         assert_eq!(super::shown(h), [1]);
         rescue(h, session);
         assert!(is_idle(h));
     }
 
     #[test]
-    fn a_window_is_cold_until_it_paints() {
-        assert!(is_cold(&[], &[1]));
-        assert!(is_cold(&[1], &[1, 2]), "a display added since");
-        assert!(!is_cold(&[2, 1], &[1, 2]));
+    fn a_window_is_cold_until_it_renders() {
+        assert!(is_cold(&[1], &[1]));
+        assert!(is_cold(&[2], &[1, 2]), "a display added since");
+        assert!(!is_cold(&[], &[1, 2]));
+        assert!(!is_cold(&[3], &[1, 2]));
 
         let app = app();
         let h = app.handle();
-        let warm = || lock(&h.state::<Overlay>().warm).clone();
+        let cold = || {
+            let mut cold = lock(&h.state::<Overlay>().cold).clone();
+            cold.sort_unstable();
+            cold
+        };
         let session = open(h, &[1, 2]);
-        overlay_painted(window(h, 1), h.state(), session, true);
-        overlay_painted(window(h, 1), h.state(), session, true);
-        assert_eq!(warm(), [1], "2 hasn't painted");
+        assert_eq!(cold(), [1, 2], "new windows");
         overlay_painted(window(h, 2), h.state(), session, false);
-        assert_eq!(warm(), [1, 2], "reported, even if not rendered");
-        // A window built again is a new page.
-        build(h, 2).ok();
-        assert_eq!(warm(), [1]);
+        assert_eq!(cold(), [1, 2], "reported, but not rendered");
+        overlay_painted(window(h, 1), h.state(), session, true);
+        assert_eq!(cold(), [2]);
+        // A display added later gets a new page.
+        build(h, 3).unwrap();
+        assert_eq!(cold(), [2, 3]);
     }
 
     #[test]
