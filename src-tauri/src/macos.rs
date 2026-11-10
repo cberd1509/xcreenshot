@@ -113,6 +113,13 @@ pub(crate) fn activate(app: &AppId) -> bool {
     ) || target.activateWithOptions(NSApplicationActivationOptions::empty())
 }
 
+/// Puts `window` on screen behind every other window at its level, without making it key.
+pub(crate) fn order_back<R: Runtime>(window: &WebviewWindow<R>) {
+    if let Some(ns_window) = main_ns_window(window) {
+        ns_window.orderBack(None);
+    }
+}
+
 /// Hides xcreenshot, so macOS gives focus to the app behind it.
 pub(crate) fn hide() {
     match MainThreadMarker::new() {
