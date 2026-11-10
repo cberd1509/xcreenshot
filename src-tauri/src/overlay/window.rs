@@ -126,8 +126,11 @@ pub(crate) trait Screen: Send + 'static {
     fn capture(&self, ids: &[u32]) -> Result<Vec<DisplayFrame>, CaptureError>;
     /// The cursor in the displays' OS units (points on macOS, pixels on Windows).
     fn cursor<R: Runtime>(&self, app: &AppHandle<R>) -> Option<(f64, f64)>;
-    /// The remembered regions and whether quick copy is on (see `region::load`).
+    /// The remembered regions, whether quick copy is on and whether the tip shows (see
+    /// `region::load`).
     fn start<R: Runtime>(&self, app: &AppHandle<R>) -> Start;
+    /// A capture opened with the quick copy tip: counts it (see `tip::showing`).
+    fn tip_shown<R: Runtime>(&self, app: &AppHandle<R>);
     /// Pays the OS's one-time capture setup now. Does nothing unless capture is already
     /// allowed, so it never asks for permission.
     fn warm_up(&self);
@@ -166,6 +169,10 @@ impl Screen for Os {
 
     fn start<R: Runtime>(&self, app: &AppHandle<R>) -> Start {
         region::load(app)
+    }
+
+    fn tip_shown<R: Runtime>(&self, app: &AppHandle<R>) {
+        crate::tip::showing(app);
     }
 
     fn warm_up(&self) {
@@ -240,7 +247,8 @@ fn start_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) -> Option<u64
         if !frames.as_ref().is_ok_and(|f| captured_all(&listed, f)) {
             start.regions = None;
         }
-        finish(
+        let tip = start.mode.quick_copy_tip;
+        let opened = finish(
             &worker,
             session,
             frames,
@@ -249,6 +257,10 @@ fn start_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) -> Option<u64
             start,
             WATCHDOG,
         );
+        // After the pages were told to draw: the prefs write waits for nothing on screen.
+        if opened && tip {
+            screen.tip_shown(&worker);
+        }
     });
     // After the capture starts, and before any overlay window takes focus. A cheap read: no
     // system call.
@@ -264,7 +276,8 @@ fn start_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) -> Option<u64
     Some(session)
 }
 
-/// Capture finished (worker thread). Opens the session and tells each window to draw.
+/// Capture finished (worker thread). Opens the session and tells each window to draw. Returns
+/// whether the session opened.
 fn finish<R: Runtime>(
     app: &AppHandle<R>,
     session: u64,
@@ -273,26 +286,20 @@ fn finish<R: Runtime>(
     escape_shortcut: bool,
     start: Start,
     watchdog: Duration,
-) {
+) -> bool {
     let frames = match frames {
         Ok(frames) => frames,
         Err(e) => {
             log::error!("capture failed: {e}");
-            return on_main(app, move |app| close_session(app, session));
+            on_main(app, move |app| close_session(app, session));
+            return false;
         }
     };
     // `None`: Esc closed the overlay during the capture.
     let regions = start.regions.as_deref();
-    let opened = phase(app).open(
-        session,
-        frames,
-        focus,
-        escape_shortcut,
-        regions,
-        start.quick_copy,
-    );
+    let opened = phase(app).open(session, frames, focus, escape_shortcut, regions, start.mode);
     let Some(shows) = opened else {
-        return;
+        return false;
     };
     let displays: Vec<u32> = shows.iter().map(|(d, _)| *d).collect();
     on_main(app, move |app| {
@@ -317,6 +324,7 @@ fn finish<R: Runtime>(
         std::thread::sleep(watchdog - reveal);
         on_main(&app, move |app| rescue(app, session));
     });
+    true
 }
 
 /// When to show windows whose page hasn't reported its paint: [`REVEAL_AFTER`], never after
@@ -940,7 +948,9 @@ pub(crate) fn close_overlay<R: Runtime>(app: AppHandle<R>, session: u64) {
 pub(crate) mod tests {
     use super::super::tests::frame;
     use super::*;
-    use std::sync::mpsc;
+    use crate::region::Mode;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::{Arc, mpsc};
     use tauri::ipc::{InvokeResponseBody, IpcResponse};
     use tauri::test::{MockRuntime, mock_builder, mock_context, noop_assets};
 
@@ -954,6 +964,8 @@ pub(crate) mod tests {
         release: mpsc::Receiver<bool>,
         start: Start,
         warmed: Option<Box<dyn Fn() + Send>>,
+        /// Counts the captures that opened with the quick copy tip.
+        tips: Arc<AtomicUsize>,
     }
 
     impl Screen for Fake {
@@ -990,6 +1002,10 @@ pub(crate) mod tests {
             self.start.clone()
         }
 
+        fn tip_shown<R: Runtime>(&self, _: &AppHandle<R>) {
+            self.tips.fetch_add(1, Ordering::SeqCst);
+        }
+
         fn warm_up(&self) {
             if let Some(warmed) = &self.warmed {
                 warmed();
@@ -1007,9 +1023,10 @@ pub(crate) mod tests {
                 release,
                 start: Start {
                     regions: Some(Vec::new()),
-                    quick_copy: false,
+                    mode: Mode::default(),
                 },
                 warmed: None,
+                tips: Arc::default(),
             },
             tx,
         )
@@ -1234,11 +1251,35 @@ pub(crate) mod tests {
         let app = app();
         let h = app.handle();
         let (mut screen, release) = fake(true, &[1]);
-        screen.start.quick_copy = true;
+        screen.start.mode.quick_copy = true;
         let session = start_with(h, screen).unwrap();
         release.send(true).unwrap();
         wait_until("the session to open", || is_open(h, session));
-        assert!(phase(h).pending_frame(1).unwrap().quick_copy);
+        assert!(phase(h).pending_frame(1).unwrap().mode.quick_copy);
+    }
+
+    #[test]
+    fn the_quick_copy_tip_reaches_the_pages_and_is_counted_once_open() {
+        let app = app();
+        let h = app.handle();
+        let (mut screen, release) = fake(true, &[1]);
+        screen.start.mode.quick_copy_tip = true;
+        let tips = Arc::clone(&screen.tips);
+        let session = start_with(h, screen).unwrap();
+        release.send(true).unwrap();
+        wait_until("the tip to be counted", || tips.load(Ordering::SeqCst) == 1);
+        assert!(is_open(h, session));
+        assert!(phase(h).pending_frame(1).unwrap().mode.quick_copy_tip);
+        close(h);
+
+        // A capture that fails never showed it.
+        let (mut screen, release) = fake(true, &[1]);
+        screen.start.mode.quick_copy_tip = true;
+        let tips = Arc::clone(&screen.tips);
+        start_with(h, screen).unwrap();
+        release.send(false).unwrap();
+        wait_until("the capture to fail", || is_idle(h));
+        assert_eq!(tips.load(Ordering::SeqCst), 0);
     }
 
     #[test]

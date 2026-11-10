@@ -8,6 +8,7 @@
 
 use crate::region::Region;
 use crate::shortcut;
+use crate::tip::Tip;
 use chrono::NaiveDateTime;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -64,6 +65,9 @@ pub struct Prefs {
         skip_serializing_if = "Option::is_none"
     )]
     pub onboarded: Option<bool>,
+    /// When to suggest quick copy (see `tip`).
+    #[serde(default, deserialize_with = "lenient")]
+    pub quick_copy_tip: Tip,
     /// The last region per display arrangement, newest first (see `region`).
     #[serde(default, deserialize_with = "lenient")]
     pub regions: Vec<Region>,
@@ -83,6 +87,7 @@ impl Default for Prefs {
             launch_agent_removed: false,
             print_screen_notice_shown: false,
             onboarded: Some(false),
+            quick_copy_tip: Tip::default(),
             regions: Vec::new(),
         }
     }
@@ -515,6 +520,7 @@ pub(crate) mod tests {
             launch_agent_removed: true,
             print_screen_notice_shown: true,
             onboarded: Some(true),
+            quick_copy_tip: Tip::default(),
             regions: Vec::new(),
         };
         prefs.save(&*s).unwrap();

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-quick-copy-tip-not-now"
+description = "Enables the quick_copy_tip_not_now command without any pre-configured scope."
+commands.allow = ["quick_copy_tip_not_now"]
+
+[[permission]]
+identifier = "deny-quick-copy-tip-not-now"
+description = "Denies the quick_copy_tip_not_now command without any pre-configured scope."
+commands.deny = ["quick_copy_tip_not_now"]

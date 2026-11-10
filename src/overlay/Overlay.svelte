@@ -34,6 +34,7 @@
   import { TOAST } from './panel'
   import Magnifier from './Magnifier.svelte'
   import QuickBar from './QuickBar.svelte'
+  import QuickCopyTip from './QuickCopyTip.svelte'
   import Selection from './Selection.svelte'
   import SizeBadge from './SizeBadge.svelte'
 
@@ -50,6 +51,8 @@
     region: Rect | null
     /** Quick copy is on: the drag copies at once. */
     quickCopy: boolean
+    /** The quick copy tip shows instead of the key hint until the drag. */
+    quickCopyTip: boolean
   }
   /** Sent with `overlay:escape`; answered with the same token. */
   type EscapeEvent = { session: number; token: number }
@@ -63,6 +66,8 @@
   type Selected = { label: string; active: boolean; session: number; stamp: number }
   /** Broadcast to every overlay page: this capture goes on without quick copy. */
   const ANNOTATE = 'overlay:annotate'
+  /** Broadcast to every overlay page: the tip was answered; `quick` if quick copy went on. */
+  const TIP = 'overlay:tip'
   /** How far (logical px) a press may move before it draws: less is a click. */
   const CLICK_SLOP = 4
 
@@ -117,6 +122,8 @@
   let restored = $state(false)
   /** Quick copy, for this capture: the drag copies at once and there is no toolbar. */
   let quick = $state(false)
+  /** The quick copy tip shows, in place of the key hint, until the drag. */
+  let tip = $state(false)
   /** The last press started a draw on the frame, so a double-click there picks a window. */
   let pressedFrame = false
   /** Counts presses, so a window found for a double-click is dropped if another gesture began. */
@@ -176,6 +183,7 @@
   })
 
   function reset() {
+    tip = false
     restored = false
     selection = null
     drag = null
@@ -224,6 +232,7 @@
         select(info.region)
         restored = true
       }
+      tip = info.quickCopyTip
       // Shown only once the frame is on screen: shown earlier, the window would flash what
       // the webview last rendered (black, or the previous capture).
       const rendered = await afterPaint()
@@ -244,6 +253,7 @@
     const rect = next && !isEmpty(toPhysical(next, scale, frame)) ? next : null
     const active = rect !== null
     restored = false
+    if (active) tip = false
     if (active !== (selection !== null)) {
       seen = Math.max(Date.now(), seen + 1)
       const event: Selected = { label: view.label, active, session: current, stamp: seen }
@@ -447,6 +457,28 @@
     annotate()
   }
 
+  /** The tip's Turn on: quick copy for good, and for the rest of this capture. */
+  function turnOn() {
+    setCaptureOption('quickCopy', true)
+    void emit(TIP, { session: current, quick: true })
+  }
+
+  /** The tip's Not now: it never shows again. */
+  function notNow() {
+    invoke('quick_copy_tip_not_now').catch(failed('quick_copy_tip_not_now'))
+    void emit(TIP, { session: current, quick: false })
+  }
+
+  /** The tip was answered on some display: it goes on every one. */
+  function answered(payload: { session: number; quick: boolean }) {
+    if (payload.session !== current) return
+    tip = false
+    if (!payload.quick) return
+    quick = true
+    // Quick copy starts with no region: drop the remembered one, as Rust does.
+    if (restored) clear()
+  }
+
   /** Space held during a draw or resize: the selection moves, as a move drag, until let go. */
   function pause(d: Drag) {
     if (d.kind === 'move') return
@@ -542,6 +574,7 @@
       listen<{ session: number }>(ANNOTATE, ({ payload }) => {
         if (payload.session === current) quick = false
       }),
+      listen<{ session: number; quick: boolean }>(TIP, ({ payload }) => answered(payload)),
     ])
     // Asked only once the listeners are registered, so a frame sent while this window was
     // loading is never missed.
@@ -629,6 +662,8 @@
   {#if !idle}
     {#if quick}
       <QuickBar {annotate} {turnOff} />
+    {:else if tip}
+      <QuickCopyTip {turnOn} {notNow} />
     {:else}
       <div class="hint" data-testid="hint">
         {#each hints as [key, action] (key)}
