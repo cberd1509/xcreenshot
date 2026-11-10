@@ -23,6 +23,11 @@ mod transfer;
 #[cfg(all(target_os = "windows", not(test)))]
 mod windows;
 
+#[cfg(all(target_os = "macos", not(test)))]
+use self::macos as native;
+#[cfg(all(target_os = "windows", not(test)))]
+use self::windows as native;
+
 pub use session::{OnDone, ShareOutcome};
 
 use session::Session;
@@ -158,9 +163,10 @@ fn manage<R: Runtime>(app: &AppHandle<R>, dir: PathBuf) -> JoinHandle<()> {
     })
 }
 
-/// Shows the share sheet for `png`, anchored to `anchor` in `window`. Returns as soon as the
-/// menu is on screen, without waiting for the user. Callable from any thread; it blocks until
-/// the main thread has shown the menu, so call it from an async command, not a sync one.
+/// Shows the share sheet for `png`, anchored to `anchor` in `window` (on Windows it opens over
+/// the window and the anchor is unused). Returns as soon as the menu is on screen, without
+/// waiting for the user. Callable from any thread; it blocks until the main thread has shown
+/// the menu, so call it from an async command, not a sync one.
 ///
 /// `on_done` runs once on the main thread when the menu closes: `Chosen` before the service
 /// shows its own UI, or `Cancelled`. It is not called if this returns an error. The temp file
@@ -178,26 +184,11 @@ pub fn share_png<R: Runtime>(
     anchor: Rect,
     on_done: impl FnOnce(ShareOutcome) + Send + 'static,
 ) -> Result<Opened, ShareError> {
-    #[cfg(all(target_os = "macos", not(test)))]
+    #[cfg(all(any(target_os = "macos", target_os = "windows"), not(test)))]
     {
         let now = chrono::Local::now().naive_local();
         let on_done = Box::new(on_done);
-        share_with(window, png, anchor, on_done, now, GRACE, macos::show)
-    }
-    // The Windows sheet opens over the window, not under an anchor.
-    #[cfg(all(target_os = "windows", not(test)))]
-    {
-        let now = chrono::Local::now().naive_local();
-        let on_done = Box::new(on_done);
-        share_with(
-            window,
-            png,
-            anchor,
-            on_done,
-            now,
-            GRACE,
-            |w, _, path, session| windows::show(w, path, session),
-        )
+        share_with(window, png, anchor, on_done, now, GRACE, native::show)
     }
     #[cfg(not(all(any(target_os = "macos", target_os = "windows"), not(test))))]
     {
@@ -253,10 +244,8 @@ fn share_with<R: Runtime>(
 /// it reported `Cancelled` (Windows puts it back only then). No-op where there is no share
 /// sheet, or when no share lowered the window. Main thread.
 pub fn restore_level<R: Runtime>(window: &WebviewWindow<R>) {
-    #[cfg(all(target_os = "macos", not(test)))]
-    macos::restore_level(window);
-    #[cfg(all(target_os = "windows", not(test)))]
-    windows::restore_level(window);
+    #[cfg(all(any(target_os = "macos", target_os = "windows"), not(test)))]
+    native::restore_level(window);
     #[cfg(not(all(any(target_os = "macos", target_os = "windows"), not(test))))]
     let _ = window;
 }

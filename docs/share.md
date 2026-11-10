@@ -45,8 +45,9 @@ The level is only restored if nobody changed it since, and a second share while 
 `share/windows.rs` is the WinRT glue; what it does with each answer is decided in `transfer.rs`, `session.rs` and `open.rs`, which are tested on every platform. Coverage runs on macOS, so the glue isn't counted; keep it thin.
 
 - The file is looked up as a `StorageFile` off the main thread (this counts as `picker` in the log line). Then, on the main thread, `IDataTransferManagerInterop::GetForWindow` gets the overlay window's `DataTransferManager`, and `ShowShareUIForWindow` opens the sheet over the window.
-- `DataRequested` fills in the data: the file as a read-only storage item, with its name as the title. If that fails, the sheet shows "Couldn't share" and the share counts as cancelled.
-- Outcomes: `TargetApplicationChosen` is `Chosen(app name)`, `ShareCanceled` is `Cancelled`, and `ShareCompleted` is a choice that finished (the file is deleted 30 s later). `ShareCanceled` needs Windows 10 2004 or later; on older versions the data can't be filled in, so every share is cancelled.
+- `DataRequested` registers the `ShareCanceled` and `ShareCompleted` handlers first, then fills in the data: the file as a read-only storage item, with its name as the title. If filling fails, the sheet shows "Couldn't share", and dismissing it counts as cancelled.
+- Outcomes: `TargetApplicationChosen` is `Chosen(app name)`, `ShareCanceled` is `Cancelled`, and `ShareCompleted` is a choice that finished (the file is deleted 30 s later). Any of them means the sheet has closed.
+- `ShareCanceled` needs Windows 10 2004 or later. Without it a dismissal would go unheard, so `share_png` returns `unsupported` there.
 - The overlay is topmost and could cover the sheet, so it leaves the topmost band while the sheet is open. `restore_level` puts it back, after either outcome.
 - The handlers are removed from the window's `DataTransferManager` once the sheet closes, so the next share on the same overlay window starts clean. A sheet that never reports back is dropped after 10 minutes, like on macOS.
 - No black flash: the picked app shows its own window, and the overlay is hidden before its page frees the frame, as for Copy.

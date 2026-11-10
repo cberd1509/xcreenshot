@@ -13,8 +13,9 @@
 //!   intact, so the user can try again, copy, change the selection or press Esc.
 //!
 //! - **Share** (the Share button, macOS and Windows) encodes the PNG, releases Esc to the share
-//!   sheet and opens it (under the button on macOS, over the window on Windows). The windows stay. Picking a service closes the overlay; closing
-//!   the sheet without one takes Esc back and keeps the selection. See `docs/share.md`.
+//!   sheet and opens it (under the button on macOS, over the window on Windows). The windows
+//!   stay. Picking a service closes the overlay; closing the sheet without one takes Esc back
+//!   and keeps the selection. See `docs/share.md`.
 //!
 //! On failure the command returns the error and the page says so; the overlay is never left
 //! without a way out. The OS side is behind [`Clipboard`], [`Saver`] and [`ShowSheet`], faked in

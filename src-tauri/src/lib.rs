@@ -8,6 +8,7 @@ mod focus;
 mod login;
 #[cfg(all(target_os = "macos", not(test)))]
 mod macos;
+mod main_thread;
 mod notice;
 mod onboarding;
 /// Public for `examples/save.rs`.

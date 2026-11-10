@@ -23,24 +23,14 @@ pub(crate) fn ns_window<R: Runtime>(window: &WebviewWindow<R>) -> tauri::Result<
     Ok(unsafe { &*ptr.cast::<NSWindow>() })
 }
 
-/// Runs `f` on the main thread and waits for it, or runs it directly when already there.
+/// [`crate::main_thread::wait`], with the marker AppKit calls need.
 pub(crate) fn on_main<R: Runtime, T: Send + 'static>(
     window: &WebviewWindow<R>,
     f: impl FnOnce(&WebviewWindow<R>, MainThreadMarker) -> T + Send + 'static,
 ) -> Result<T, String> {
-    if let Some(mtm) = MainThreadMarker::new() {
-        return Ok(f(window, mtm));
-    }
-    let (tx, rx) = std::sync::mpsc::channel();
-    let target = window.clone();
-    window
-        .run_on_main_thread(move || {
-            let mtm = MainThreadMarker::new().expect("on the main thread");
-            let _ = tx.send(f(&target, mtm));
-        })
-        .map_err(|e| e.to_string())?;
-    rx.recv()
-        .map_err(|_| "the main thread did not answer".to_owned())
+    crate::main_thread::wait(window, |w| {
+        f(w, MainThreadMarker::new().expect("on the main thread"))
+    })
 }
 
 /// The window's `NSWindow`, if this is the main thread; logs why not otherwise.
