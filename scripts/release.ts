@@ -6,6 +6,10 @@
 //     Prints latest.json with every download URL pointing at the published tag.
 //   node scripts/release.ts add-windows <latest.json> <installer.exe.sig> <owner/repo> <tag>
 //     Prints latest.json with the Windows installer added next to the macOS entries.
+//   node scripts/release.ts release-type <version> [--signed]
+//     Prints `prerelease=<bool>` and `manifest=<bool>` lines for $GITHUB_OUTPUT.
+//   node scripts/release.ts flag-fix <tag> <published as prerelease: true|false> [<latest tag>]
+//     Prints what to do about a published release's prerelease flag (see FlagFix).
 import { readFileSync } from 'node:fs'
 import { basename } from 'node:path'
 
@@ -100,6 +104,69 @@ export function addWindows(
   return { ...manifest, platforms: { ...manifest.platforms, ...windows } }
 }
 
+interface Version {
+  core: [number, number, number]
+  /** Prerelease identifiers: `1.0.0-beta.2` has ['beta', '2']; a release has none. */
+  pre: string[]
+}
+
+/** Parses a SemVer version or tag (`1.0.0-beta.2`, `v1.0.0`); build metadata is ignored. */
+export function parseVersion(text: string): Version {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(text)
+  if (!match) throw new Error(`${text}: not a SemVer version`)
+  const [, major, minor, patch, pre] = match
+  return { core: [Number(major), Number(minor), Number(patch)], pre: pre ? pre.split('.') : [] }
+}
+
+const isNumeric = (id: string) => /^\d+$/.test(id)
+
+function compareIdentifiers(a: string, b: string): number {
+  if (isNumeric(a) && isNumeric(b)) return Number(a) - Number(b)
+  if (isNumeric(a) !== isNumeric(b)) return isNumeric(a) ? -1 : 1
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
+/** SemVer precedence: negative when `a` is older than `b`, 0 when equal, positive when newer. */
+export function compareVersions(a: string, b: string): number {
+  const [x, y] = [parseVersion(a), parseVersion(b)]
+  for (let i = 0; i < 3; i++) if (x.core[i] !== y.core[i]) return x.core[i] - y.core[i]
+  // A prerelease comes before its release: 1.0.0-beta.9 < 1.0.0.
+  if (!x.pre.length || !y.pre.length) return y.pre.length - x.pre.length
+  for (let i = 0; i < Math.min(x.pre.length, y.pre.length); i++) {
+    const order = compareIdentifiers(x.pre[i], y.pre[i])
+    if (order) return order
+  }
+  return x.pre.length - y.pre.length
+}
+
+/** 1.0.0-beta.0 and the like, from Changesets pre mode: drafted as a GitHub prerelease. */
+export const isPrerelease = (version: string) => parseVersion(version).pre.length > 0
+
+/**
+ * Whether a release gets a latest.json. Unsigned macOS test builds don't, and neither do betas:
+ * testers install betas by hand, and without a manifest even a beta published by mistake as a
+ * full release updates no one.
+ */
+export const wantsManifest = (version: string, signed: boolean) => signed && !isPrerelease(version)
+
+/**
+ * What to do about a published release's prerelease flag:
+ * - `none`: it matches the version.
+ * - `prerelease`: a beta published as a full release; mark it a prerelease so releases/latest
+ *   (the updater and the landing page) skips it.
+ * - `latest`: a stable version published as a prerelease and newer than the latest release; make
+ *   it the latest release, once its latest.json is rewritten.
+ * - `older`: the same, but not newer than the latest release; leave it and warn.
+ */
+export type FlagFix = 'none' | 'prerelease' | 'latest' | 'older'
+
+export function flagFix(tag: string, prerelease: boolean, latestTag = ''): FlagFix {
+  const beta = isPrerelease(tag)
+  if (beta === prerelease) return 'none'
+  if (beta) return 'prerelease'
+  return latestTag && compareVersions(tag, latestTag) <= 0 ? 'older' : 'latest'
+}
+
 const readJson = <T>(path: string) => JSON.parse(readFileSync(path, 'utf8')) as T
 const printJson = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`
 
@@ -131,10 +198,25 @@ export function main(args: string[], changelogPath = 'CHANGELOG.md'): string {
     const asset = basename(sigPath).replace(/\.sig$/, '')
     return printJson(addWindows(manifest, readFileSync(sigPath, 'utf8'), asset, repo, tag))
   }
+  if (command === 'release-type' && rest.length >= 1 && rest.length <= 2) {
+    const [version, flag] = rest
+    const signed = flag === '--signed'
+    if (flag !== undefined && !signed) throw new Error(`release-type: unknown flag ${flag}`)
+    return `prerelease=${isPrerelease(version)}\nmanifest=${wantsManifest(version, signed)}\n`
+  }
+  if (command === 'flag-fix' && rest.length >= 2 && rest.length <= 3) {
+    const [tag, prerelease, latestTag] = rest
+    if (prerelease !== 'true' && prerelease !== 'false') {
+      throw new Error(`flag-fix: expected true or false, not ${prerelease}`)
+    }
+    return `${flagFix(tag, prerelease === 'true', latestTag)}\n`
+  }
   throw new Error(
     'usage: release.ts notes <version> [--unsigned] | ' +
       'updater-urls <latest.json> <assets.json> <owner/repo> <tag> | ' +
-      'add-windows <latest.json> <installer.exe.sig> <owner/repo> <tag>',
+      'add-windows <latest.json> <installer.exe.sig> <owner/repo> <tag> | ' +
+      'release-type <version> [--signed] | ' +
+      'flag-fix <tag> <true|false> [<latest tag>]',
   )
 }
 
