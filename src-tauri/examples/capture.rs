@@ -1,9 +1,14 @@
 //! Measures capture latency on this machine: `cargo run --release --example capture`.
 //! Needs Screen Recording permission for the terminal on macOS.
 //!
-//! Times each backend (xcap, ScreenCaptureKit) on the first display and on all displays, each in
-//! a fresh process so the first call is really cold, then compares what the two return and
-//! times the crop and PNG steps. `-- xcap all` (or `sck one`, ...) runs only that row.
+//! Times each backend (CoreGraphics, xcap, ScreenCaptureKit) on the first display and on all
+//! displays, each in a fresh process so the first call is really cold, then compares what they
+//! return and times the crop and PNG steps. `-- xcap all` (or `cg one`, ...) runs only that row.
+//!
+//! `-- versus <runs>` takes `runs` captures of every display with CoreGraphics and with xcap, in
+//! turns so both see the same machine load, and prints the median and p90 of each (#55). Then,
+//! for each in a fresh process (`-- held cg` or `-- held xcap`), the peak memory of one capture
+//! and what is still resident 5 s after it.
 //!
 //! `-- first <seconds>` times the first capture after the startup warm-up, as the app does it:
 //! warm up, wait, then capture every display and copy each frame for its page. `-- memory <n>`
@@ -28,6 +33,8 @@ fn main() -> Result<(), CaptureError> {
     match args.as_slice() {
         [mode, seconds] if mode == "first" => return first(seconds.parse().unwrap_or(2)),
         [mode, runs] if mode == "memory" => return memory(runs.parse().unwrap_or(30)),
+        [mode, runs] if mode == "versus" => return versus(runs.parse().unwrap_or(30)),
+        [mode, name] if mode == "held" => return held(backend(name)?),
         [backend, scope] => return bench_row(backend, scope),
         _ => {}
     }
@@ -36,7 +43,7 @@ fn main() -> Result<(), CaptureError> {
     println!("| Backend | Displays | First call | Warm (median, min–max of {WARM_RUNS}) |");
     println!("| --- | --- | --- | --- |");
     let me = std::env::current_exe().expect("own path");
-    for backend in ["xcap", "sck"] {
+    for backend in ["cg", "xcap", "sck"] {
         for scope in ["one", "all"] {
             // A fresh process per row, so every first call is cold.
             let status = Command::new(&me).args([backend, scope]).status();
@@ -45,11 +52,19 @@ fn main() -> Result<(), CaptureError> {
             }
         }
     }
-    compare(&ids)?;
+    // CoreGraphics and ScreenCaptureKit are macOS only; a failed comparison skips only itself.
+    for (a, b) in [
+        (Backend::CoreGraphics, Backend::Xcap),
+        (Backend::Xcap, Backend::ScreenCaptureKit),
+    ] {
+        if let Err(e) = compare(a, b, &ids) {
+            println!("\n{a} vs {b}: {e}");
+        }
+    }
     let t = Instant::now();
     let frames = capture::capture_displays(&ids)?;
     println!(
-        "\nauto (xcap, ScreenCaptureKit if it fails): {:?}",
+        "\nauto (each backend for what the one before missed): {:?}",
         t.elapsed()
     );
     crop_and_png(&frames)
@@ -61,11 +76,7 @@ fn ids() -> Result<Vec<u32>, CaptureError> {
 
 /// One table row: the first capture in this process, then [`WARM_RUNS`] more.
 fn bench_row(name: &str, scope: &str) -> Result<(), CaptureError> {
-    let backend = match name {
-        "xcap" => Backend::Xcap,
-        "sck" => Backend::ScreenCaptureKit,
-        _ => return Err(CaptureError::Invalid(format!("unknown backend {name:?}"))),
-    };
+    let backend = backend(name)?;
     let mut ids = ids()?;
     if scope == "one" {
         ids.truncate(1);
@@ -83,6 +94,15 @@ fn bench_row(name: &str, scope: &str) -> Result<(), CaptureError> {
     Ok(())
 }
 
+fn backend(name: &str) -> Result<Backend, CaptureError> {
+    match name {
+        "cg" => Ok(Backend::CoreGraphics),
+        "xcap" => Ok(Backend::Xcap),
+        "sck" => Ok(Backend::ScreenCaptureKit),
+        _ => Err(CaptureError::Invalid(format!("unknown backend {name:?}"))),
+    }
+}
+
 fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1000.0
 }
@@ -98,11 +118,102 @@ fn cold_and_warm(
     warm.sort_unstable();
     let spread = format!(
         "{:.0} ms ({:.0}–{:.0})",
-        ms(warm[warm.len() / 2]),
+        ms(percentile(&warm, 50.0)),
         ms(warm[0]),
         ms(warm[warm.len() - 1]),
     );
     Ok((cold, spread))
+}
+
+/// The value `p` percent of the way through `sorted`, between the two nearest values (so the
+/// 50th of an even count is the mean of the two middle ones).
+fn percentile(sorted: &[Duration], p: f64) -> Duration {
+    let at = (sorted.len() - 1) as f64 * p / 100.0;
+    let (low, high) = (sorted[at.floor() as usize], sorted[at.ceil() as usize]);
+    low + (high - low).mul_f64(at.fract())
+}
+
+/// `runs` captures of every display with each of CoreGraphics and xcap, in turns (which one goes
+/// first alternates too), after one untimed capture each.
+fn versus(runs: usize) -> Result<(), CaptureError> {
+    let ids = ids()?;
+    let backends = [Backend::CoreGraphics, Backend::Xcap];
+    let time = |b| -> Result<Duration, CaptureError> {
+        let t = Instant::now();
+        capture::capture_displays_with(b, &ids)?;
+        Ok(t.elapsed())
+    };
+    for b in backends {
+        time(b)?;
+    }
+    let mut times = [vec![], vec![]];
+    let runs = runs.max(1);
+    for run in 0..runs {
+        for i in [run % 2, 1 - run % 2] {
+            times[i].push(time(backends[i])?);
+        }
+    }
+    println!("{} display(s), {runs} runs each", ids.len());
+    println!("| Backend | Median | p90 | Min–max |");
+    println!("| --- | --- | --- | --- |");
+    for (b, t) in backends.iter().zip(&mut times) {
+        t.sort_unstable();
+        println!(
+            "| {b} | {:.1} ms | {:.1} ms | {:.0}–{:.0} ms |",
+            ms(percentile(t, 50.0)),
+            ms(percentile(t, 90.0)),
+            ms(t[0]),
+            ms(t[t.len() - 1]),
+        );
+    }
+    compare(Backend::CoreGraphics, Backend::Xcap, &ids)?;
+    println!("\n| Backend | Before | Peak resident | Resident 5 s after |");
+    println!("| --- | --- | --- | --- |");
+    let me = std::env::current_exe().expect("own path");
+    for name in ["cg", "xcap", "cg", "xcap"] {
+        let status = Command::new(&me).args(["held", name]).status();
+        if !status.is_ok_and(|s| s.success()) {
+            println!("| {name} | failed | | |");
+        }
+    }
+    Ok(())
+}
+
+/// The highest resident size this process has had, in bytes (macOS `ru_maxrss`).
+#[cfg(target_os = "macos")]
+fn peak_resident() -> u64 {
+    unsafe extern "C" {
+        fn getrusage(who: i32, usage: *mut [i64; 18]) -> i32;
+    }
+    // `struct rusage`: two `timeval`s (2 longs each), then `ru_maxrss`.
+    let mut usage = [0i64; 18];
+    // SAFETY: `usage` is a writable buffer the size of `struct rusage`; 0 is `RUSAGE_SELF`.
+    let ok = unsafe { getrusage(0, &raw mut usage) } == 0;
+    if ok { usage[4].unsigned_abs() } else { 0 }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn peak_resident() -> u64 {
+    0
+}
+
+/// One capture of every display with `backend` in this (fresh) process, freed at once: the
+/// resident size before, the peak, and 5 s after.
+fn held(backend: Backend) -> Result<(), CaptureError> {
+    let mb = |bytes: u64| bytes >> 20;
+    let resident = || memory::now().map_or(0, |u| u.resident);
+    let ids = ids()?;
+    let before = resident();
+    drop(capture::capture_displays_with(backend, &ids)?);
+    let peak = peak_resident();
+    std::thread::sleep(Duration::from_secs(5));
+    println!(
+        "| {backend} | {} MB | {} MB | {} MB |",
+        mb(before),
+        mb(peak),
+        mb(resident())
+    );
+    Ok(())
 }
 
 /// What the app does for one capture: every display, and a copy of each frame for its page
@@ -150,19 +261,19 @@ fn memory(runs: usize) -> Result<(), CaptureError> {
     Ok(())
 }
 
-/// Both backends on the same screen: same geometry, and how far the pixels are apart (the
+/// Two backends on the same screen: same geometry, and how far the pixels are apart (the
 /// screen can change between the two captures, a clock for example).
-fn compare(ids: &[u32]) -> Result<(), CaptureError> {
-    let xcap = capture::capture_displays_with(Backend::Xcap, ids)?;
-    let sck = capture::capture_displays_with(Backend::ScreenCaptureKit, ids)?;
-    for a in &xcap {
-        let Some(b) = sck.iter().find(|b| b.id == a.id) else {
-            println!("\ndisplay {}: not captured by ScreenCaptureKit", a.id);
+fn compare(first: Backend, second: Backend, ids: &[u32]) -> Result<(), CaptureError> {
+    let one = capture::capture_displays_with(first, ids)?;
+    let two = capture::capture_displays_with(second, ids)?;
+    for a in &one {
+        let Some(b) = two.iter().find(|b| b.id == a.id) else {
+            println!("\ndisplay {}: not captured by {second}", a.id);
             continue;
         };
         println!(
-            "\ndisplay {}: logical {:?}, physical {:?}, scale {}",
-            a.id, a.logical, a.physical, a.scale_factor
+            "\n{first} vs {second}, display {}: logical {:?}, physical {:?}, scale {} vs {}",
+            a.id, a.logical, a.physical, a.scale_factor, b.scale_factor
         );
         let same =
             |what: &str, ok: bool| println!("  {what}: {}", if ok { "same" } else { "DIFFERENT" });
@@ -171,15 +282,18 @@ fn compare(ids: &[u32]) -> Result<(), CaptureError> {
         if a.image.dimensions() != b.image.dimensions() {
             continue;
         }
-        let (mut total, mut off) = (0u64, 0u64);
+        let (mut total, mut off, mut exact) = (0u64, 0u64, 0u64);
         for (p, q) in a.image.pixels().zip(b.image.pixels()) {
-            let d = [0, 1, 2].map(|c| u64::from(p.0[c].abs_diff(q.0[c])));
-            total += d.iter().sum::<u64>();
-            off += u64::from(d.iter().any(|&v| v > 2));
+            let d = [0, 1, 2, 3].map(|c| u64::from(p.0[c].abs_diff(q.0[c])));
+            total += d[..3].iter().sum::<u64>();
+            off += u64::from(d[..3].iter().any(|&v| v > 2));
+            exact += u64::from(d.iter().all(|&v| v == 0));
         }
         let n = u64::from(a.image.width()) * u64::from(a.image.height());
         println!(
-            "  pixels: mean difference {:.3} per channel, {:.2}% differ by more than 2",
+            "  pixels: {:.2}% identical, mean difference {:.3} per channel, {:.2}% differ by \
+             more than 2",
+            exact as f64 * 100.0 / n as f64,
             total as f64 / (n * 3) as f64,
             off as f64 * 100.0 / n as f64
         );

@@ -1,30 +1,44 @@
 //! Which capture backend runs, and whether what it returned can be used, plus the pure parts of
-//! the ScreenCaptureKit backend (pixel copy, pixel size, when to refetch content), so they are
-//! tested on every platform. The OS calls are xcap (`capture/mod.rs`) and ScreenCaptureKit
-//! (`capture/sck.rs`, macOS 14+).
+//! the macOS backends (pixel copy, pixel size, when to refetch content), so they are tested on
+//! every platform. The OS calls are xcap (`capture/mod.rs`), CoreGraphics (`capture/cg.rs`) and
+//! ScreenCaptureKit (`capture/sck.rs`, macOS 14+).
 //!
-//! xcap goes through `CGWindowListCreateImage`, which Apple has deprecated (#49). It is the
-//! default while it works because it is faster. ScreenCaptureKit takes over when that call is
-//! missing, fails, or returns only empty or black images, so a future macOS cannot break capture.
+//! CoreGraphics and xcap both go through `CGWindowListCreateImage`, which Apple has deprecated
+//! (#49). CoreGraphics makes the call itself with fewer copies of the frame, so a capture holds
+//! about 33 MB less (#55); it goes first on macOS, and xcap takes over any display it could not
+//! capture. They are the default while they work because they are faster than ScreenCaptureKit,
+//! which takes over when that call is missing, fails, or returns only empty or black images, so a
+//! future macOS cannot break capture. Elsewhere only xcap runs.
 
 use super::{CaptureError, DisplayFrame};
 use image::RgbaImage;
 use std::fmt;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-/// Forces a backend for testing: `xcap`, `screencapturekit` (or `sck`), or `auto` (the default).
+/// Forces a backend for testing: `cg` (or `coregraphics`), `xcap`, `screencapturekit` (or
+/// `sck`), or `auto` (the default).
 pub const ENV: &str = "XCREENSHOT_CAPTURE_BACKEND";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
+    /// `CGWindowListCreateImage` called directly (macOS only).
+    CoreGraphics,
     Xcap,
     ScreenCaptureKit,
+}
+
+impl Backend {
+    /// Whether it captures with `CGWindowListCreateImage` (#49), the "old API" below.
+    fn old_api(self) -> bool {
+        matches!(self, Self::CoreGraphics | Self::Xcap)
+    }
 }
 
 impl fmt::Display for Backend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Self::CoreGraphics => "CoreGraphics",
             Self::Xcap => "xcap",
             Self::ScreenCaptureKit => "ScreenCaptureKit",
         })
@@ -33,7 +47,8 @@ impl fmt::Display for Backend {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Preference {
-    /// xcap first, ScreenCaptureKit when xcap fails.
+    /// CoreGraphics (macOS) first, then xcap, then ScreenCaptureKit, each for the displays the
+    /// ones before could not capture.
     Auto,
     Only(Backend),
 }
@@ -42,6 +57,7 @@ impl Preference {
     /// Reads the value of [`ENV`]. Anything unknown is `Auto`.
     pub fn parse(value: Option<&str>) -> Self {
         match value.map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+            Some("cg" | "coregraphics") => Self::Only(Backend::CoreGraphics),
             Some("xcap") => Self::Only(Backend::Xcap),
             Some("sck" | "screencapturekit") => Self::Only(Backend::ScreenCaptureKit),
             Some("" | "auto") | None => Self::Auto,
@@ -65,19 +81,26 @@ pub struct Support {
 impl Support {
     fn has(self, backend: Backend) -> bool {
         match backend {
+            Backend::CoreGraphics => cfg!(target_os = "macos") && self.xcap,
             Backend::Xcap => self.xcap,
             Backend::ScreenCaptureKit => self.sck,
         }
     }
 }
 
-/// After this many xcap captures in a row that could not be used, ScreenCaptureKit goes first,
-/// so a broken old API does not cost a failed attempt on every hotkey.
-const XCAP_STRIKES: u32 = 3;
+/// After this many captures in a row in which the old API (CoreGraphics and xcap) captured
+/// nothing usable, ScreenCaptureKit goes first, so a broken old API does not cost a failed
+/// attempt on every hotkey.
+const OLD_API_STRIKES: u32 = 3;
 
-/// While ScreenCaptureKit goes first, xcap still goes first once in this many captures, so a
-/// passing xcap problem does not keep the slower backend for the rest of the session.
-const XCAP_RETRY_EVERY: u32 = 10;
+/// While ScreenCaptureKit goes first, the old API still goes first once in this many captures,
+/// so a passing problem does not keep the slower backend for the rest of the session.
+const OLD_API_RETRY_EVERY: u32 = 10;
+
+/// After this many captures in a row in which CoreGraphics missed a display that xcap then
+/// captured, CoreGraphics is left out until the next launch, so a problem of its own (a pixel
+/// format it refuses) does not cost a second capture on every hotkey.
+const CG_STRIKES: u32 = 3;
 
 /// The error when no backend can run here.
 pub fn no_backend() -> CaptureError {
@@ -87,51 +110,83 @@ pub fn no_backend() -> CaptureError {
 /// How many displays each backend captured, in the order they ran.
 pub type Used = Vec<(Backend, usize)>;
 
-/// Picks the backend order for each capture and remembers how xcap has been doing.
+/// Picks the backend order for each capture and remembers how the old API has been doing.
 pub struct Chooser {
-    xcap_failures: AtomicU32,
-    /// Captures since xcap reached [`XCAP_STRIKES`], for [`XCAP_RETRY_EVERY`].
+    old_api_failures: AtomicU32,
+    /// Captures since the old API reached [`OLD_API_STRIKES`], for [`OLD_API_RETRY_EVERY`].
     sck_first: AtomicU32,
+    /// Captures in a row in which xcap had to take over from CoreGraphics ([`CG_STRIKES`]).
+    cg_failures: AtomicU32,
+    /// One bit per backend that has already fallen back this launch, so its later fallbacks log
+    /// at info, not warn.
+    fell_back: AtomicU8,
 }
 
 impl Chooser {
     pub const fn new() -> Self {
         Self {
-            xcap_failures: AtomicU32::new(0),
+            old_api_failures: AtomicU32::new(0),
             sck_first: AtomicU32::new(0),
+            cg_failures: AtomicU32::new(0),
+            fell_back: AtomicU8::new(0),
         }
     }
 
+    /// Whether this is `backend`'s first fallback since launch (warned about; later ones not).
+    fn first_fallback(&self, backend: Backend) -> bool {
+        let bit = 1 << backend as u8;
+        self.fell_back.fetch_or(bit, Ordering::Relaxed) & bit == 0
+    }
+
+    fn cg_left_out(&self) -> bool {
+        self.cg_failures.load(Ordering::Relaxed) >= CG_STRIKES
+    }
+
     fn struck_out(&self) -> bool {
-        self.xcap_failures.load(Ordering::Relaxed) >= XCAP_STRIKES
+        self.old_api_failures.load(Ordering::Relaxed) >= OLD_API_STRIKES
     }
 
     /// The backends to try, in order. Empty if the forced one cannot run here. Only reads the
     /// state; [`Chooser::run`] updates it.
     pub fn order(&self, preference: Preference, support: Support) -> Vec<Backend> {
-        const XCAP_FIRST: &[Backend] = &[Backend::Xcap, Backend::ScreenCaptureKit];
-        const SCK_FIRST: &[Backend] = &[Backend::ScreenCaptureKit, Backend::Xcap];
-        let retry = (self.sck_first.load(Ordering::Relaxed) + 1).is_multiple_of(XCAP_RETRY_EVERY);
+        use Backend::{CoreGraphics, ScreenCaptureKit, Xcap};
+        // CoreGraphics is filtered out off macOS, so xcap goes first there.
+        const OLD_API_FIRST: &[Backend] = &[CoreGraphics, Xcap, ScreenCaptureKit];
+        const SCK_FIRST: &[Backend] = &[ScreenCaptureKit, CoreGraphics, Xcap];
+        let retry =
+            (self.sck_first.load(Ordering::Relaxed) + 1).is_multiple_of(OLD_API_RETRY_EVERY);
         let preferred = match preference {
             Preference::Only(backend) => &[backend][..],
             Preference::Auto if self.struck_out() && !retry => SCK_FIRST,
-            Preference::Auto => XCAP_FIRST,
+            Preference::Auto => OLD_API_FIRST,
         };
         preferred
             .iter()
             .copied()
             .filter(|&b| support.has(b))
+            .filter(|&b| b != CoreGraphics || preference != Preference::Auto || !self.cg_left_out())
             .collect()
     }
 
-    fn record(&self, backend: Backend, usable: bool) {
-        if backend == Backend::Xcap {
-            if usable {
-                self.xcap_failures.store(0, Ordering::Relaxed);
-                self.sck_first.store(0, Ordering::Relaxed);
-            } else {
-                self.xcap_failures.fetch_add(1, Ordering::Relaxed);
-            }
+    /// Counts a strike, or clears them, once per capture in which the old API ran.
+    fn record(&self, old_api_usable: bool) {
+        if old_api_usable {
+            self.old_api_failures.store(0, Ordering::Relaxed);
+            self.sck_first.store(0, Ordering::Relaxed);
+        } else {
+            self.old_api_failures.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// After a capture in which CoreGraphics ran: whether it missed a display that xcap then
+    /// captured. Only that counts against it; the old API failing as a whole is `record`'s.
+    fn record_cg(&self, missed: bool, xcap_captured: bool) {
+        if !missed {
+            self.cg_failures.store(0, Ordering::Relaxed);
+        } else if xcap_captured
+            && self.cg_failures.fetch_add(1, Ordering::Relaxed) + 1 == CG_STRIKES
+        {
+            log::warn!("CoreGraphics keeps failing where xcap works; using xcap until restart");
         }
     }
 
@@ -168,6 +223,11 @@ impl Chooser {
         let mut results: Vec<Option<Result<DisplayFrame, CaptureError>>> =
             ids.iter().map(|_| None).collect();
         let mut used = vec![];
+        // `None` until the old API has run; then whether it captured any display.
+        let mut old_api = None;
+        // `None` until CoreGraphics has run; then whether it missed a display.
+        let mut cg_missed = None;
+        let mut xcap_captured = false;
         for &backend in order {
             let missing: Vec<usize> = (0..ids.len())
                 .filter(|&i| results[i].as_ref().is_none_or(|r| unusable(r).is_some()))
@@ -186,7 +246,12 @@ impl Chooser {
                 let usable = match unusable(&result) {
                     None => true,
                     Some(why) => {
-                        log::warn!("{backend}: display {}: {why}", ids[i]);
+                        let level = if self.first_fallback(backend) {
+                            log::Level::Warn
+                        } else {
+                            log::Level::Info
+                        };
+                        log::log!(level, "{backend}: display {}: {why}", ids[i]);
                         false
                     }
                 };
@@ -200,10 +265,23 @@ impl Chooser {
                     results[i] = Some(result);
                 }
             }
-            self.record(backend, captured > 0);
+            if backend.old_api() {
+                old_api = Some(old_api.unwrap_or(false) || captured > 0);
+            }
+            match backend {
+                Backend::CoreGraphics => cg_missed = Some(captured < wanted.len()),
+                Backend::Xcap => xcap_captured = captured > 0,
+                Backend::ScreenCaptureKit => {}
+            }
             if captured > 0 {
                 used.push((backend, captured));
             }
+        }
+        if let Some(usable) = old_api {
+            self.record(usable);
+        }
+        if let Some(missed) = cg_missed {
+            self.record_cg(missed, xcap_captured);
         }
         let results = results
             .into_iter()
@@ -213,7 +291,7 @@ impl Chooser {
     }
 }
 
-/// For the log: "xcap (2)" or "xcap (1), ScreenCaptureKit (1)".
+/// For the log: "CoreGraphics (2)" or "CoreGraphics (1), xcap (1)".
 pub fn describe(used: &[(Backend, usize)]) -> String {
     let parts: Vec<String> = used.iter().map(|(b, n)| format!("{b} ({n})")).collect();
     parts.join(", ")
@@ -259,12 +337,14 @@ pub fn bgra_to_rgba(
     if data.len() < needed {
         return None;
     }
-    let mut out = Vec::with_capacity(row * height);
-    // One pass: copy each row without its padding, swapping blue and red on the way.
-    for y in 0..height {
-        let start = y * bytes_per_row;
-        for &[b, g, r, a] in data[start..start + row].as_chunks::<4>().0 {
-            out.extend_from_slice(&[r, g, b, a]);
+    let mut out = Vec::with_capacity(row.checked_mul(height)?);
+    // Each row without its padding, then blue and red swapped while the row is still in cache.
+    // Fixed-size pixels let the compiler vectorise the swap.
+    for src in data.chunks(bytes_per_row).take(height) {
+        let start = out.len();
+        out.extend_from_slice(&src[..row]);
+        for pixel in out[start..].as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
         }
     }
     RgbaImage::from_raw(u32::try_from(width).ok()?, u32::try_from(height).ok()?, out)
@@ -304,8 +384,19 @@ mod tests {
         xcap: true,
         sck: true,
     };
+    const CG: Backend = Backend::CoreGraphics;
     const XCAP: Backend = Backend::Xcap;
     const SCK: Backend = Backend::ScreenCaptureKit;
+
+    /// `backends` with CoreGraphics left out where it does not run (off macOS).
+    fn here(backends: &[Backend]) -> Vec<Backend> {
+        let cg = cfg!(target_os = "macos");
+        backends
+            .iter()
+            .copied()
+            .filter(|&b| cg || b != CG)
+            .collect()
+    }
 
     fn frame(id: u32, rgb: [u8; 3]) -> DisplayFrame {
         let b = Bounds {
@@ -343,22 +434,24 @@ mod tests {
         assert_eq!(p(Some("")), Preference::Auto);
         assert_eq!(p(Some("auto")), Preference::Auto);
         assert_eq!(p(Some("nonsense")), Preference::Auto);
+        assert_eq!(p(Some("cg")), Preference::Only(CG));
+        assert_eq!(p(Some("CoreGraphics")), Preference::Only(CG));
         assert_eq!(p(Some("xcap")), Preference::Only(XCAP));
         assert_eq!(p(Some(" XCAP ")), Preference::Only(XCAP));
         assert_eq!(p(Some("sck")), Preference::Only(SCK));
         assert_eq!(p(Some("ScreenCaptureKit")), Preference::Only(SCK));
         assert_eq!(
-            (XCAP.to_string(), SCK.to_string()),
-            ("xcap".into(), "ScreenCaptureKit".into())
+            [CG, XCAP, SCK].map(|b| b.to_string()),
+            ["CoreGraphics", "xcap", "ScreenCaptureKit"]
         );
     }
 
     #[test]
-    fn xcap_goes_first_while_it_works() {
+    fn coregraphics_then_xcap_go_first_while_they_work() {
         let c = Chooser::new();
-        assert_eq!(c.order(Preference::Auto, BOTH), [XCAP, SCK]);
+        assert_eq!(c.order(Preference::Auto, BOTH), here(&[CG, XCAP, SCK]));
         let old_macos = Support { sck: false, ..BOTH };
-        assert_eq!(c.order(Preference::Auto, old_macos), [XCAP]);
+        assert_eq!(c.order(Preference::Auto, old_macos), here(&[CG, XCAP]));
         let removed = Support {
             xcap: false,
             ..BOTH
@@ -371,11 +464,114 @@ mod tests {
         let c = Chooser::new();
         assert_eq!(c.order(Preference::Only(SCK), BOTH), [SCK]);
         assert_eq!(c.order(Preference::Only(XCAP), BOTH), [XCAP]);
+        // CoreGraphics is macOS only, and needs the call xcap makes.
+        let cg = c.order(Preference::Only(CG), BOTH);
+        assert_eq!(cg.len(), usize::from(cfg!(target_os = "macos")));
+        let removed = Support {
+            xcap: false,
+            ..BOTH
+        };
+        assert!(c.order(Preference::Only(CG), removed).is_empty());
         let old_macos = Support { sck: false, ..BOTH };
         assert!(c.order(Preference::Only(SCK), old_macos).is_empty());
         let (result, used) = c.run(&[], &[1], BUDGET, |_, _, _| unreachable!());
         assert_eq!(result, Err(no_backend()));
         assert!(used.is_empty());
+    }
+
+    #[test]
+    fn xcap_captures_what_coregraphics_could_not() {
+        let c = Chooser::new();
+        let asked = RefCell::new(vec![]);
+        let (result, used) = c.run(&[CG, XCAP, SCK], &[1, 2], BUDGET, |b, ids, _| {
+            asked.borrow_mut().push((b, ids.to_vec()));
+            each(ids, |id| match (b, id) {
+                (CG, 1) => Ok(frame(id, [5, 5, 5])),
+                (CG, _) => Err(CaptureError::Backend("not BGRA".into())),
+                _ => Ok(frame(id, [6, 6, 6])),
+            })
+        });
+        assert_eq!(*asked.borrow(), [(CG, vec![1, 2]), (XCAP, vec![2])]);
+        assert_eq!(used, [(CG, 1), (XCAP, 1)]);
+        assert_eq!(describe(&used), "CoreGraphics (1), xcap (1)");
+        assert_eq!(ids(&result.unwrap()), [1, 2]);
+    }
+
+    #[test]
+    fn only_the_first_fallback_of_each_backend_is_a_warning() {
+        let c = Chooser::new();
+        let works = |_, ids: &[u32], _| each(ids, |id| Ok(frame(id, [1, 1, 1])));
+        let _ = c.run(&[CG, XCAP], &[1], BUDGET, works);
+        assert_eq!(c.fell_back.load(Ordering::Relaxed), 0, "nothing fell back");
+        let _ = c.run(&[CG, XCAP], &[1], BUDGET, |b, ids, _| {
+            each(ids, |id| match b {
+                CG => Err(CaptureError::EmptyImage),
+                _ => Ok(frame(id, [1, 1, 1])),
+            })
+        });
+        // CoreGraphics used up its warning; xcap still has its own.
+        assert!(!c.first_fallback(CG));
+        assert!(c.first_fallback(XCAP));
+        assert!(!c.first_fallback(XCAP));
+        assert!(c.first_fallback(SCK));
+    }
+
+    #[test]
+    fn coregraphics_is_left_out_when_only_it_keeps_failing() {
+        let c = Chooser::new();
+        let cg_broken = |b, ids: &[u32], _| {
+            each(ids, |id| match b {
+                CG => Err(CaptureError::Backend("not BGRA".into())),
+                _ => Ok(frame(id, [1, 1, 1])),
+            })
+        };
+        for _ in 1..CG_STRIKES {
+            let _ = c.run(&[CG, XCAP, SCK], &[1], BUDGET, cg_broken);
+        }
+        // One capture where CoreGraphics works clears its strikes.
+        let works = |_, ids: &[u32], _| each(ids, |id| Ok(frame(id, [1, 1, 1])));
+        let _ = c.run(&[CG, XCAP, SCK], &[1], BUDGET, works);
+        for _ in 1..CG_STRIKES {
+            let _ = c.run(&[CG, XCAP, SCK], &[1], BUDGET, cg_broken);
+        }
+        assert_eq!(c.order(Preference::Auto, BOTH), here(&[CG, XCAP, SCK]));
+        let _ = c.run(&[CG, XCAP, SCK], &[1], BUDGET, cg_broken);
+        assert_eq!(c.order(Preference::Auto, BOTH), [XCAP, SCK]);
+        // Forcing still runs it.
+        assert_eq!(c.order(Preference::Only(CG), BOTH), here(&[CG]), "forced");
+        // Both failing is the old API's problem, not a strike against CoreGraphics.
+        let c = Chooser::new();
+        for _ in 0..CG_STRIKES {
+            let _ = c.run(&[CG, XCAP], &[1], BUDGET, |_, ids, _| {
+                each(ids, |_| Err(CaptureError::EmptyImage))
+            });
+        }
+        assert_eq!(c.cg_failures.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn coregraphics_and_xcap_failing_together_is_one_strike() {
+        let c = Chooser::new();
+        let broken = |b, ids: &[u32], _| {
+            each(ids, |id| match b {
+                SCK => Ok(frame(id, [1, 1, 1])),
+                _ => Err(CaptureError::EmptyImage),
+            })
+        };
+        for _ in 1..OLD_API_STRIKES {
+            let _ = c.run(&[CG, XCAP, SCK], &[1], BUDGET, broken);
+        }
+        assert_eq!(c.order(Preference::Auto, BOTH), here(&[CG, XCAP, SCK]));
+        let _ = c.run(&[CG, XCAP, SCK], &[1], BUDGET, broken);
+        assert_eq!(c.order(Preference::Auto, BOTH), here(&[SCK, CG, XCAP]));
+        // Either one working clears the strikes.
+        let _ = c.run(&[CG, XCAP], &[1], BUDGET, |b, ids, _| {
+            each(ids, |id| match b {
+                CG => Err(CaptureError::EmptyImage),
+                _ => Ok(frame(id, [1, 1, 1])),
+            })
+        });
+        assert_eq!(c.order(Preference::Auto, BOTH), here(&[CG, XCAP, SCK]));
     }
 
     #[test]
@@ -385,8 +581,8 @@ mod tests {
         let (result, used) = c.run(&[XCAP, SCK], &[1], BUDGET, |b, ids, _| {
             tried.borrow_mut().push(b);
             each(ids, |id| match b {
-                XCAP => Err(CaptureError::Backend("gone".into())),
                 SCK => Ok(frame(id, [9, 9, 9])),
+                _ => Err(CaptureError::Backend("gone".into())),
             })
         });
         assert_eq!(used, [(SCK, 1)]);
@@ -395,8 +591,8 @@ mod tests {
 
         let (_, used) = c.run(&[XCAP, SCK], &[1, 2], BUDGET, |b, ids, _| {
             each(ids, |id| match b {
-                XCAP => Ok(frame(id, [0, 0, 0])),
                 SCK => Ok(frame(id, [1, 2, 3])),
+                _ => Ok(frame(id, [0, 0, 0])),
             })
         });
         assert_eq!(used, [(SCK, 2)]);
@@ -413,7 +609,7 @@ mod tests {
                 (XCAP, 1) => Ok(frame(id, [5, 5, 5])),
                 (XCAP, 2) => Err(CaptureError::Backend("display 2 timed out".into())),
                 (XCAP, _) => Ok(frame(id, [0, 0, 0])),
-                (SCK, _) => Ok(frame(id, [7, 7, 7])),
+                _ => Ok(frame(id, [7, 7, 7])),
             })
         });
         assert_eq!(*asked.borrow(), [(XCAP, vec![1, 2, 3]), (SCK, vec![2, 3])]);
@@ -431,7 +627,7 @@ mod tests {
             each(ids, |id| match (b, id) {
                 (XCAP, 1) => Ok(frame(id, [0, 0, 0])),
                 (XCAP, _) => Ok(frame(id, [4, 4, 4])),
-                (SCK, _) => Err(CaptureError::Backend("alert".into())),
+                _ => Err(CaptureError::Backend("alert".into())),
             })
         });
         assert_eq!(ids(&result.unwrap()), [1, 2]);
@@ -501,34 +697,35 @@ mod tests {
         let c = Chooser::new();
         let broken = |b, ids: &[u32], _| {
             each(ids, |id| match b {
-                XCAP => Err(CaptureError::EmptyImage),
                 SCK => Ok(frame(id, [1, 1, 1])),
+                _ => Err(CaptureError::EmptyImage),
             })
         };
-        for _ in 0..XCAP_STRIKES {
-            assert_eq!(c.order(Preference::Auto, BOTH), [XCAP, SCK]);
+        for _ in 0..OLD_API_STRIKES {
+            assert_eq!(c.order(Preference::Auto, BOTH), here(&[CG, XCAP, SCK]));
             let _ = c.run(&[XCAP, SCK], &[1], BUDGET, broken);
         }
-        assert_eq!(c.order(Preference::Auto, BOTH), [SCK, XCAP]);
+        assert_eq!(c.order(Preference::Auto, BOTH), here(&[SCK, CG, XCAP]));
         // Asking does not use up a turn.
-        assert_eq!(c.order(Preference::Auto, BOTH), [SCK, XCAP]);
-        // Now and then xcap gets to go first again.
-        let firsts: Vec<_> = (0..2 * XCAP_RETRY_EVERY)
+        assert_eq!(c.order(Preference::Auto, BOTH), here(&[SCK, CG, XCAP]));
+        // Now and then the old API gets to go first again.
+        let old = here(&[CG, XCAP])[0];
+        let firsts: Vec<_> = (0..2 * OLD_API_RETRY_EVERY)
             .map(|_| {
                 let first = c.order(Preference::Auto, BOTH)[0];
                 let _ = c.run(&[SCK], &[1], BUDGET, broken);
                 first
             })
             .collect();
-        assert_eq!(firsts.iter().filter(|&&b| b == XCAP).count(), 2);
-        assert_eq!(firsts[XCAP_RETRY_EVERY as usize - 1], XCAP);
+        assert_eq!(firsts.iter().filter(|&&b| b == old).count(), 2);
+        assert_eq!(firsts[OLD_API_RETRY_EVERY as usize - 1], old);
         // Forcing still wins.
         assert_eq!(c.order(Preference::Only(XCAP), BOTH), [XCAP]);
         // xcap working again resets it.
         let _ = c.run(&[XCAP], &[1], BUDGET, |_, ids, _| {
             each(ids, |id| Ok(frame(id, [1, 1, 1])))
         });
-        assert_eq!(c.order(Preference::Auto, BOTH), [XCAP, SCK]);
+        assert_eq!(c.order(Preference::Auto, BOTH), here(&[CG, XCAP, SCK]));
     }
 
     #[test]
@@ -547,6 +744,35 @@ mod tests {
             3,
             image::Rgba([0, 9, 0, 255])
         )));
+    }
+
+    #[test]
+    fn padded_rows_lose_their_padding() {
+        // 3x3 pixels in rows of 16 bytes (4 of padding filled with 0xEE), as CoreGraphics pads a
+        // row to its alignment. Each pixel is BGRA with blue = x, green = y, red = 9.
+        let (w, h, stride) = (3, 3, 16);
+        let data: Vec<u8> = (0..h)
+            .flat_map(|y| {
+                let pixels = (0..w).flat_map(move |x| [x as u8, y as u8, 9, 255]);
+                pixels.chain([0xEE; 4])
+            })
+            .collect();
+        assert_eq!(data.len(), stride * h);
+        let img = bgra_to_rgba(&data, w, h, stride).unwrap();
+        assert_eq!(img.as_raw().len(), w * h * 4, "no padding kept");
+        for (x, y, p) in img.enumerate_pixels() {
+            assert_eq!(p.0, [9, y as u8, x as u8, 255], "pixel {x},{y}");
+        }
+        // No padding: the stride is the row.
+        let tight: Vec<u8> = data
+            .chunks(stride)
+            .flat_map(|r| r[..w * 4].to_vec())
+            .collect();
+        assert_eq!(bgra_to_rgba(&tight, w, h, w * 4), Some(img.clone()));
+        // Extra bytes after the last row are ignored.
+        let mut longer = data.clone();
+        longer.extend([1; 64]);
+        assert_eq!(bgra_to_rgba(&longer, w, h, stride), Some(img));
     }
 
     #[test]

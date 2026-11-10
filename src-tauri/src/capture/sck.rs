@@ -1,22 +1,21 @@
 //! ScreenCaptureKit capture (macOS 14+): `SCScreenshotManager` through objc2, so no Swift
 //! runtime. OS calls only; the decisions (when to fetch the content again, the pixel size, the
-//! pixel copy) are in `backend.rs`.
+//! pixel copy) are in `backend.rs`, and the geometry and pixel copy are shared with `cg.rs`.
 //!
 //! `SCShareableContent` costs tens of milliseconds, so it is fetched once and kept. It is fetched
 //! again when the displays change (a reconfiguration callback bumps [`GENERATION`]) or when a
 //! display is missing from it. Each display is captured on its own thread (see `capture_each`);
 //! threads that need the content at once share one fetch ([`Shared`]).
 
-use super::{Bounds, CaptureError, backend};
+use super::{Bounds, CaptureError, backend, cg};
 use block2::RcBlock;
 use image::RgbaImage;
 use objc2::AllocAnyThread;
 use objc2::rc::{Retained, autoreleasepool};
 use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{
-    CGColorSpace, CGDataProvider, CGDirectDisplayID, CGDisplayBounds, CGDisplayChangeSummaryFlags,
-    CGDisplayCopyColorSpace, CGDisplayCopyDisplayMode, CGDisplayMode,
-    CGDisplayRegisterReconfigurationCallback, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo,
+    CGColorSpace, CGDirectDisplayID, CGDisplayChangeSummaryFlags, CGDisplayCopyColorSpace,
+    CGDisplayRegisterReconfigurationCallback, CGImage,
 };
 use objc2_foundation::{NSArray, NSError};
 use objc2_screen_capture_kit::{
@@ -69,20 +68,7 @@ pub fn available() -> bool {
 /// bounds in points and its scale too, read from CoreGraphics, so this works even where xcap
 /// cannot describe the display.
 pub fn capture(id: u32) -> Result<(Bounds, f64, RgbaImage), CaptureError> {
-    let rect = CGDisplayBounds(id);
-    let points = Bounds {
-        x: rect.origin.x as i32,
-        y: rect.origin.y as i32,
-        width: rect.size.width as u32,
-        height: rect.size.height as u32,
-    };
-    let mode = CGDisplayCopyDisplayMode(id);
-    let (mode_pixels, mode_points) = (
-        CGDisplayMode::pixel_width(mode.as_deref()),
-        CGDisplayMode::width(mode.as_deref()),
-    );
-    let (width, height) =
-        backend::pixel_size((points.width, points.height), mode_pixels, mode_points);
+    let (points, (width, height)) = cg::geometry(id);
     let scale = width as f64 / f64::from(points.width.max(1));
     let image = shoot(id, width, height, None)?;
     Ok((points, scale, image))
@@ -152,7 +138,7 @@ fn shoot_in_pool(
         }
     })?;
     drop(color_space);
-    to_rgba(&image.0)
+    cg::to_rgba(&image.0, "ScreenCaptureKit")
 }
 
 /// Captures `display` and everything on it except xcreenshot's own windows (overlays, toast,
@@ -344,35 +330,6 @@ fn describe(error: *mut NSError) -> String {
         || "ScreenCaptureKit returned nothing".into(),
         |e| e.localizedDescription().to_string(),
     )
-}
-
-/// The screenshot is BGRA (8 bits per channel, little-endian with alpha first) in SDR, rows
-/// maybe padded. Anything else is refused rather than shown with the wrong colours.
-fn to_rgba(image: &CGImage) -> Result<RgbaImage, CaptureError> {
-    let bad = |what: &str| CaptureError::Backend(format!("ScreenCaptureKit image: {what}"));
-    let alpha_first = matches!(
-        CGImage::alpha_info(Some(image)),
-        CGImageAlphaInfo::PremultipliedFirst
-            | CGImageAlphaInfo::NoneSkipFirst
-            | CGImageAlphaInfo::First
-    );
-    if CGImage::bits_per_pixel(Some(image)) != 32
-        || CGImage::byte_order_info(Some(image)) != CGImageByteOrderInfo::Order32Little
-        || !alpha_first
-    {
-        return Err(bad("not BGRA"));
-    }
-    let data = CGDataProvider::data(CGImage::data_provider(Some(image)).as_deref())
-        .ok_or_else(|| bad("no pixels"))?;
-    // SAFETY: `data` is immutable and alive for the copy.
-    let bytes = unsafe { data.as_bytes_unchecked() };
-    backend::bgra_to_rgba(
-        bytes,
-        CGImage::width(Some(image)),
-        CGImage::height(Some(image)),
-        CGImage::bytes_per_row(Some(image)),
-    )
-    .ok_or_else(|| bad("wrong size"))
 }
 
 /// Registers [`on_display_change`] once.

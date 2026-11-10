@@ -1,14 +1,30 @@
 //! Screen capture: grab every display at native resolution, then crop a selection.
 //!
-//! The OS calls (via the `xcap` crate, and ScreenCaptureKit in `sck.rs` on macOS) are the few
-//! functions at the bottom of this file. Geometry, cropping, error handling, encoding and the
-//! choice of backend (`backend.rs`) are pure and unit-tested.
+//! The OS calls (via the `xcap` crate, and on macOS CoreGraphics in `cg.rs` and ScreenCaptureKit
+//! in `sck.rs`) are the few functions at the bottom of this file. Geometry, cropping, error
+//! handling, encoding and the choice of backend (`backend.rs`) are pure and unit-tested.
 //! See `docs/spikes/capture.md` for the choice of `xcap` and measured latency.
 
 mod backend;
+#[cfg(target_os = "macos")]
+mod cg;
 mod geometry;
 #[cfg(target_os = "macos")]
 mod sck;
+
+/// CoreGraphics is macOS only. Elsewhere it is not in [`support`], so these never run.
+#[cfg(not(target_os = "macos"))]
+mod cg {
+    use super::{Bounds, CaptureError};
+
+    pub fn capture(_id: u32) -> Result<(Bounds, f64, image::RgbaImage), CaptureError> {
+        Err(super::backend::no_backend())
+    }
+
+    pub fn warm_up(_id: u32) -> Result<(), CaptureError> {
+        Err(super::backend::no_backend())
+    }
+}
 
 /// ScreenCaptureKit is macOS only. Elsewhere `available` is false, so the rest never runs.
 #[cfg(not(target_os = "macos"))]
@@ -176,8 +192,9 @@ fn to_frame(
 /// capture (its thread is left to finish on its own).
 const DISPLAY_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// Displays whose capture thread is still running (stalled past the timeout), per backend, so
-/// a display stuck in xcap can still fall back to ScreenCaptureKit.
+/// Displays whose capture thread is still running (stalled past the timeout), per OS call, so a
+/// display stuck in the old API can still fall back to ScreenCaptureKit. CoreGraphics and xcap
+/// share one: they make the same call, so a display stuck in one would stall the other too.
 static IN_FLIGHT: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 static IN_FLIGHT_SCK: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
@@ -357,9 +374,10 @@ fn order() -> Vec<Backend> {
     CHOOSER.order(preference, support())
 }
 
-/// Like [`capture_all`], for displays already listed with [`displays`]. Uses xcap, and
-/// ScreenCaptureKit for the displays xcap could not capture (see `backend.rs`), all within one
-/// [`DISPLAY_TIMEOUT`]. Logs which backend captured how many displays, and the time.
+/// Like [`capture_all`], for displays already listed with [`displays`]. Uses CoreGraphics on
+/// macOS, then xcap and ScreenCaptureKit for the displays the ones before could not capture (see
+/// `backend.rs`), all within one [`DISPLAY_TIMEOUT`]. Logs which backend captured how many
+/// displays, and the time.
 pub fn capture_displays(ids: &[u32]) -> Result<Vec<DisplayFrame>, CaptureError> {
     let started = Instant::now();
     let (result, used) = CHOOSER.run(&order(), ids, DISPLAY_TIMEOUT, |b, ids, left| {
@@ -391,7 +409,7 @@ fn capture_with(
     timeout: Duration,
 ) -> Vec<Result<DisplayFrame, CaptureError>> {
     let in_flight = match backend {
-        Backend::Xcap => &IN_FLIGHT,
+        Backend::CoreGraphics | Backend::Xcap => &IN_FLIGHT,
         Backend::ScreenCaptureKit => &IN_FLIGHT_SCK,
     };
     capture_each(
@@ -425,9 +443,9 @@ pub fn displays() -> Result<Vec<Display>, CaptureError> {
 /// Captures one pixel of the first display with the backend that goes first, and drops it. The
 /// first capture in a process pays a one-time OS setup (about 60–150 ms on macOS); doing it at
 /// startup keeps it off the hotkey. ScreenCaptureKit as the fallback is left alone: touching it
-/// can show the system's screen recording alert, which a working xcap never needs. Same timeout
-/// as a capture, and its own stuck-display guard ([`WARMING`]), so a hotkey pressed meanwhile
-/// still captures. Needs permission like [`capture_all`].
+/// can show the system's screen recording alert, which CoreGraphics and xcap never need. Same
+/// timeout as a capture, and its own stuck-display guard ([`WARMING`]), so a hotkey pressed
+/// meanwhile still captures. Needs permission like [`capture_all`].
 pub fn warm_up() -> Result<(), CaptureError> {
     let display = displays()?.first().ok_or(CaptureError::NoDisplays)?.id;
     let first = *order().first().ok_or_else(backend::no_backend)?;
@@ -455,10 +473,11 @@ fn monitor(id: u32) -> Result<xcap::Monitor, CaptureError> {
         .ok_or_else(|| CaptureError::Backend(format!("display {id} disappeared")))
 }
 
-/// ScreenCaptureKit reads the display's geometry itself, so a display xcap cannot describe
-/// can still fall back to it.
+/// CoreGraphics and ScreenCaptureKit read the display's geometry themselves, so a display xcap
+/// cannot describe can still be captured.
 fn capture_display(with: Backend, id: u32) -> Result<DisplayFrame, CaptureError> {
     let (bounds, scale, image) = match with {
+        Backend::CoreGraphics => cg::capture(id)?,
         Backend::Xcap => {
             let m = monitor(id)?;
             let bounds = os_bounds(&m)?;
@@ -472,6 +491,7 @@ fn capture_display(with: Backend, id: u32) -> Result<DisplayFrame, CaptureError>
 
 fn warm_display(backend: Backend, id: u32) -> Result<(), CaptureError> {
     match backend {
+        Backend::CoreGraphics => cg::warm_up(id),
         Backend::Xcap => monitor(id)?
             .capture_region(0, 0, 1, 1)
             .map(drop)
@@ -484,8 +504,8 @@ fn backend(e: xcap::XCapError) -> CaptureError {
     CaptureError::Backend(e.to_string())
 }
 
-/// What can capture here: ScreenCaptureKit from macOS 14, and xcap while
-/// `CGWindowListCreateImage` exists. It is weakly linked (`build.rs`), so if a future macOS
+/// What can capture here: ScreenCaptureKit from macOS 14, and CoreGraphics (macOS) and xcap
+/// while `CGWindowListCreateImage` exists. It is weakly linked (`build.rs`), so if a future macOS
 /// removes it the app still starts and this is false.
 fn support() -> backend::Support {
     static XCAP: OnceLock<bool> = OnceLock::new();
@@ -851,7 +871,12 @@ mod tests {
         let s = support();
         assert!(s.xcap);
         assert_eq!(s.sck, cfg!(target_os = "macos"));
-        assert_eq!(order().first(), Some(&Backend::Xcap));
+        let first = if cfg!(target_os = "macos") {
+            Backend::CoreGraphics
+        } else {
+            Backend::Xcap
+        };
+        assert_eq!(order().first(), Some(&first));
         if cfg!(target_os = "macos") {
             assert!(!symbol_exists(c"XcreenshotNoSuchSymbol"));
         }
@@ -859,8 +884,10 @@ mod tests {
 
     #[test]
     #[cfg(not(target_os = "macos"))]
-    fn screencapturekit_is_macos_only() {
+    fn screencapturekit_and_coregraphics_are_macos_only() {
         assert!(sck::capture(1).is_err());
         assert!(sck::warm_up(1).is_err());
+        assert!(cg::capture(1).is_err());
+        assert!(cg::warm_up(1).is_err());
     }
 }
