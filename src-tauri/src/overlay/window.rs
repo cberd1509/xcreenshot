@@ -281,7 +281,9 @@ fn finish<R: Runtime>(
         if phase(app).session() != Some(session) {
             return;
         }
-        for d in displays {
+        let shown = lock(&app.state::<Overlay>().shown).clone();
+        // Not one that already painted: it would turn invisible and click-through.
+        for d in displays.into_iter().filter(|d| !shown.contains(d)) {
             if let Some(window) = app.get_webview_window(&label(d)) {
                 stage(&window, true);
             }
@@ -677,7 +679,9 @@ mod win {
     use windows::Win32::UI::WindowsAndMessaging::{LWA_ALPHA, SetLayeredWindowAttributes};
 
     /// Staged: shown at alpha 0. Click-through (`set_ignore_cursor_events`) already made the
-    /// window layered, and Tauri keeps that style while it is set. Unstaged: alpha 255, before
+    /// window layered, and Tauri keeps that style while it is set. Shown through Tauri, which
+    /// activates it, so Tauri's own style updates keep it visible; the capture is already taken
+    /// and the overlay takes focus anyway once revealed. Unstaged: alpha 255, before
     /// click-through goes and with it the layered style.
     pub fn stage<R: Runtime>(window: &WebviewWindow<R>, staged: bool) {
         let hwnd = match window.hwnd() {
