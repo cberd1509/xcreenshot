@@ -44,22 +44,23 @@ pub struct Marks<'a> {
 }
 
 impl Marks<'_> {
-    /// A copy that owns the layer's pixels, so it can go to a worker.
-    pub fn to_owned(&self) -> Marks<'static> {
-        let layer = self.layer.as_ref().map(|l| Layer {
-            x: l.x,
-            y: l.y,
-            pixels: ImageBuffer::from_raw(
-                l.pixels.width(),
-                l.pixels.height(),
-                Cow::Owned(l.pixels.as_raw().to_vec()),
-            )
-            .expect("same size"),
-        });
-        Marks {
+    /// A copy that owns the layer's pixels, so it can go to a worker, or an error if there isn't
+    /// the memory for them.
+    pub fn try_to_owned(&self) -> Result<Marks<'static>, CaptureError> {
+        let layer = match &self.layer {
+            None => None,
+            Some(l) => {
+                let raw = l.pixels.as_raw();
+                let mut bytes = upscale::buffer(raw.len())?;
+                bytes.copy_from_slice(raw);
+                let (w, h) = l.pixels.dimensions();
+                Layer::new(l.x, l.y, w, h, bytes)
+            }
+        };
+        Ok(Marks {
             layer,
             blurs: self.blurs.clone(),
-        }
+        })
     }
 }
 
@@ -425,7 +426,7 @@ mod tests {
             layer: Some(layer(1, 2, 1, 1, &bytes)),
             blurs: vec![px(0, 0, 4, 4)],
         };
-        let owned = marks.to_owned();
+        let owned = marks.try_to_owned().unwrap();
         assert_eq!(owned, marks);
         assert!(matches!(
             owned.layer.unwrap().pixels.into_raw(),

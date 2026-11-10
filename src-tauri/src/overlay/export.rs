@@ -168,7 +168,14 @@ pub(crate) async fn overlay_copy<R: Runtime>(
 ) -> Result<(), CaptureError> {
     let out = parse(request.body(), request.headers())?;
     let app = window.app_handle();
-    let clipboard = output::os_clipboard(app);
+    let clipboard = if out.factor > 1 {
+        // A larger size takes a while: if the capture ended meanwhile (Esc, or a newer one),
+        // the clipboard stays as it was. A Save or Share dialog opened meanwhile doesn't count.
+        let (handle, session) = (app.clone(), out.session);
+        output::os_clipboard_while(app, move || phase(&handle).session() == Some(session))
+    } else {
+        output::os_clipboard(app)
+    };
     copy_with(&window, &state, &out, clipboard, remember_in(app)).await
 }
 
@@ -206,21 +213,24 @@ async fn copy_with<R: Runtime>(
     };
     let (image, marks) = cropped(frame, out)?;
     let factor = out.factor;
-    let app = window.app_handle().clone();
     let copied = spawn_blocking(move || {
         let image = compose::apply(image, &marks, factor)?;
-        // A larger size takes a while: if Esc ended the capture meanwhile, the clipboard stays.
-        if factor > 1 && app.state::<Overlay>().phase().saves(session).is_none() {
-            return Ok(None);
-        }
         clipboard(&image, density)?;
-        Ok(Some(image.dimensions()))
+        Ok(image.dimensions())
     })
     .await
     .unwrap_or_else(|e| Err(CaptureError::Clipboard(e.to_string())));
-    let Some((width, height)) = copied.inspect_err(|e| log::warn!("copy failed: {e}"))? else {
-        log::info!("copy dropped: the capture ended while it was upscaled");
-        return Ok(());
+    let (width, height) = match copied {
+        Ok(size) => size,
+        // Not a failure: nothing to say on a page that may show a newer capture by now.
+        Err(CaptureError::Ended) => {
+            log::info!("copy dropped: the capture ended while it was made");
+            return Ok(());
+        }
+        Err(e) => {
+            log::warn!("copy failed: {e}");
+            return Err(e);
+        }
     };
     let ms = started.elapsed().as_secs_f64() * 1000.0;
     log::info!("copied {width}x{height} px ({factor}x) in {ms:.0} ms");
@@ -290,7 +300,7 @@ fn cropped(
     out: &Output,
 ) -> Result<(RgbaImage, Marks<'static>), CaptureError> {
     let image = capture::crop_pixels(&frame, out.rect)?;
-    Ok((image, out.marks.to_owned()))
+    Ok((image, out.marks.try_to_owned()?))
 }
 
 /// The annotated image as a PNG, and its size (`compose::apply`, then `encode_png`).
@@ -1192,6 +1202,27 @@ mod tests {
             height: 4,
         };
         assert_eq!(toasts(h), [copied]);
+    }
+
+    #[test]
+    fn a_copy_whose_capture_ended_is_dropped_quietly() {
+        let app = app();
+        let h = app.handle();
+        let session = shown(h, &[1]);
+        let state = h.state::<Overlay>();
+        let w = window(h, 1);
+        let ended: Clipboard = Box::new(|_, _| Err(CaptureError::Ended));
+        let (remember, regions) = remembering();
+        let out = Output {
+            factor: 2,
+            ..plain(session, px(1, 0, 2, 2))
+        };
+        let copying = copy_with(&w, &state, &out, ended, remember);
+        // Not an error: the page may show a newer capture by now.
+        assert_eq!(tauri::async_runtime::block_on(copying), Ok(()));
+        assert!(regions.lock().unwrap().is_empty());
+        assert!(toasts(h).is_empty());
+        assert!(is_open(h, session), "nothing else happens to the session");
     }
 
     #[test]

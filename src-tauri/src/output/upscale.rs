@@ -29,6 +29,17 @@ pub fn allowed(width: u32, height: u32, factor: u32) -> bool {
     factor == 1 || (FACTORS.contains(&factor) && scaled(width, height, factor).is_some())
 }
 
+/// `len` zeroed bytes, or an error rather than an abort when there isn't the memory: the
+/// largest output is 256 MiB, and the layer and the PNG come on top of it.
+pub fn buffer(len: usize) -> Result<Vec<u8>, CaptureError> {
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(len)
+        .map_err(|e| CaptureError::Encode(format!("{len} bytes: {e}")))?;
+    bytes.resize(len, 0);
+    Ok(bytes)
+}
+
 /// `image` at `factor`, with Lanczos3. The factor must be [`allowed`] and above 1.
 ///
 /// Alpha is not premultiplied: captures are opaque, and that skips two passes.
@@ -39,15 +50,21 @@ pub fn upscale(image: &RgbaImage, factor: u32) -> Result<RgbaImage, CaptureError
     }
     let failed = |e: &dyn std::fmt::Display| CaptureError::Encode(format!("upscale: {e}"));
     let src = ImageRef::new(w, h, image.as_raw(), PixelType::U8x4).map_err(|e| failed(&e))?;
-    let mut dst = Image::new(w * factor, h * factor, PixelType::U8x4);
+    let (ow, oh) = (w * factor, h * factor);
+    // Checked: a `usize` may be 32 bits.
+    let len = (ow as usize)
+        .checked_mul(oh as usize)
+        .and_then(|n| n.checked_mul(4))
+        .ok_or_else(|| failed(&"output too large"))?;
+    let mut dst =
+        Image::from_vec_u8(ow, oh, buffer(len)?, PixelType::U8x4).map_err(|e| failed(&e))?;
     let options = ResizeOptions::new()
         .resize_alg(ResizeAlg::Convolution(FilterType::Lanczos3))
         .use_alpha(false);
     Resizer::new()
         .resize(&src, &mut dst, &options)
         .map_err(|e| failed(&e))?;
-    RgbaImage::from_raw(w * factor, h * factor, dst.into_vec())
-        .ok_or_else(|| failed(&"wrong buffer size"))
+    RgbaImage::from_raw(ow, oh, dst.into_vec()).ok_or_else(|| failed(&"wrong buffer size"))
 }
 
 #[cfg(test)]
@@ -100,6 +117,12 @@ mod tests {
             let refused = upscale(&RgbaImage::new(2, 2), factor);
             assert!(matches!(refused, Err(CaptureError::Invalid(_))));
         }
+    }
+
+    #[test]
+    fn a_buffer_too_large_for_memory_is_an_error_not_an_abort() {
+        assert_eq!(buffer(8).unwrap(), [0; 8]);
+        assert!(matches!(buffer(usize::MAX), Err(CaptureError::Encode(_))));
     }
 
     #[test]
