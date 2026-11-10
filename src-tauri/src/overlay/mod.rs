@@ -208,10 +208,19 @@ fn ms_since(t: Instant) -> f64 {
 }
 
 /// The log line for a session's first paint: hotkey to paint and the capture's part, in ms.
-/// `since_launch` is set for the first capture since launch, which is slower (#55): the line
-/// says so, and how long after launch it came, since that changes its time.
-pub fn paint_message(total: f64, capture: f64, since_launch: Option<Duration>) -> String {
-    let line = format!("overlay painted {total:.0} ms after the hotkey (capture {capture:.0} ms)");
+/// `idle` is how long the overlay was closed before the hotkey: a webview left alone for
+/// minutes renders its next frame later. `since_launch` is set for the first capture since
+/// launch, which is slower (#55): the line says so, and how long after launch it came, since
+/// that changes its time.
+pub fn paint_message(
+    total: f64,
+    capture: f64,
+    idle: Option<Duration>,
+    since_launch: Option<Duration>,
+) -> String {
+    let idle = idle.map_or_else(String::new, |d| format!(", idle {:.1} s", d.as_secs_f64()));
+    let line =
+        format!("overlay painted {total:.0} ms after the hotkey (capture {capture:.0} ms{idle})");
     match since_launch {
         Some(d) => format!(
             "{line}; first capture since launch, {} s after it",
@@ -655,13 +664,21 @@ pub(crate) mod tests {
     #[test]
     fn the_first_capture_since_launch_says_so() {
         assert_eq!(
-            paint_message(120.4, 81.6, None),
+            paint_message(120.4, 81.6, None, None),
             "overlay painted 120 ms after the hotkey (capture 82 ms)"
         );
         assert_eq!(
-            paint_message(160.0, 95.0, Some(Duration::from_millis(62_900))),
+            paint_message(160.0, 95.0, None, Some(Duration::from_millis(62_900))),
             "overlay painted 160 ms after the hotkey (capture 95 ms); first capture since \
              launch, 62 s after it"
+        );
+    }
+
+    #[test]
+    fn the_paint_line_says_how_long_the_overlay_was_idle() {
+        assert_eq!(
+            paint_message(507.0, 122.0, Some(Duration::from_millis(603_900)), None),
+            "overlay painted 507 ms after the hotkey (capture 122 ms, idle 603.9 s)"
         );
     }
 

@@ -1,7 +1,8 @@
 //! Tauri glue for the overlay.
 //!
 //! Hotkey (main thread): claim the [`Phase`], take Esc, start the capture on a worker
-//! thread and place the hidden windows while it runs. Capture done (worker): open the session
+//! thread and place the hidden windows while it runs (on macOS, staged too: see
+//! [`STAGE_AT_HOTKEY`]). Capture done (worker): open the session
 //! and send `overlay:show` with each frame's size. Each window fetches its frame
 //! (`overlay_frame`: a copy of the raw RGBA buffer), draws it, waits until it is rendered and
 //! calls `overlay_painted`, which shows that window. Esc goes to every page (`overlay:escape`
@@ -77,6 +78,9 @@ pub struct Overlay {
     staged: Mutex<Vec<u32>>,
     /// The displays whose overlay window hasn't rendered a frame since it was built.
     cold: Mutex<Vec<u32>>,
+    /// When the last capture ended (staged at the hotkey on macOS, even one cancelled while
+    /// capturing rendered): the paint's log line says how long the overlay was idle before it.
+    closed_at: Mutex<Option<Instant>>,
     /// Fired when the phase returns to Idle; the update restart waits for it.
     pub(crate) idle: tokio::sync::Notify,
 }
@@ -319,8 +323,18 @@ fn start_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) -> Option<u64
         close(app);
         return None;
     }
+    if STAGE_AT_HOTKEY {
+        stage_unpainted(app, session, &ids(&displays));
+    }
     Some(session)
 }
+
+/// Whether the hotkey stages the windows ([`stage`]) while the capture runs, instead of once
+/// it is done. A webview left hidden for minutes takes 150 ms or more to render again; on
+/// screen during the capture, it is ready when the frame comes (#151). Invisible and
+/// click-through, it adds nothing to the frame. Not on Windows: staging shows the window there,
+/// which activates it and would change the screen being captured.
+const STAGE_AT_HOTKEY: bool = cfg!(target_os = "macos");
 
 /// Capture finished (worker thread). Opens the session and tells each window to draw. Returns
 /// whether the session opened and at least one window was told to draw.
@@ -351,7 +365,10 @@ fn finish<R: Runtime>(
     let cold = is_cold(&lock(&app.state::<Overlay>().cold), &displays);
     on_main(app, move |app| {
         sync_escape(app);
-        stage_unpainted(app, session, &displays);
+        // Already staged at the hotkey there, and nothing has painted since.
+        if !STAGE_AT_HOTKEY {
+            stage_unpainted(app, session, &displays);
+        }
     });
     let mut told = false;
     for (display, info) in shows {
@@ -535,6 +552,9 @@ fn end_if<R: Runtime>(
     // skipped. First, so a notice shown again counts as an open window.
     if !parked {
         crate::notice::show_after_capture(app);
+    }
+    if before.is_some() {
+        *lock(&app.state::<Overlay>().closed_at) = Some(Instant::now());
     }
     // For any page that waits for a capture to end (onboarding's "Try it"). Only a capture
     // that was shown counts, not one that failed while capturing.
@@ -1026,7 +1046,8 @@ mod win {
     /// the window layered, and Tauri keeps that style while it is set; opaque comes before
     /// click-through goes and with it the layered style. `order_in`: shown through Tauri, which
     /// activates it, so Tauri's own style updates keep it visible; the capture is already taken
-    /// and the overlay takes focus anyway once revealed.
+    /// (hence not at the hotkey, see `STAGE_AT_HOTKEY`) and the overlay takes focus anyway once
+    /// revealed.
     pub fn stage<R: Runtime>(
         window: &WebviewWindow<R>,
         transparent: bool,
@@ -1129,7 +1150,12 @@ pub(crate) fn overlay_painted<R: Runtime>(
     focus(app, paint.focus, paint.fallback);
     if let Some((total, capture)) = paint.first {
         let since_launch = lock(&LAUNCHED).take().map(|t| t.elapsed());
-        log::info!("{}", paint_message(total, capture, since_launch));
+        // Unchanged since the hotkey: only a close sets it.
+        let idle = lock(&state.closed_at).map(|t| {
+            t.elapsed()
+                .saturating_sub(Duration::from_secs_f64(total / 1000.0))
+        });
+        log::info!("{}", paint_message(total, capture, idle, since_launch));
     }
 }
 
@@ -1546,6 +1572,22 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn macos_stages_the_windows_while_the_capture_runs() {
+        let app = app();
+        let h = app.handle();
+        let (session, release) = press(h, &[1, 2]);
+        let early: &[u32] = if STAGE_AT_HOTKEY { &[1, 2] } else { &[] };
+        assert_eq!(staged(h), early, "staged at the hotkey on macOS only");
+        assert!(super::shown(h).is_empty(), "nothing shows before the frame");
+        release.send(true).unwrap();
+        wait_until("the session to open", || is_open(h, session));
+        // Elsewhere once the capture is done (on the main thread, after the session opens).
+        wait_until("the windows to be staged", || staged(h) == [1, 2]);
+        overlay_painted(window(h, 1), h.state(), session, true);
+        assert_eq!(super::shown(h), [1]);
+    }
+
+    #[test]
     fn closing_leaves_the_windows_transparent_until_the_next_paint() {
         let app = app();
         let h = app.handle();
@@ -1695,6 +1737,27 @@ pub(crate) mod tests {
         // The windows stay, hidden, for the next capture.
         assert_eq!(overlay_labels(h), ["overlay-1"]);
         open(h, &[1]);
+    }
+
+    #[test]
+    fn the_idle_time_counts_from_the_last_capture() {
+        let app = app();
+        let h = app.handle();
+        let closed_at = || *lock(&h.state::<Overlay>().closed_at);
+        open(h, &[1]);
+        assert_eq!(closed_at(), None, "nothing closed before the first capture");
+        close(h);
+        let closed = closed_at();
+        assert!(closed.is_some());
+        // One cancelled while capturing counts too: its windows were staged.
+        let (_, release) = press(h, &[1]);
+        close(h);
+        drop(release);
+        assert!(closed_at() > closed);
+        // A close with nothing open changes nothing.
+        let closed = closed_at();
+        close(h);
+        assert_eq!(closed_at(), closed);
     }
 
     #[test]

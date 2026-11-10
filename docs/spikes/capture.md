@@ -514,3 +514,29 @@ None gave up waiting. One frame saves about 9 ms, but a 60 fps screen recording 
 each caught a near-black frame as the overlay opened in two of six with one frame, and in none
 with two frames. Two frames stay. Under heavier load (load 45–60) some captures took over 100 ms
 to render, which is why the fallback waits 200 ms.
+
+## First capture after idle (#151)
+
+On 0.9.1 and 0.9.2, a capture taken 10 to 15 minutes after the last one took 420 to 740 ms,
+against a median of 175 ms. In those captures the page's 200 ms fallback timer fired, but its two
+animation frames did not come in time: the JS ran, the rendering didn't. wry already sets
+`inactiveSchedulingPolicy = none`, so WebKit wasn't suspending the page.
+
+A standalone probe (a hidden, clear `WKWebView` drawing a 3600×2338 frame, staged at alpha 0
+like the overlay, 100 ms simulated capture) measured paint time after the capture, by idle gap:
+
+| Arm                                         | 5 s – 3 min | 7 min | 12 min (n=7)                   |
+| ------------------------------------------- | ----------- | ----- | ------------------------------ |
+| Today: stage after the capture              | 50–76 ms    | 138   | median 85, up to 195           |
+| JS call to the page at the hotkey           | 35–110      | 79    | 205 (n=1)                      |
+| `NSProcessInfo` activity held all the time  | 40–106      | 62    | 136 (n=1)                      |
+| **Stage at the hotkey (during the capture)** | 32–54       | 46    | **median 49, up to 66**        |
+
+Waking the JS doesn't help: rendering is what is slow. Holding an activity helps only partly and
+keeps the app out of App Nap all day, so it was rejected. Staging the windows at the hotkey puts
+the webview on screen while the capture runs, so it has caught up by the time the frame comes.
+Nothing changes while idle: the windows are hidden between captures as before. Idle use was the
+same in every arm (about 143 MB and 0–8 wakeups per 10 s for each WebContent process).
+`CGWindowListCreateImage` composites on-screen windows, so an alpha-0 window adds nothing to
+the frame. macOS only: on Windows staging shows the window, which activates it. The machine
+had 15.7 of 16 GB of swap in use, so paging the idle webview back in is the likely cost.
