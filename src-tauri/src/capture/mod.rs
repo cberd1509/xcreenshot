@@ -19,7 +19,7 @@ mod sck {
         false
     }
 
-    pub fn capture(_id: u32, _points: Bounds) -> Result<image::RgbaImage, CaptureError> {
+    pub fn capture(_id: u32) -> Result<(Bounds, f64, image::RgbaImage), CaptureError> {
         Err(super::backend::no_backend())
     }
 
@@ -353,17 +353,22 @@ fn order() -> Vec<Backend> {
     CHOOSER.order(preference, support())
 }
 
-/// Like [`capture_all`], for displays already listed with [`displays`]. Uses xcap, or
-/// ScreenCaptureKit if xcap fails (see `backend.rs`), and logs which one it used.
+/// Like [`capture_all`], for displays already listed with [`displays`]. Uses xcap, and
+/// ScreenCaptureKit for the displays xcap could not capture (see `backend.rs`), all within one
+/// [`DISPLAY_TIMEOUT`]. Logs which backend captured how many displays, and the time.
 pub fn capture_displays(ids: &[u32]) -> Result<Vec<DisplayFrame>, CaptureError> {
     let started = Instant::now();
-    let (result, used) = CHOOSER.run(&order(), |b| capture_displays_with(b, ids));
-    if let (Ok(frames), Some(backend)) = (&result, used) {
-        let ms = started.elapsed().as_secs_f64() * 1000.0;
-        log::info!(
-            "captured {} display(s) with {backend} in {ms:.0} ms",
-            frames.len()
-        );
+    let (result, used) = CHOOSER.run(&order(), ids, DISPLAY_TIMEOUT, |b, ids, left| {
+        capture_with(b, ids, left)
+    });
+    let ms = started.elapsed().as_secs_f64() * 1000.0;
+    match &result {
+        Ok(frames) => log::info!(
+            "captured {} display(s) with {} in {ms:.0} ms",
+            frames.len(),
+            backend::describe(&used)
+        ),
+        Err(e) => log::warn!("capture failed after {ms:.0} ms: {e}"),
     }
     result
 }
@@ -373,12 +378,24 @@ pub fn capture_displays_with(
     backend: Backend,
     ids: &[u32],
 ) -> Result<Vec<DisplayFrame>, CaptureError> {
+    keep_captured(capture_with(backend, ids, DISPLAY_TIMEOUT))
+}
+
+fn capture_with(
+    backend: Backend,
+    ids: &[u32],
+    timeout: Duration,
+) -> Vec<Result<DisplayFrame, CaptureError>> {
     let in_flight = match backend {
         Backend::Xcap => &IN_FLIGHT,
         Backend::ScreenCaptureKit => &IN_FLIGHT_SCK,
     };
-    let capture = move |id| capture_display(backend, id);
-    keep_captured(capture_each(ids, capture, DISPLAY_TIMEOUT, in_flight))
+    capture_each(
+        ids,
+        move |id| capture_display(backend, id),
+        timeout,
+        in_flight,
+    )
 }
 
 /// The displays [`capture_all`] captures (mirrors excluded), with their OS bounds: points on
@@ -434,15 +451,19 @@ fn monitor(id: u32) -> Result<xcap::Monitor, CaptureError> {
         .ok_or_else(|| CaptureError::Backend(format!("display {id} disappeared")))
 }
 
+/// ScreenCaptureKit reads the display's geometry itself, so a display xcap cannot describe
+/// can still fall back to it.
 fn capture_display(with: Backend, id: u32) -> Result<DisplayFrame, CaptureError> {
-    let m = monitor(id)?;
-    let bounds = os_bounds(&m)?;
-    let scale = m.scale_factor().map_err(backend)?;
-    let image = match with {
-        Backend::Xcap => m.capture_image().map_err(backend)?,
-        Backend::ScreenCaptureKit => sck::capture(id, bounds)?,
+    let (bounds, scale, image) = match with {
+        Backend::Xcap => {
+            let m = monitor(id)?;
+            let bounds = os_bounds(&m)?;
+            let scale = m.scale_factor().map_err(backend)?;
+            (bounds, scale.into(), m.capture_image().map_err(backend)?)
+        }
+        Backend::ScreenCaptureKit => sck::capture(id)?,
     };
-    to_frame(id, bounds, scale.into(), image)
+    to_frame(id, bounds, scale, image)
 }
 
 fn warm_display(backend: Backend, id: u32) -> Result<(), CaptureError> {
@@ -833,7 +854,7 @@ mod tests {
     #[test]
     #[cfg(not(target_os = "macos"))]
     fn screencapturekit_is_macos_only() {
-        assert!(sck::capture(1, Bounds::default()).is_err());
+        assert!(sck::capture(1).is_err());
         assert!(sck::warm_up(1).is_err());
     }
 }

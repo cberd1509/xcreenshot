@@ -24,7 +24,13 @@ unit-tested; `capture_displays` is still the one entry point.
 
 - **Content:** `SCShareableContent` is fetched on first use and kept. It is fetched again after a
   display reconfiguration (`CGDisplayRegisterReconfigurationCallback`, refetched off the main
-  thread right away) or when a wanted display is missing from it.
+  thread right away) or when a wanted display is missing from it. Content fetched while the
+  displays changed is used once but not kept. Display threads that need it at once share one
+  fetch, and all stop waiting at its one deadline (1 s).
+- **Geometry:** bounds and scale come from CoreGraphics (`CGDisplayBounds`, the display mode),
+  not xcap, so a display xcap cannot describe can still fall back.
+- **Memory:** each screenshot runs in its own autorelease pool, since the worker threads have
+  none.
 - **Pixels:** the configuration asks for the display's native pixel size (points times the
   display mode's pixel scale, so rotated displays work), BGRA, best resolution, no cursor, and the
   display's colour space. The `CGImage` rows are copied to RGBA like xcap does, so frames have the
@@ -34,15 +40,21 @@ unit-tested; `capture_displays` is still the one entry point.
 
 **Choosing at runtime** (`backend::Chooser`):
 
-- Auto (default): xcap first; ScreenCaptureKit if xcap errors, returns nothing, or every display
-  comes back black. After 3 unusable xcap captures in a row ScreenCaptureKit goes first; xcap
-  still goes first once every 10 captures, and goes back to first when it works. Any xcap error
-  falls back, a timeout too, so a stalled display can be the first use of ScreenCaptureKit (and
-  its alert, below). A screen that really is all black costs a second capture.
+- Auto (default): xcap first. Every display xcap could not capture (an error, a timeout, or a
+  frame that is entirely black) is captured again with ScreenCaptureKit; the others keep their
+  xcap frame. Black means every pixel is exactly black, so a dark screen with any content is
+  never rejected; a really black display keeps its frame if ScreenCaptureKit does no better.
+- One deadline (1 s) covers the whole capture: ScreenCaptureKit only gets the time xcap left, so
+  a fallback never stacks a second timeout.
+- After 3 xcap captures in a row with nothing usable, ScreenCaptureKit goes first; xcap still goes
+  first once every 10 captures, and goes back to first when it works. Any xcap error falls back,
+  a timeout too, so a stalled display can be the first use of ScreenCaptureKit (and its alert,
+  below).
 - `CGWindowListCreateImage` missing: CoreGraphics is weakly linked (`build.rs`), so the app still
   starts; `dlsym` finds the symbol missing and only ScreenCaptureKit is used.
 - `XCREENSHOT_CAPTURE_BACKEND=xcap` or `=screencapturekit` (`sck`) forces one, no fallback.
-- Every capture logs the backend it used and its time.
+- Every capture logs how many displays each backend captured and its time, or the error and
+  its time when it fails.
 - The warm-up warms only the backend that goes first. ScreenCaptureKit is not touched while xcap
   works: using it showed the "requesting to bypass the system private window picker" alert for
   the terminal (see below), which xcap alone did not.
@@ -63,12 +75,15 @@ channel on average (4.9% by more than 2), partly the screen changing between the
 
 ScreenCaptureKit warm is about 40 ms slower than xcap and over the ~60 ms it would need to become
 the default, so xcap stays first. It is within the 150 ms hotkey budget only with little margin.
+The default path (xcap) is unchanged; ScreenCaptureKit adds its time only when xcap fails. Hotkey
+to painted with ScreenCaptureKit needs the running app with permission and is left as a manual
+check (`XCREENSHOT_CAPTURE_BACKEND=sck` with `XCREENSHOT_DEBUG_CAPTURE`).
 
 **Alert:** after the first ScreenCaptureKit runs, macOS showed "iTerm is requesting to bypass the
 system private window picker and directly access your screen and audio" (Allow / Open System
 Settings). While it was up, every ScreenCaptureKit call hung, so captures timed out after 1 s per
-display. Not answered here, so the time split (content, screenshot,
-copy) still needs measuring.
+display. Not answered here, so the time split (content, screenshot, copy) still needs
+measuring.
 
 ## Latency (capture all displays, 3600x2338 px)
 

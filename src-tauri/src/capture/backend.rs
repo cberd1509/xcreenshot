@@ -11,6 +11,7 @@ use super::{CaptureError, DisplayFrame};
 use image::RgbaImage;
 use std::fmt;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, Instant};
 
 /// Forces a backend for testing: `xcap`, `screencapturekit` (or `sck`), or `auto` (the default).
 pub const ENV: &str = "XCREENSHOT_CAPTURE_BACKEND";
@@ -83,6 +84,9 @@ pub fn no_backend() -> CaptureError {
     CaptureError::Backend("no capture backend available".into())
 }
 
+/// How many displays each backend captured, in the order they ran.
+pub type Used = Vec<(Backend, usize)>;
+
 /// Picks the backend order for each capture and remembers how xcap has been doing.
 pub struct Chooser {
     xcap_failures: AtomicU32,
@@ -131,57 +135,101 @@ impl Chooser {
         }
     }
 
-    /// Captures with each backend in `order` until one gives a usable result, and says which
-    /// one it was. With none usable, the last result is returned as it came.
+    /// Captures `ids` with each backend in `order`, giving each one only the displays that are
+    /// still missing (failed, timed out or black) and only the time left of `budget`, so a
+    /// fallback never stacks a second full timeout on the first. Says how many displays each
+    /// backend captured. A display no backend could use keeps its first frame (a black screen is
+    /// still a screen) or its error; the result fails only if no display has a frame.
     pub fn run(
         &self,
         order: &[Backend],
-        mut capture: impl FnMut(Backend) -> Result<Vec<DisplayFrame>, CaptureError>,
-    ) -> (Result<Vec<DisplayFrame>, CaptureError>, Option<Backend>) {
+        ids: &[u32],
+        budget: Duration,
+        mut capture: impl FnMut(Backend, &[u32], Duration) -> Vec<Result<DisplayFrame, CaptureError>>,
+    ) -> (Result<Vec<DisplayFrame>, CaptureError>, Used) {
         if self.struck_out() {
             self.sck_first.fetch_add(1, Ordering::Relaxed);
         }
-        let mut last = (Err(no_backend()), None);
+        let deadline = Instant::now() + budget;
+        // `None` until a backend has tried the display.
+        let mut results: Vec<Option<Result<DisplayFrame, CaptureError>>> =
+            ids.iter().map(|_| None).collect();
+        let mut used = vec![];
         for &backend in order {
-            let result = capture(backend);
-            let problem = unusable(&result);
-            self.record(backend, problem.is_none());
-            match problem {
-                None => return (result, Some(backend)),
-                Some(why) => log::warn!("{backend} capture unusable: {why}"),
+            let missing: Vec<usize> = (0..ids.len())
+                .filter(|&i| results[i].as_ref().is_none_or(|r| unusable(r).is_some()))
+                .collect();
+            if missing.is_empty() {
+                break;
             }
-            last = (result, Some(backend));
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                log::warn!("no time left to try {backend}");
+                break;
+            }
+            let wanted: Vec<u32> = missing.iter().map(|&i| ids[i]).collect();
+            let mut captured = 0;
+            for (&i, result) in missing.iter().zip(capture(backend, &wanted, left)) {
+                let usable = match unusable(&result) {
+                    None => true,
+                    Some(why) => {
+                        log::warn!("{backend}: display {}: {why}", ids[i]);
+                        false
+                    }
+                };
+                captured += usize::from(usable);
+                // Keep the first answer, unless this one is usable, or a frame after an error.
+                let better = match &results[i] {
+                    None => true,
+                    Some(old) => usable || (old.is_err() && result.is_ok()),
+                };
+                if better {
+                    results[i] = Some(result);
+                }
+            }
+            self.record(backend, captured > 0);
+            if captured > 0 {
+                used.push((backend, captured));
+            }
         }
-        last
+        let results = results
+            .into_iter()
+            .map(|r| r.unwrap_or_else(|| Err(no_backend())))
+            .collect();
+        (super::keep_captured(results), used)
     }
 }
 
-/// Why a capture cannot be used, if it cannot: an error, or every display black (what a
-/// removed or stubbed-out API tends to return). A screen that is really all black (no menu bar)
-/// is rare; it only costs a second capture. A permission problem can look valid (wallpaper
+/// For the log: "xcap (2)" or "xcap (1), ScreenCaptureKit (1)".
+pub fn describe(used: &[(Backend, usize)]) -> String {
+    let parts: Vec<String> = used.iter().map(|(b, n)| format!("{b} ({n})")).collect();
+    parts.join(", ")
+}
+
+/// Why a display's capture cannot be used, if it cannot: an error, or a black frame (what a
+/// removed or stubbed-out API tends to return). A permission problem can look valid (wallpaper
 /// only), so that is checked before capturing, not here.
-fn unusable(result: &Result<Vec<DisplayFrame>, CaptureError>) -> Option<String> {
+fn unusable(result: &Result<DisplayFrame, CaptureError>) -> Option<String> {
     match result {
         Err(e) => Some(e.to_string()),
-        Ok(frames) if frames.iter().all(|f| is_black(&f.image)) => {
-            Some("every display came back black".into())
-        }
+        Ok(f) if is_black(&f.image) => Some("came back black".into()),
         Ok(_) => None,
     }
 }
 
-/// Whether every sampled pixel is black, on a grid of about 64x64 points. A real screen
-/// (menu bar, cursorless desktop) is never all black at that density.
+/// Whether every pixel is exactly black (alpha aside). Every pixel is checked, so a dark frame
+/// with any content is never taken for a failed one. A real screen stops at its first pixels
+/// with color; only a really black frame costs a full pass.
 pub fn is_black(image: &RgbaImage) -> bool {
-    let (w, h) = image.dimensions();
-    let step = |n: u32| (n / 64).max(1) as usize;
-    (0..h).step_by(step(h)).all(|y| {
-        (0..w)
-            .step_by(step(w))
-            .all(|x| image.get_pixel(x, y).0[..3] == [0, 0, 0])
-    })
+    image
+        .as_raw()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .all(|&[r, g, b, _]| r == 0 && g == 0 && b == 0)
 }
 
+#[cfg(any(target_os = "macos", test))]
 /// Copies BGRA rows (`bytes_per_row` may include padding) into an RGBA image. `None` if the
 /// buffer is too short for the size.
 pub fn bgra_to_rgba(
@@ -209,6 +257,7 @@ pub fn bgra_to_rgba(
     RgbaImage::from_raw(u32::try_from(width).ok()?, u32::try_from(height).ok()?, out)
 }
 
+#[cfg(any(target_os = "macos", test))]
 /// The native pixel size of a display that is `points` big, given its display mode's size in
 /// pixels and in points (both unrotated). The scale is the same on both axes, so a rotated
 /// display (points swapped) still gets the right size. A mode with no size counts as 1x.
@@ -222,6 +271,7 @@ pub fn pixel_size(points: (u32, u32), mode_pixels: usize, mode_points: usize) ->
     (px(points.0), px(points.1))
 }
 
+#[cfg(any(target_os = "macos", test))]
 /// Whether the cached ScreenCaptureKit content must be fetched again before capturing `wanted`:
 /// there is none, the displays changed since (`generation`), or a display is missing from it.
 pub fn needs_refresh(cached: Option<(u64, &[u32])>, generation: u64, wanted: &[u32]) -> bool {
@@ -244,20 +294,33 @@ mod tests {
     const XCAP: Backend = Backend::Xcap;
     const SCK: Backend = Backend::ScreenCaptureKit;
 
-    fn frame(rgb: [u8; 3]) -> DisplayFrame {
+    fn frame(id: u32, rgb: [u8; 3]) -> DisplayFrame {
         let b = Bounds {
-            x: 0,
+            x: id as i32 * 4,
             y: 0,
             width: 4,
             height: 4,
         };
         DisplayFrame {
-            id: 1,
+            id,
             logical: b,
             physical: b,
             scale_factor: 1.0,
             image: RgbaImage::from_pixel(4, 4, image::Rgba([rgb[0], rgb[1], rgb[2], 255])),
         }
+    }
+
+    type Results = Vec<Result<DisplayFrame, CaptureError>>;
+
+    /// A fake backend: `pick` gives each display's result.
+    fn each(ids: &[u32], pick: impl Fn(u32) -> Result<DisplayFrame, CaptureError>) -> Results {
+        ids.iter().map(|&id| pick(id)).collect()
+    }
+
+    const BUDGET: Duration = Duration::from_secs(1);
+
+    fn ids(frames: &[DisplayFrame]) -> Vec<u32> {
+        frames.iter().map(|f| f.id).collect()
     }
 
     #[test]
@@ -297,69 +360,139 @@ mod tests {
         assert_eq!(c.order(Preference::Only(XCAP), BOTH), [XCAP]);
         let old_macos = Support { sck: false, ..BOTH };
         assert!(c.order(Preference::Only(SCK), old_macos).is_empty());
-        let (result, used) = c.run(&[], |_| unreachable!());
-        assert!(matches!(result, Err(CaptureError::Backend(_))));
-        assert_eq!(used, None);
+        let (result, used) = c.run(&[], &[1], BUDGET, |_, _, _| unreachable!());
+        assert_eq!(result, Err(no_backend()));
+        assert!(used.is_empty());
     }
 
     #[test]
     fn falls_back_when_xcap_fails_or_returns_black() {
         let c = Chooser::new();
         let tried = RefCell::new(vec![]);
-        let (result, used) = c.run(&[XCAP, SCK], |b| {
+        let (result, used) = c.run(&[XCAP, SCK], &[1], BUDGET, |b, ids, _| {
             tried.borrow_mut().push(b);
-            match b {
+            each(ids, |id| match b {
                 XCAP => Err(CaptureError::Backend("gone".into())),
-                SCK => Ok(vec![frame([9, 9, 9])]),
-            }
+                SCK => Ok(frame(id, [9, 9, 9])),
+            })
         });
-        assert_eq!(used, Some(SCK));
+        assert_eq!(used, [(SCK, 1)]);
         assert_eq!(result.unwrap()[0].image.get_pixel(0, 0).0, [9, 9, 9, 255]);
         assert_eq!(*tried.borrow(), [XCAP, SCK]);
 
-        let (_, used) = c.run(&[XCAP, SCK], |b| match b {
-            XCAP => Ok(vec![frame([0, 0, 0]), frame([0, 0, 0])]),
-            SCK => Ok(vec![frame([1, 2, 3])]),
+        let (_, used) = c.run(&[XCAP, SCK], &[1, 2], BUDGET, |b, ids, _| {
+            each(ids, |id| match b {
+                XCAP => Ok(frame(id, [0, 0, 0])),
+                SCK => Ok(frame(id, [1, 2, 3])),
+            })
         });
-        assert_eq!(used, Some(SCK));
-        let (_, used) = c.run(&[XCAP, SCK], |b| match b {
-            XCAP => Ok(vec![]),
-            SCK => Ok(vec![frame([1, 2, 3])]),
+        assert_eq!(used, [(SCK, 2)]);
+        assert_eq!(describe(&used), "ScreenCaptureKit (2)");
+    }
+
+    #[test]
+    fn only_the_missing_displays_are_captured_again() {
+        let c = Chooser::new();
+        let asked = RefCell::new(vec![]);
+        let (result, used) = c.run(&[XCAP, SCK], &[1, 2, 3], BUDGET, |b, ids, _| {
+            asked.borrow_mut().push((b, ids.to_vec()));
+            each(ids, |id| match (b, id) {
+                (XCAP, 1) => Ok(frame(id, [5, 5, 5])),
+                (XCAP, 2) => Err(CaptureError::Backend("display 2 timed out".into())),
+                (XCAP, _) => Ok(frame(id, [0, 0, 0])),
+                (SCK, _) => Ok(frame(id, [7, 7, 7])),
+            })
         });
-        assert_eq!(used, Some(SCK), "nothing captured counts as black");
+        assert_eq!(*asked.borrow(), [(XCAP, vec![1, 2, 3]), (SCK, vec![2, 3])]);
+        assert_eq!(used, [(XCAP, 1), (SCK, 2)]);
+        assert_eq!(describe(&used), "xcap (1), ScreenCaptureKit (2)");
+        let frames = result.unwrap();
+        assert_eq!(ids(&frames), [1, 2, 3], "in display order");
+        assert_eq!(frames[2].image.get_pixel(0, 0).0, [7, 7, 7, 255]);
+    }
+
+    #[test]
+    fn a_black_screen_is_kept_when_nothing_does_better() {
+        let c = Chooser::new();
+        let (result, used) = c.run(&[XCAP, SCK], &[1, 2], BUDGET, |b, ids, _| {
+            each(ids, |id| match (b, id) {
+                (XCAP, 1) => Ok(frame(id, [0, 0, 0])),
+                (XCAP, _) => Ok(frame(id, [4, 4, 4])),
+                (SCK, _) => Err(CaptureError::Backend("alert".into())),
+            })
+        });
+        assert_eq!(ids(&result.unwrap()), [1, 2]);
+        assert_eq!(used, [(XCAP, 1)]);
     }
 
     #[test]
     fn a_working_xcap_is_not_second_guessed() {
         let c = Chooser::new();
-        let (_, used) = c.run(&[XCAP, SCK], |b| {
+        let (result, used) = c.run(&[XCAP, SCK], &[1, 2], BUDGET, |b, ids, _| {
             assert_eq!(b, XCAP);
-            Ok(vec![frame([0, 0, 0]), frame([5, 5, 5])])
+            each(ids, |id| Ok(frame(id, [5, 5, 5])))
         });
-        assert_eq!(used, Some(XCAP), "one black display among others is fine");
+        assert_eq!(used, [(XCAP, 2)]);
+        assert_eq!(ids(&result.unwrap()), [1, 2]);
     }
 
     #[test]
-    fn with_nothing_usable_the_last_result_is_returned() {
+    fn with_nothing_usable_the_first_error_is_returned() {
         let c = Chooser::new();
-        let (result, used) = c.run(&[XCAP, SCK], |b| Err(CaptureError::Backend(b.to_string())));
-        assert_eq!(
-            result,
-            Err(CaptureError::Backend("ScreenCaptureKit".into()))
+        let (result, used) = c.run(&[XCAP, SCK], &[1], BUDGET, |b, ids, _| {
+            each(ids, |_| Err(CaptureError::Backend(b.to_string())))
+        });
+        assert_eq!(result, Err(CaptureError::Backend("xcap".into())));
+        assert!(used.is_empty());
+    }
+
+    #[test]
+    fn the_fallback_only_gets_the_time_that_is_left() {
+        let c = Chooser::new();
+        let budget = Duration::from_millis(200);
+        let given = RefCell::new(vec![]);
+        let started = Instant::now();
+        let _ = c.run(&[XCAP, SCK], &[1], budget, |b, ids, left| {
+            given.borrow_mut().push((b, left));
+            if b == XCAP {
+                std::thread::sleep(Duration::from_millis(80));
+            }
+            each(ids, |_| Err(CaptureError::EmptyImage))
+        });
+        let given = given.into_inner();
+        assert_eq!(given[0].0, XCAP);
+        assert!(given[0].1 <= budget && given[0].1 > budget - Duration::from_millis(50));
+        assert_eq!(given[1].0, SCK);
+        assert!(given[1].1 <= budget - Duration::from_millis(80));
+
+        // A backend that uses up the whole budget leaves nothing to try.
+        let tried = RefCell::new(vec![]);
+        let _ = c.run(
+            &[XCAP, SCK],
+            &[1],
+            Duration::from_millis(30),
+            |b, ids, left| {
+                tried.borrow_mut().push(b);
+                std::thread::sleep(left + Duration::from_millis(5));
+                each(ids, |_| Err(CaptureError::EmptyImage))
+            },
         );
-        assert_eq!(used, Some(SCK));
+        assert_eq!(*tried.borrow(), [XCAP]);
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]
     fn screencapturekit_goes_first_after_xcap_keeps_failing() {
         let c = Chooser::new();
-        let broken = |b| match b {
-            XCAP => Err(CaptureError::EmptyImage),
-            SCK => Ok(vec![frame([1, 1, 1])]),
+        let broken = |b, ids: &[u32], _| {
+            each(ids, |id| match b {
+                XCAP => Err(CaptureError::EmptyImage),
+                SCK => Ok(frame(id, [1, 1, 1])),
+            })
         };
         for _ in 0..XCAP_STRIKES {
             assert_eq!(c.order(Preference::Auto, BOTH), [XCAP, SCK]);
-            let _ = c.run(&[XCAP, SCK], broken);
+            let _ = c.run(&[XCAP, SCK], &[1], BUDGET, broken);
         }
         assert_eq!(c.order(Preference::Auto, BOTH), [SCK, XCAP]);
         // Asking does not use up a turn.
@@ -368,7 +501,7 @@ mod tests {
         let firsts: Vec<_> = (0..2 * XCAP_RETRY_EVERY)
             .map(|_| {
                 let first = c.order(Preference::Auto, BOTH)[0];
-                let _ = c.run(&[SCK], broken);
+                let _ = c.run(&[SCK], &[1], BUDGET, broken);
                 first
             })
             .collect();
@@ -377,17 +510,23 @@ mod tests {
         // Forcing still wins.
         assert_eq!(c.order(Preference::Only(XCAP), BOTH), [XCAP]);
         // xcap working again resets it.
-        let _ = c.run(&[XCAP], |_| Ok(vec![frame([1, 1, 1])]));
+        let _ = c.run(&[XCAP], &[1], BUDGET, |_, ids, _| {
+            each(ids, |id| Ok(frame(id, [1, 1, 1])))
+        });
         assert_eq!(c.order(Preference::Auto, BOTH), [XCAP, SCK]);
     }
 
     #[test]
-    fn black_means_every_sampled_pixel_is_black() {
+    fn black_means_every_pixel_is_black() {
         let mut img = RgbaImage::new(1000, 700);
         assert!(is_black(&img), "alpha does not count");
-        img.put_pixel(0, 0, image::Rgba([0, 0, 1, 0]));
-        assert!(!is_black(&img));
         assert!(is_black(&RgbaImage::new(0, 0)));
+        // One dim pixel far from any sampling grid still counts as content.
+        img.put_pixel(517, 333, image::Rgba([0, 0, 1, 0]));
+        assert!(!is_black(&img));
+        let mut img = RgbaImage::new(3600, 2338);
+        img.put_pixel(3599, 2337, image::Rgba([1, 0, 0, 255]));
+        assert!(!is_black(&img), "the last pixel counts too");
         assert!(!is_black(&RgbaImage::from_pixel(
             3,
             3,
