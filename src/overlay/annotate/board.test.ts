@@ -650,6 +650,18 @@ describe('exportShapes', () => {
     expect(layer.attrs.exported).toMatchObject({ pixelRatio: 2 })
   })
 
+  it('renders the layer at a larger size, keeping the blurs at 1×', async () => {
+    const context = fakeContext()
+    const out = await exportShapes([rect, blur], crop, two, 3)
+    // Three times the 1× box: the layer is drawn at the output size, not upscaled.
+    expect(out.layer).toMatchObject({ x: 36, y: 96, width: 228, height: 288 })
+    expect(out.blurs).toEqual([{ x: 2, y: 4, width: 6, height: 8 }])
+    expect(context.getImageData).toHaveBeenCalledWith(0, 0, 228, 288)
+    expect(out.layer?.rgba).toHaveLength(228 * 288 * 4)
+    const layer = stages.at(-1)!.children[0]
+    expect(layer.attrs.exported).toEqual({ x: 106, y: 116, width: 38, height: 48, pixelRatio: 6 })
+  })
+
   it('clips the box to the crop', async () => {
     fakeContext()
     const out = await exportShapes([{ ...rect, x: 90 }], crop, two)

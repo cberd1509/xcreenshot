@@ -18,6 +18,8 @@ tauri-build = { version = "2.7.4", features = [] }
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Lanczos3 for Copy and Save at 2×–4×, RGBA8 only (about 166 KB; see #107).
+fast_image_resize = { version = "6", features = ["only_u8x4"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 log = "0.4"
 open = "5.4.5"

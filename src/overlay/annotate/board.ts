@@ -482,33 +482,44 @@ export type AnnotationExport = {
 }
 
 /**
- * Renders `shapes` (logical px on the display) on their own at native size. Only the box the
- * shapes paint is rendered, clipped to `crop` (the physical rect being captured); `scale` is
- * physical px per logical px on each axis.
+ * Renders `shapes` (logical px on the display) on their own at native size, times `factor`. Only
+ * the box the shapes paint is rendered, clipped to `crop` (the physical rect being captured);
+ * `scale` is physical px per logical px on each axis. At a larger factor the layer is rendered at
+ * that size, so it stays sharp, and its box is in the px of the larger image; blurs stay at 1×,
+ * as Rust pixelates the crop before it upscales it.
  */
 export async function exportShapes(
   shapes: readonly Shape[],
   crop: Rect,
   scale: Scale,
+  factor = 1,
 ): Promise<AnnotationExport> {
   const blurs = blurRects(shapes, crop, scale)
+  // The layer is rendered at the output size: the crop and the scale times the factor.
+  const out = {
+    x: crop.x * factor,
+    y: crop.y * factor,
+    width: crop.width * factor,
+    height: crop.height * factor,
+  }
+  const ratio = { x: scale.x * factor, y: scale.y * factor }
   const drawn = shapes.filter((s) => s.kind !== 'blur')
   const painted = paintedBounds(drawn)
-  const box = painted && physicalIn(painted, crop, scale)
+  const box = painted && physicalIn(painted, out, ratio)
   if (!box) return { layer: null, blurs }
   const K = await loadKonva()
   const stage = new K.Stage({ container: document.createElement('div'), width: 0, height: 0 })
   try {
     // Konva has one pixel ratio, the x one; stretching the layer gives y its own.
-    const layer = new K.Layer({ scaleY: scale.y / scale.x })
+    const layer = new K.Layer({ scaleY: ratio.y / ratio.x })
     stage.add(layer)
     for (const shape of drawn) layer.add(create(K, shape))
     const canvas = layer.toCanvas({
-      x: (crop.x + box.x) / scale.x,
-      y: (crop.y + box.y) / scale.x,
-      width: box.width / scale.x,
-      height: box.height / scale.x,
-      pixelRatio: scale.x,
+      x: (out.x + box.x) / ratio.x,
+      y: (out.y + box.y) / ratio.x,
+      width: box.width / ratio.x,
+      height: box.height / ratio.x,
+      pixelRatio: ratio.x,
     })
     // Read exactly the box's size: rounding can leave the canvas a pixel short.
     const rgba = canvas.getContext('2d')!.getImageData(0, 0, box.width, box.height).data

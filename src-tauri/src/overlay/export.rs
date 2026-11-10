@@ -30,7 +30,7 @@ use super::window::{
 };
 use crate::capture::{self, CaptureError, Density, PixelRect, clamp_rect};
 use crate::output::compose::{self, Layer, Marks};
-use crate::output::{self, Clipboard, Target};
+use crate::output::{self, Clipboard, Target, upscale};
 use crate::prefs;
 use crate::region::{self, Region};
 use crate::share::{self, OnDone, Opened, ShareError, ShareOutcome};
@@ -52,13 +52,16 @@ pub const HEADER: &str = "x-xcreenshot-output";
 /// Most blur rects one request may have. More is a broken or hostile page.
 pub const MAX_BLURS: usize = 256;
 
-/// The JSON in [`HEADER`]. `layer` is where the body's pixels go, relative to `rect`; it is
-/// there only when the body has them. `anchor` is the Share button, for a share. `remember` is
-/// `false` for an output whose region must not be remembered (a quick copy).
+/// The JSON in [`HEADER`]. `layer` is where the body's pixels go, relative to `rect` at
+/// `factor`; it is there only when the body has them. `anchor` is the Share button, for a share.
+/// `remember` is `false` for an output whose region must not be remembered (a quick copy).
+/// `factor` is the larger size picked under Copy or Save, 1 when absent.
 #[derive(Debug, Deserialize)]
 struct Head {
     session: u64,
     rect: PixelRect,
+    #[serde(default = "one")]
+    factor: u32,
     #[serde(default)]
     layer: Option<PixelRect>,
     #[serde(default)]
@@ -73,6 +76,10 @@ fn yes() -> bool {
     true
 }
 
+fn one() -> u32 {
+    1
+}
+
 /// A copy, save or share request: the session, the selection in native px, and its
 /// annotations, whose pixels are read in place from the request body. A share also has the
 /// button the sheet opens under, in logical px in the page.
@@ -84,6 +91,9 @@ pub(crate) struct Output<'a> {
     pub anchor: Option<share::Rect>,
     /// Whether the region may be remembered (not for a quick copy).
     pub remember: bool,
+    /// The output is the selection at this whole factor (see `output::upscale`); the layer is
+    /// already at that size.
+    pub factor: u32,
 }
 
 fn invalid(e: impl std::fmt::Display) -> CaptureError {
@@ -100,14 +110,17 @@ pub(crate) fn parse<'a>(
         .get(HEADER)
         .ok_or_else(|| invalid(format!("missing {HEADER}")))?;
     let head: Head = serde_json::from_slice(header.as_bytes()).map_err(invalid)?;
+    let (w, h) = (head.rect.width, head.rect.height);
+    if !upscale::allowed(w, h, head.factor) {
+        return Err(invalid(format!("{w}x{h} px at {}x", head.factor)));
+    }
     if head.blurs.len() > MAX_BLURS {
         return Err(invalid(format!(
             "{} blurs, at most {MAX_BLURS}",
             head.blurs.len()
         )));
     }
-    // Each blur clipped to the selection; one outside it is dropped.
-    let (w, h) = (head.rect.width, head.rect.height);
+    // Each blur clipped to the selection, at 1×; one outside it is dropped.
     let blurs = head
         .blurs
         .into_iter()
@@ -142,6 +155,7 @@ pub(crate) fn parse<'a>(
         marks: Marks { layer, blurs },
         anchor: head.anchor,
         remember: head.remember,
+        factor: head.factor,
     })
 }
 
@@ -192,7 +206,7 @@ async fn copy_with<R: Runtime>(
         return Ok(());
     };
     // Cropped and annotated here: the annotations are read in place from the request.
-    let image = annotated(&frame, out)?;
+    let image = annotated(&frame, out).await?;
     drop(frame);
     let copied = spawn_blocking(move || {
         clipboard(&image, density)?;
@@ -261,10 +275,26 @@ fn selected_frame<R: Runtime>(
     })
 }
 
-/// The selection cropped from the frame, with its annotations on it.
-fn annotated(frame: &RgbaImage, out: &Output) -> Result<RgbaImage, CaptureError> {
+/// The selection cropped from the frame, with its annotations on it, at the request's factor.
+///
+/// Blurs pixelate the crop first; a larger size is then upscaled on a worker (Lanczos3), and the
+/// layer, which the page rendered at that size, is drawn over it, so strokes and text stay sharp.
+async fn annotated(frame: &RgbaImage, out: &Output<'_>) -> Result<RgbaImage, CaptureError> {
     let mut image = capture::crop_pixels(frame, out.rect)?;
-    compose::apply(&mut image, &out.marks);
+    compose::blur(&mut image, &out.marks.blurs);
+    let factor = out.factor;
+    if factor > 1 {
+        let started = Instant::now();
+        image = spawn_blocking(move || upscale::upscale(&image, factor))
+            .await
+            .unwrap_or_else(|e| Err(CaptureError::Encode(e.to_string())))?;
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        let (w, h) = image.dimensions();
+        log::info!("upscaled to {w}x{h} px ({factor}x) in {ms:.0} ms");
+    }
+    if let Some(layer) = &out.marks.layer {
+        compose::composite(&mut image, layer);
+    }
     Ok(image)
 }
 
@@ -309,7 +339,7 @@ async fn save_with<R: Runtime>(
     };
     // Checked before anything hides, so an empty selection just stays.
     let started = Instant::now();
-    let image = annotated(&frame, out)?;
+    let image = annotated(&frame, out).await?;
     drop(frame);
     let mut steps = Steps::default();
     steps.done("crop", started);
@@ -526,7 +556,7 @@ async fn share_with<R: Runtime>(
         return Ok(());
     };
     let started = Instant::now();
-    let image = annotated(&frame, out)?;
+    let image = annotated(&frame, out).await?;
     drop(frame);
     let mut steps = Steps::default();
     let cropped = steps.done("crop", started);
@@ -1049,6 +1079,7 @@ mod tests {
             marks: Marks::default(),
             anchor: None,
             remember: true,
+            factor: 1,
         }
     }
 
@@ -1127,6 +1158,68 @@ mod tests {
         wait_until("the overlay to close", || is_idle(h));
         assert!(!esc_held(h));
         assert_eq!(toasts(h), [Toast::saved(&path)]);
+    }
+
+    #[test]
+    fn copy_at_a_larger_size_upscales_the_blurred_crop_then_draws_the_layer() {
+        let app = app();
+        let h = app.handle();
+        let session = shown(h, &[1]);
+        let (c, images) = clipboard(false);
+        let state = h.state::<Overlay>();
+        let w = window(h, 1);
+        // A white 2x2 dot at (0, 0) of the crop at 2x: the layer is already at that size.
+        let white = WHITE.repeat(4);
+        let dot = || Layer {
+            x: 0,
+            y: 0,
+            pixels: ImageBuffer::from_raw(2, 2, &white[..]).unwrap(),
+        };
+        let out = Output {
+            factor: 2,
+            marks: Marks {
+                layer: Some(dot()),
+                blurs: vec![px(0, 0, 2, 2)],
+            },
+            ..plain(session, px(1, 0, 2, 2))
+        };
+        let copying = copy_with(&w, &state, &out, c, forget());
+        assert_eq!(tauri::async_runtime::block_on(copying), Ok(()));
+        let copied = images.lock().unwrap()[0].clone();
+        // The crop pixelated at 1x (one flat block), upscaled, then the dot drawn sharp.
+        let mut blurred = expected(1, 0, 2, 2);
+        compose::blur(&mut blurred, &[px(0, 0, 2, 2)]);
+        let mut want = upscale::upscale(&blurred, 2).unwrap();
+        compose::composite(&mut want, &dot());
+        assert_eq!(copied.dimensions(), (4, 4));
+        assert_eq!(copied, want);
+        assert_eq!(*copied.get_pixel(1, 1), image::Rgba(WHITE));
+        assert_eq!(copied.get_pixel(3, 3), blurred.get_pixel(1, 1));
+        wait_until("the overlay to close", || is_idle(h));
+        let copied = Toast::Copied {
+            width: 4,
+            height: 4,
+        };
+        assert_eq!(toasts(h), [copied]);
+    }
+
+    #[test]
+    fn save_at_a_larger_size_writes_the_upscaled_png() {
+        let app = app_with_escape();
+        let h = app.handle();
+        let dir = tempfile::tempdir().unwrap();
+        let session = shown(h, &[1]);
+        let path = dir.path().join("big.png");
+        let saver = Arc::new(FakeSaver::answering(&[Some(&path)]));
+        let out = Output {
+            factor: 3,
+            ..plain(session, px(1, 0, 2, 2))
+        };
+        assert_eq!(save_out(h, &out, &saver, dir.path()), Ok(()));
+        let want = upscale::upscale(&expected(1, 0, 2, 2), 3).unwrap();
+        // The density stays the frame's: the larger image shows larger.
+        assert_clean_png(&fs::read(&path).unwrap(), &want, RETINA);
+        wait_until("the overlay to close", || is_idle(h));
     }
 
     #[test]
@@ -1694,6 +1787,22 @@ mod tests {
         // The body itself, not a copy.
         assert_eq!(layer.pixels.as_raw().as_ptr(), bytes.as_ptr());
         assert_eq!(out.marks.blurs, [px(0, 0, 4, 4)]);
+    }
+
+    #[test]
+    fn parses_a_larger_size_that_fits_and_refuses_one_that_does_not() {
+        let body = InvokeBody::Raw(vec![]);
+        let at = |w: u32, factor: u32| {
+            headers(&format!(
+                r#"{{"session":3,"rect":{{"x":0,"y":0,"width":{w},"height":4}},"factor":{factor}}}"#
+            ))
+        };
+        assert_eq!(parse(&body, &at(3, 4)).unwrap().factor, 4);
+        assert_eq!(parse(&body, &at(2048, 4)).unwrap().factor, 4);
+        for (w, factor) in [(2049, 4), (3, 5), (3, 0)] {
+            let e = parse(&body, &at(w, factor)).unwrap_err();
+            assert!(matches!(e, CaptureError::Invalid(_)), "{e}");
+        }
     }
 
     #[test]

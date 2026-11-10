@@ -1314,6 +1314,32 @@ describe('Overlay', () => {
       expect(sent).toHaveLength(2)
     })
 
+    it('copies and saves at a larger size from the carets, the annotations rendered at it', async () => {
+      await annotated()
+      await userEvent.click(screen.getByRole('button', { name: 'Copy at a larger size' }))
+      // The selection is 200 × 100 physical px.
+      expect(await screen.findByText('800 × 400')).toBeInTheDocument()
+      await userEvent.click(screen.getByText('Copy at 4×'))
+      await waitFor(() => expect(called('overlay_copy')).toHaveLength(1))
+      // The layer at 4x: (12, 12, 96, 76) times four, drawn at that size.
+      expect(output('overlay_copy', 0)).toEqual({
+        session: 9,
+        rect: rect200,
+        layer: { x: 48, y: 48, width: 384, height: 304 },
+        blurs: [],
+        factor: 4,
+      })
+      expect(sent[0].body as Uint8Array).toHaveLength(384 * 304 * 4)
+      await userEvent.click(screen.getByRole('button', { name: 'Save at a larger size' }))
+      await userEvent.click(await screen.findByText('Save at 2×'))
+      await waitFor(() => expect(called('overlay_save')).toHaveLength(1))
+      expect(output('overlay_save', 0)).toMatchObject({ rect: rect200, factor: 2 })
+      // ⌘S and the main buttons stay at 1×.
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(called('overlay_save')).toHaveLength(2))
+      expect(output('overlay_save', 1)).not.toHaveProperty('factor')
+    })
+
     it('shares from the toolbar on macOS, under the Share button', async () => {
       platform.mac = true
       await annotated()

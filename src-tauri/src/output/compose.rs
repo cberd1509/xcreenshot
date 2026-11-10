@@ -28,11 +28,17 @@ pub struct Marks<'a> {
 /// Pixelates the blur rects, then draws the layer over the crop. Anything outside the crop is
 /// left out.
 pub fn apply(image: &mut RgbaImage, marks: &Marks) {
-    for &rect in &marks.blurs {
-        pixelate(image, rect);
-    }
+    blur(image, &marks.blurs);
     if let Some(layer) = &marks.layer {
         composite(image, layer);
+    }
+}
+
+/// Pixelates each rect. For a larger size this comes first, on the crop, so the blocks are the
+/// ones the page previewed; then the image is upscaled and the layer drawn at that size.
+pub fn blur(image: &mut RgbaImage, blurs: &[PixelRect]) {
+    for &rect in blurs {
+        pixelate(image, rect);
     }
 }
 
@@ -40,7 +46,7 @@ pub fn apply(image: &mut RgbaImage, marks: &Marks) {
 ///
 /// Not `imageops::overlay`: its blend truncates, so a half-transparent stroke over the opaque
 /// screenshot comes out with alpha 254, and the PNG would be slightly see-through there.
-fn composite(image: &mut RgbaImage, layer: &Layer) {
+pub fn composite(image: &mut RgbaImage, layer: &Layer) {
     let (w, h) = image.dimensions();
     let (lw, lh) = layer.pixels.dimensions();
     let at = PixelRect {

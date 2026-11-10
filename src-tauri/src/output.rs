@@ -10,6 +10,8 @@ pub(crate) mod order;
 /// The Save dialog on macOS.
 #[cfg(any(target_os = "macos", test))]
 pub(crate) mod save_panel;
+/// Copy and Save at 2×, 3× and 4×.
+pub mod upscale;
 /// The Windows clipboard.
 #[cfg(any(target_os = "windows", test))]
 pub(crate) mod win_clipboard;
