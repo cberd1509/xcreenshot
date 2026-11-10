@@ -1,5 +1,19 @@
 # xcreenshot
 
+## 0.10.0
+
+### Minor Changes
+
+- [#147](https://github.com/cberd1509/xcreenshot/pull/147) [`6d9246a`](https://github.com/cberd1509/xcreenshot/commit/6d9246ad5d827040ecc271aa0869884e29136244) Thanks [@cberd1509](https://github.com/cberd1509)! - The Saved toast has Open and Show in Finder buttons.
+
+### Patch Changes
+
+- [#149](https://github.com/cberd1509/xcreenshot/pull/149) [`399a5db`](https://github.com/cberd1509/xcreenshot/commit/399a5dbf3c9da03ac6eea53c74f1f0ed81e04ca7) Thanks [@cberd1509](https://github.com/cberd1509)! - Capturing on macOS uses less memory.
+
+- [#153](https://github.com/cberd1509/xcreenshot/pull/153) [`f82da0e`](https://github.com/cberd1509/xcreenshot/commit/f82da0e3463ddf67fe8d1abed4cc5534799cc98c) Thanks [@cberd1509](https://github.com/cberd1509)! - The first capture after a while is as fast as the rest.
+
+- [#148](https://github.com/cberd1509/xcreenshot/pull/148) [`3dfd60a`](https://github.com/cberd1509/xcreenshot/commit/3dfd60ae13ff329ba3838c9a4a2a55e48e57d338) Thanks [@cberd1509](https://github.com/cberd1509)! - Menu items stay readable when you hover them.
+
 ## 0.9.2
 
 ### Patch Changes
