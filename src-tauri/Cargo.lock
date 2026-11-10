@@ -6410,6 +6410,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "windows",
+ "windows-collections",
  "xcap",
 ]
 

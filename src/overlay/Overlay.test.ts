@@ -17,12 +17,15 @@ type Invoke = (
 ) => Promise<unknown>
 import Overlay from './Overlay.svelte'
 
-/** The platform the overlay sees (`isMac`). */
-const platform = vi.hoisted(() => ({ mac: false }))
+/** The platform the overlay sees (`isMac`, `isWindows`). */
+const platform = vi.hoisted(() => ({ mac: false, windows: false }))
 vi.mock('$lib/settings.svelte', async (importOriginal) => ({
   ...(await importOriginal<typeof import('$lib/settings.svelte')>()),
   get isMac() {
     return platform.mac
+  },
+  get isWindows() {
+    return platform.windows
   },
 }))
 
@@ -179,6 +182,7 @@ async function colors() {
 describe('Overlay', () => {
   beforeEach(async () => {
     platform.mac = false
+    platform.windows = false
     calls = []
     ready = null
     selected = []
@@ -1398,6 +1402,13 @@ describe('Overlay', () => {
       await userEvent.click(screen.getByRole('button', { name: 'Share' }))
       expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't share")
       expect(selection()).not.toBeNull()
+    })
+
+    it('shares on Windows too', async () => {
+      platform.windows = true
+      await annotated()
+      await userEvent.click(screen.getByRole('button', { name: 'Share' }))
+      await waitFor(() => expect(called('overlay_share')).toHaveLength(1))
     })
 
     it('has no Share button without a share sheet', async () => {

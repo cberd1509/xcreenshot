@@ -22,7 +22,7 @@
 
 <script lang="ts">
   import * as Tooltip from '$lib/components/ui/tooltip'
-  import { isMac } from '$lib/settings.svelte'
+  import { isMac, isWindows } from '$lib/settings.svelte'
   import type { Size } from '../geometry'
   import { keyLabels } from '../keys'
   import ActionBar from './ActionBar.svelte'
@@ -55,7 +55,7 @@
     options,
     actions,
     mac = isMac,
-    canShare = isMac,
+    canShare = isMac || isWindows,
   }: {
     /** The selection, in logical px on the display. */
     selection: Rect
@@ -85,7 +85,7 @@
     actions: ToolbarActions
     /** macOS: keys show as ⌘ and ⇧. */
     mac?: boolean
-    /** Whether there is a share sheet: macOS only until Windows gets one (#30). */
+    /** Whether there is a share sheet: macOS and Windows. */
     canShare?: boolean
   } = $props()
 
