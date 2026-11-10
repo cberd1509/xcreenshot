@@ -89,15 +89,15 @@ describe('fieldShortcut', () => {
     expect(fieldShortcut(el('<textarea></textarea>'), false)).toBe(true)
   })
 
-  it('gives them to a number field without reading its selection, which can throw', () => {
+  it('leaves them to the capture in a number field, without reading its selection', () => {
     const width = el('<input type="number" value="200">') as HTMLInputElement
     Object.defineProperty(width, 'selectionStart', {
       get: () => {
         throw new DOMException('no selection', 'InvalidStateError')
       },
     })
-    expect(fieldShortcut(width, true)).toBe(true)
-    expect(fieldShortcut(width, false)).toBe(true)
+    expect(fieldShortcut(width, true)).toBe(false)
+    expect(fieldShortcut(width, false)).toBe(false)
   })
 
   it('gives a one-line field only a Copy of the text selected in it', () => {

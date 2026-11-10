@@ -1,6 +1,7 @@
 <script lang="ts">
   import LockIcon from '@lucide/svelte/icons/link-2'
   import { lockedSize, type Size } from './geometry'
+  import { fieldShortcut, shortcut } from './keys'
 
   /**
    * The selection size in physical px, as two fields: type an exact size and press Enter.
@@ -49,11 +50,24 @@
     ;({ width, height } = lockedSize(side, value, ratio))
   }
 
-  function apply(e: SubmitEvent) {
-    e.preventDefault()
+  function apply() {
     const next = { width: width ?? 0, height: height ?? 0 }
     editing = false
     if (next.width >= 1 && next.height >= 1) onresize(next, lock)
+  }
+
+  function onsubmit(e: SubmitEvent) {
+    e.preventDefault()
+    apply()
+  }
+
+  // Copy and Save that go on to the capture (see `fieldShortcut`) take the size typed so far,
+  // if it changed, from a field or the lock toggle Tabbed to after one. This runs first: Svelte delegates it to the app root, below the overlay's
+  // window listener.
+  function onkeydown(e: KeyboardEvent) {
+    const copy = shortcut(e, 'c')
+    if (!(copy || shortcut(e, 's')) || fieldShortcut(e.currentTarget, copy)) return
+    if (width !== size.width || height !== size.height) apply()
   }
 
   // Leaving the form without Enter cancels the edit.
@@ -77,7 +91,7 @@
   aria-label="Selection size"
   data-testid="size-badge"
   data-size-badge
-  onsubmit={apply}
+  {onsubmit}
   {onfocusin}
   {onfocusout}
 >
@@ -91,6 +105,7 @@
     aria-label="Width"
     bind:value={width}
     oninput={() => typed('width')}
+    {onkeydown}
   />
   <button
     type="button"
@@ -102,6 +117,7 @@
     title="Lock aspect ratio"
     onclick={toggle}
     onmousedown={(e) => e.preventDefault()}
+    {onkeydown}
   >
     <LockIcon class="size-3.5" />
   </button>
@@ -115,6 +131,7 @@
     aria-label="Height"
     bind:value={height}
     oninput={() => typed('height')}
+    {onkeydown}
   />
   <span class="pr-1.5">px</span>
   <button type="submit" hidden aria-hidden="true"></button>

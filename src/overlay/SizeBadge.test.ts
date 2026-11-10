@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest'
 import SizeBadge from './SizeBadge.svelte'
 import type { Size } from './geometry'
 
+vi.mock('$lib/settings.svelte', () => ({ isMac: false }))
+
 function badge(size: Size = { width: 400, height: 200 }) {
   const onresize = vi.fn<(size: Size, keepRatio: boolean) => void>()
   const view = render(SizeBadge, { props: { size, onresize } })
@@ -51,6 +53,43 @@ describe('SizeBadge', () => {
     expect(width().value).toBe('100')
     await userEvent.type(height(), '30{Enter}')
     expect(onresize).toHaveBeenCalledWith({ width: 60, height: 30 }, true)
+  })
+
+  it('applies the typed size before Copy and Save go on', async () => {
+    const { onresize } = badge()
+    await userEvent.clear(width())
+    await userEvent.type(width(), '120')
+    expect(onresize).not.toHaveBeenCalled()
+    await userEvent.keyboard('{Control>}c{/Control}')
+    expect(onresize).toHaveBeenCalledWith({ width: 120, height: 200 }, false)
+    expect(width()).not.toHaveFocus()
+  })
+
+  it('applies it from the lock toggle, Tabbed to after an edit', async () => {
+    const { onresize } = badge()
+    await userEvent.clear(width())
+    await userEvent.type(width(), '120')
+    await userEvent.tab()
+    expect(lock()).toHaveFocus()
+    expect(onresize).not.toHaveBeenCalled()
+    await userEvent.keyboard('{Control>}s{/Control}')
+    expect(onresize).toHaveBeenCalledWith({ width: 120, height: 200 }, false)
+  })
+
+  it('applies nothing for other keys, or with nothing changed', async () => {
+    const { onresize } = badge()
+    await userEvent.click(width())
+    await userEvent.keyboard('{Control>}s{/Control}')
+    lock().focus()
+    await userEvent.keyboard('{Control>}c{/Control}')
+    // Other shortcuts leave the edit pending.
+    await userEvent.clear(height())
+    await userEvent.type(height(), '70{Control>}a{/Control}')
+    expect(height()).toHaveFocus()
+    expect(height().value).toBe('70')
+    expect(onresize).not.toHaveBeenCalled()
+    await userEvent.keyboard('{Enter}')
+    expect(onresize).toHaveBeenCalledWith({ width: 400, height: 70 }, false)
   })
 
   it('ignores an empty size', async () => {

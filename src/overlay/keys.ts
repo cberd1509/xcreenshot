@@ -25,12 +25,13 @@ export const typing = (target: EventTarget | null) =>
 
 /**
  * Whether Copy (`copy`) or Save pressed in `target` is the field's own rather than the
- * capture's. A one-line text field (the hex color) has no Save and owns only a Copy of the text
- * selected in it; other fields (a number field has no text selection to read) own both.
+ * capture's. A one-line field has no Save and owns only a Copy of the text selected in it (the
+ * hex color); other inputs (the size badge's number fields) have no text selection to read, so
+ * own neither. Text areas and editable text own both.
  */
 export function fieldShortcut(target: EventTarget | null, copy: boolean): boolean {
-  if (!(target instanceof HTMLInputElement) || !SELECTABLE.has(target.type)) return typing(target)
-  return copy && target.selectionStart !== target.selectionEnd
+  if (!(target instanceof HTMLInputElement)) return typing(target)
+  return copy && SELECTABLE.has(target.type) && target.selectionStart !== target.selectionEnd
 }
 
 /** Input types with a text selection: reading it on the others (`number`) can throw. */
