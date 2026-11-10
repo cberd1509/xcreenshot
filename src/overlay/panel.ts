@@ -2,9 +2,12 @@
 
 import { cn } from '$lib/utils'
 
-/** Bars and menus: zinc-900 on a zinc-800 border. */
+/**
+ * Bars and menus: zinc-900 on a zinc-800 border. A highlighted menu item colours its text with
+ * the accent foreground, which is dark in the light theme, so the panel sets it to zinc-50.
+ */
 export const PANEL =
-  'rounded-xl border border-zinc-800 bg-zinc-900 text-zinc-50 shadow-[0_12px_32px_rgb(0_0_0/0.35)] ring-0'
+  'rounded-xl border border-zinc-800 bg-zinc-900 text-zinc-50 shadow-[0_12px_32px_rgb(0_0_0/0.35)] ring-0 [--accent:var(--color-zinc-800)] [--accent-foreground:var(--color-zinc-50)]'
 
 /** A bar at the bottom in place of the key hint: the Quick copy bar and the quick copy tip. */
 export const BAR = cn(
