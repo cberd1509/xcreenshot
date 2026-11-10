@@ -27,7 +27,7 @@
   } from './geometry'
   import Annotator from './annotate/Annotator.svelte'
   import { outputRequest } from './annotate/output'
-  import { control, keyLabels, shortcut, typing } from './keys'
+  import { control, fieldShortcut, keyLabels, shortcut, typing } from './keys'
   import { TOAST } from './panel'
   import Magnifier from './Magnifier.svelte'
   import QuickBar from './QuickBar.svelte'
@@ -437,14 +437,15 @@
       pause(drag)
       return
     }
+    const output = shortcut(e, 'c') ? 'overlay_copy' : shortcut(e, 's') ? 'overlay_save' : null
     // Keys typed in a field (the size badge, the hex color) are its own: Enter applies there.
-    if (typing(e.target) || (e.target instanceof Element && e.target.closest('[data-size-badge]')))
-      return
+    // Copy and Save in the hex color are the capture's (see `fieldShortcut`).
+    const own = output ? fieldShortcut(e.target, output === 'overlay_copy') : typing(e.target)
+    if (own || (e.target instanceof Element && e.target.closest('[data-size-badge]'))) return
     // Enter and Space on a focused control (Save, a tool, a menu item) press that control only.
     if ((e.key === 'Enter' || e.key === ' ') && control(e.target)) return
     // Copy and Save always work, closing an open toolbar menu first, unless text is being
     // typed: then they are the text box's.
-    const output = shortcut(e, 'c') ? 'overlay_copy' : shortcut(e, 's') ? 'overlay_save' : null
     if (output && !annotator?.typingText()) {
       annotator?.closeMenus()
       if (!selection || !physical) return

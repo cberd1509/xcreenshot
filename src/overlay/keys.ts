@@ -20,6 +20,19 @@ export const typing = (target: EventTarget | null) =>
   target instanceof HTMLElement &&
   (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))
 
+/**
+ * Whether Copy (`copy`) or Save pressed in `target` is the field's own rather than the
+ * capture's. A one-line text field (the hex color) has no Save and owns only a Copy of the text
+ * selected in it; other fields (a number field has no text selection to read) own both.
+ */
+export function fieldShortcut(target: EventTarget | null, copy: boolean): boolean {
+  if (!(target instanceof HTMLInputElement) || !SELECTABLE.has(target.type)) return typing(target)
+  return copy && target.selectionStart !== target.selectionEnd
+}
+
+/** Input types with a text selection: reading it on the others (`number`) can throw. */
+const SELECTABLE = new Set(['text', 'search', 'url', 'tel', 'password'])
+
 /** Whether `target` is a control that Enter and Space press: a button, menu item or link. */
 export const control = (target: EventTarget | null) =>
   target instanceof Element &&
