@@ -39,6 +39,17 @@ pub(crate) fn on_main<R: Runtime, T: Send + 'static>(
         .map_err(|_| "the main thread did not answer".to_owned())
 }
 
+/// The window's `NSWindow`, if this is the main thread; logs why not otherwise.
+pub(crate) fn main_ns_window<R: Runtime>(window: &WebviewWindow<R>) -> Option<&NSWindow> {
+    if MainThreadMarker::new().is_none() {
+        log::error!("{} must be changed on the main thread", window.label());
+        return None;
+    }
+    ns_window(window)
+        .inspect_err(|e| log::error!("no NSWindow for {}: {e}", window.label()))
+        .ok()
+}
+
 /// The app in front, as AppKit last saw it.
 pub(crate) fn frontmost() -> Option<AppId> {
     NSWorkspace::sharedWorkspace()

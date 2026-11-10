@@ -217,19 +217,9 @@ pub(crate) fn toast_idle<R: Runtime>(window: WebviewWindow<R>, state: State<'_, 
 /// Window level, Spaces and hiding: what Tauri's builder can't set.
 #[cfg(all(target_os = "macos", not(test)))]
 mod native {
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSStatusWindowLevel, NSWindow, NSWindowCollectionBehavior};
+    use crate::macos::main_ns_window as ns_window;
+    use objc2_app_kit::{NSStatusWindowLevel, NSWindowCollectionBehavior};
     use tauri::{Runtime, WebviewWindow};
-
-    fn ns_window<R: Runtime>(window: &WebviewWindow<R>) -> Option<&NSWindow> {
-        if MainThreadMarker::new().is_none() {
-            log::error!("the toast window must be changed on the main thread");
-            return None;
-        }
-        crate::macos::ns_window(window)
-            .inspect_err(|e| log::error!("no NSWindow for the toasts: {e}"))
-            .ok()
-    }
 
     /// Above the Dock and the menu bar, on every Space and over full-screen apps, out of the
     /// window cycle, and still on screen while the app is hidden (closing the overlay hides the
