@@ -30,7 +30,9 @@
   onpointerdown={(e) => e.stopPropagation()}
 >
   <ZapIcon class="size-4 text-zinc-50" aria-hidden="true" />
-  <span><b class="font-semibold text-zinc-50">Quick copy</b> · drag to copy</span>
+  <span
+    ><b class="font-semibold text-zinc-50">Quick copy</b> · drag or double-click a window to copy</span
+  >
   <div class="h-5 w-px bg-zinc-700"></div>
   <button type="button" class="{BUTTON} px-3" onclick={annotate}>Annotate this time</button>
   <Tooltip.Provider delayDuration={300}>

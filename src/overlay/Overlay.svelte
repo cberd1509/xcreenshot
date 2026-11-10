@@ -3,6 +3,7 @@
   import { emit, listen } from '@tauri-apps/api/event'
   import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
   import { onMount } from 'svelte'
+  import { failed } from '$lib/log'
   import { setCaptureOption, settings } from '$lib/settings.svelte'
   import {
     CURSORS,
@@ -27,7 +28,7 @@
   } from './geometry'
   import Annotator from './annotate/Annotator.svelte'
   import { outputRequest } from './annotate/output'
-  import { control, fieldShortcut, keyLabels, shortcut, typing } from './keys'
+  import { control, fieldShortcut, keyLabels, modifier, shortcut, typing } from './keys'
   import { TOAST } from './panel'
   import Magnifier from './Magnifier.svelte'
   import QuickBar from './QuickBar.svelte'
@@ -60,6 +61,8 @@
   type Selected = { label: string; active: boolean; session: number; stamp: number }
   /** Broadcast to every overlay page: this capture goes on without quick copy. */
   const ANNOTATE = 'overlay:annotate'
+  /** How far (logical px) a press may move before it draws: less is a click. */
+  const CLICK_SLOP = 4
 
   type Drag =
     /** `paused`: Space was pressed before anything was drawn; the start follows the pointer. */
@@ -112,6 +115,8 @@
   let restored = $state(false)
   /** Quick copy, for this capture: the drag copies at once and there is no toolbar. */
   let quick = $state(false)
+  /** The last press started a draw on the frame, so a double-click there picks a window. */
+  let pressedFrame = false
 
   /**
    * Whether annotations show in the selection. Only then does a press outside it keep them
@@ -149,6 +154,8 @@
     if (!selection)
       return [
         ['Drag', 'select area'],
+        ['Double-click', 'window'],
+        [`${keyLabels().key} double-click`, 'full screen'],
         ['Esc', 'cancel'],
       ]
     const now = annotator?.keys() ?? { enter: null, esc: null }
@@ -316,6 +323,7 @@
 
   // Keys go to the display pressed, whoever handles the press (the annotations stop theirs).
   function onpointerdowncapture(e: PointerEvent) {
+    pressedFrame = false
     if (e.button !== 0 || idle) return
     view.setFocus().catch((err) => console.error('could not focus the overlay', err))
   }
@@ -343,6 +351,7 @@
     } else {
       select(null)
       drag = { kind: 'draw', start }
+      pressedFrame = true
     }
     // A selection stays on the display where the drag started: with the pointer captured,
     // moves keep coming here past the window's edges, and every rect is clamped to this
@@ -367,7 +376,13 @@
     const dx = pointer.x - drag.start.x
     const dy = pointer.y - drag.start.y
     if (drag.kind === 'move') return select(move(drag.origin, dx, dy, display))
-    if (drag.kind === 'draw') return select(fromPoints(drag.start, pointer, display))
+    if (drag.kind === 'draw') {
+      // A click (or the first of a double-click) that wobbles a little selects nothing.
+      if (!selection && Math.hypot(dx, dy) < CLICK_SLOP) return
+      // A drag, even as the second press of a double-click: it picks no window.
+      pressedFrame = false
+      return select(fromPoints(drag.start, pointer, display))
+    }
     const rect = (lock ? resizeLocked : resize)(drag.origin, drag.handle, dx, dy, display)
     if (!drag.keep) return select(rect)
     // It cannot shrink past the annotations shown in it; locked, it grows to keep its ratio.
@@ -381,6 +396,30 @@
     drag = null
     // Quick copy: letting go of the drag copies, as Copy does. A click selects nothing.
     if (quick && drew && physical) void finish('overlay_copy', physical)
+  }
+
+  /**
+   * Double-click on the frame: selects the window under the pointer, clipped to this display,
+   * or the whole display on the desktop, the menu bar, the Dock or the taskbar. With ⌘ (Ctrl
+   * off the Mac), always the whole display. Rust listed the windows at the hotkey, so they
+   * match the frame. With quick copy on, it copies at once, as a drag does.
+   */
+  async function ondblclick(e: MouseEvent) {
+    if (!pressedFrame || idle || (quick && busy)) return
+    const session = current
+    const whole: Rect = { x: 0, y: 0, ...display }
+    let rect = whole
+    if (!modifier(e)) {
+      const query = { session, x: e.clientX, y: e.clientY, ...display }
+      const picked = await invoke<Rect | null>('overlay_window_at', query).catch(
+        failed('overlay_window_at'),
+      )
+      rect = picked ?? whole
+    }
+    // Closed, or a new drag began while Rust answered.
+    if (session !== current || idle || drag) return
+    select(rect)
+    if (quick && physical) void finish('overlay_copy', physical)
   }
 
   /** Leaves quick copy for the rest of this capture, on every display. */
@@ -510,6 +549,7 @@
   {onpointerdown}
   {onpointermove}
   {onpointerup}
+  {ondblclick}
   onpointercancel={() => (drag = null)}
 >
   <canvas bind:this={canvas} width="0" height="0"></canvas>

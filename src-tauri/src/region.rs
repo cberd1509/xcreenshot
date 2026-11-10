@@ -77,11 +77,17 @@ impl Monitor {
 
     /// `rect` cut to this display, or `None` if nothing of it is on the display.
     pub fn clamp(&self, rect: LogicalRect) -> Option<LogicalRect> {
-        let (w, h) = (f64::from(self.width), f64::from(self.height));
-        let left = rect.x.clamp(0.0, w);
-        let top = rect.y.clamp(0.0, h);
-        let right = (rect.x + rect.width).clamp(0.0, w);
-        let bottom = (rect.y + rect.height).clamp(0.0, h);
+        rect.clamp_to(f64::from(self.width), f64::from(self.height))
+    }
+}
+
+impl LogicalRect {
+    /// This rect cut to a `w` x `h` display, or `None` if nothing of it is on it.
+    pub fn clamp_to(self, w: f64, h: f64) -> Option<LogicalRect> {
+        let left = self.x.clamp(0.0, w);
+        let top = self.y.clamp(0.0, h);
+        let right = (self.x + self.width).clamp(0.0, w);
+        let bottom = (self.y + self.height).clamp(0.0, h);
         // `!(a > b)` is also true for NaN.
         if !(right > left && bottom > top) {
             return None;

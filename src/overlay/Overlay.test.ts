@@ -40,6 +40,8 @@ let calls: { cmd: string; args: unknown }[]
 let ready: Info | null
 let frame: (args: { session: number }) => unknown
 let finished: (cmd: string) => unknown
+/** Rust's answer to a double-click (`overlay_window_at`). */
+let windowAt: (args: { session: number; x: number; y: number }) => unknown
 let context: ReturnType<typeof fakeContext>
 type Selected = { label: string; active: boolean; session: number; stamp: number }
 let selected: Selected[]
@@ -93,6 +95,16 @@ const size = () => [field('Width').value, field('Height').value].join(' × ')
 const handle = (h: string) => selection()!.querySelector(`[data-handle="${h}"]`)!
 const hint = () => [...screen.getByTestId('hint').children].map((c) => c.textContent)
 const point = ({ x, y }: At) => ({ clientX: x, clientY: y, button: 0, pointerId: 1 })
+
+/** Double-clicks at `at`, as the browser does: two clicks, then `dblclick`. */
+function dblclick(at: At, keys: { metaKey?: boolean; ctrlKey?: boolean } = {}, target?: Element) {
+  const on = target ?? overlay()
+  for (let i = 0; i < 2; i++) {
+    fireEvent.pointerDown(on, point(at))
+    fireEvent.pointerUp(on, point(at))
+  }
+  fireEvent.dblClick(on, { clientX: at.x, clientY: at.y, ...keys })
+}
 
 function drag(from: At, to: At, target: Element = overlay()) {
   fireEvent.pointerDown(target, point(from))
@@ -171,12 +183,14 @@ describe('Overlay', () => {
     selected = []
     frame = () => rgba(4, 2)
     finished = () => null
+    windowAt = () => null
     mockWindows('overlay-1')
     mockIPC(
       (cmd, args) => {
         calls.push({ cmd, args })
         if (cmd === 'overlay_ready') return ready
         if (cmd === 'overlay_frame') return frame(args as { session: number })
+        if (cmd === 'overlay_window_at') return windowAt(args as { session: number } & At)
         if (['overlay_copy', 'overlay_save', 'overlay_share'].includes(cmd)) return finished(cmd)
         if (cmd === 'set_capture_option') {
           const { key, on } = args as { key: string; on: boolean }
@@ -796,7 +810,12 @@ describe('Overlay', () => {
 
     it('shows the keys for each state at the bottom', async () => {
       await shown()
-      expect(hint()).toEqual(['Drag select area', 'Esc cancel'])
+      expect(hint()).toEqual([
+        'Drag select area',
+        'Double-click window',
+        'Ctrl double-click full screen',
+        'Esc cancel',
+      ])
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       expect(hint()).toEqual(['Enter copy', 'Ctrl+S save', 'Space move', 'Esc clear'])
       // Typing a size: Enter applies it and Esc cancels the edit.
@@ -814,6 +833,7 @@ describe('Overlay', () => {
     it('shows ⌘ in the keys on macOS', async () => {
       platform.mac = true
       await shown()
+      expect(hint()).toContain('⌘ double-click full screen')
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       expect(hint()).toContain('⌘S save')
     })
@@ -1323,6 +1343,168 @@ describe('Overlay', () => {
     })
   })
 
+  describe('double-click', () => {
+    beforeEach(() => {
+      stages.length = 0
+    })
+    const win = { x: 100, y: 50, width: 400, height: 300 }
+
+    it('selects the window under the pointer, as Rust found it', async () => {
+      windowAt = () => win
+      await shown()
+      dblclick({ x: 150, y: 80 })
+      await waitFor(() => expect(selection()).not.toBeNull())
+      expect(rect()).toEqual([100, 50, 400, 300])
+      expect(size()).toBe('800 × 600')
+      expect(called('overlay_window_at')[0].args).toEqual({
+        session: 9,
+        x: 150,
+        y: 80,
+        width: 1000,
+        height: 700,
+      })
+      // Then it is a normal selection.
+      expect(hint()).toContain('Enter copy')
+      drag({ x: 500, y: 350 }, { x: 520, y: 360 }, handle('se'))
+      expect(rect()).toEqual([100, 50, 420, 310])
+    })
+
+    it('selects the whole display when Rust has no window there', async () => {
+      await shown()
+      dblclick({ x: 10, y: 10 })
+      await waitFor(() => expect(selection()).not.toBeNull())
+      expect(rect()).toEqual([0, 0, 1000, 700])
+    })
+
+    it('selects the whole display when Rust cannot answer', async () => {
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+      windowAt = () => {
+        throw new Error('gone')
+      }
+      await shown()
+      dblclick({ x: 10, y: 10 })
+      await waitFor(() => expect(selection()).not.toBeNull())
+      expect(rect()).toEqual([0, 0, 1000, 700])
+      expect(error).toHaveBeenCalled()
+    })
+
+    it('selects the whole display with Ctrl, without asking Rust', async () => {
+      windowAt = () => win
+      await shown()
+      // ⌘ is not the modifier off the Mac: it picks the window.
+      dblclick({ x: 150, y: 80 }, { metaKey: true })
+      await waitFor(() => expect(rect()).toEqual([100, 50, 400, 300]))
+      dblclick({ x: 600, y: 600 }, { ctrlKey: true })
+      expect(rect()).toEqual([0, 0, 1000, 700])
+      expect(called('overlay_window_at')).toHaveLength(1)
+    })
+
+    it('selects the whole display with ⌘ on macOS', async () => {
+      platform.mac = true
+      windowAt = () => win
+      await shown()
+      dblclick({ x: 150, y: 80 }, { metaKey: true })
+      expect(rect()).toEqual([0, 0, 1000, 700])
+      expect(called('overlay_window_at')).toHaveLength(0)
+    })
+
+    it('replaces a selection when double-clicked outside it', async () => {
+      windowAt = () => win
+      await shown()
+      drag({ x: 600, y: 500 }, { x: 700, y: 600 })
+      dblclick({ x: 150, y: 80 })
+      await waitFor(() => expect(rect()).toEqual([100, 50, 400, 300]))
+    })
+
+    it('ignores a double-click on the selection or on a control', async () => {
+      windowAt = () => win
+      await shown()
+      drag({ x: 600, y: 500 }, { x: 700, y: 600 })
+      dblclick({ x: 650, y: 550 }, {}, selection()!)
+      dblclick({ x: 650, y: 550 }, {}, handle('se'))
+      dblclick({ x: 650, y: 550 }, {}, field('Width'))
+      await tick()
+      expect(rect()).toEqual([600, 500, 100, 100])
+      expect(called('overlay_window_at')).toHaveLength(0)
+    })
+
+    it('keeps shown annotations rather than pick a window', async () => {
+      windowAt = () => win
+      await annotated()
+      dblclick({ x: 600, y: 600 })
+      await tick()
+      expect(rect()).toEqual([10, 10, 100, 50])
+      expect(called('overlay_window_at')).toHaveLength(0)
+    })
+
+    it('drops an answer that comes after the overlay closed or a new drag began', async () => {
+      let answer!: (r: unknown) => void
+      windowAt = () => new Promise((resolve) => (answer = resolve))
+      await shown()
+      dblclick({ x: 150, y: 80 })
+      await waitFor(() => expect(called('overlay_window_at')).toHaveLength(1))
+      fireEvent.pointerDown(overlay(), point({ x: 300, y: 300 }))
+      answer(win)
+      await tick()
+      expect(selection()).toBeNull()
+      fireEvent.pointerUp(overlay(), point({ x: 300, y: 300 }))
+
+      dblclick({ x: 150, y: 80 })
+      await waitFor(() => expect(called('overlay_window_at')).toHaveLength(2))
+      await emit('overlay:closed')
+      answer(win)
+      await tick()
+      expect(selection()).toBeNull()
+    })
+
+    it('keeps a region drawn by the second press of a double-click', async () => {
+      windowAt = () => win
+      await shown()
+      fireEvent.pointerDown(overlay(), point({ x: 600, y: 500 }))
+      fireEvent.pointerUp(overlay(), point({ x: 600, y: 500 }))
+      drag({ x: 600, y: 500 }, { x: 700, y: 600 })
+      fireEvent.dblClick(overlay(), { clientX: 700, clientY: 600 })
+      await tick()
+      expect(rect()).toEqual([600, 500, 100, 100])
+      expect(called('overlay_window_at')).toHaveLength(0)
+    })
+
+    it('does not select on the wobble of a click', async () => {
+      await shown()
+      fireEvent.pointerDown(overlay(), point({ x: 10, y: 10 }))
+      fireEvent.pointerMove(overlay(), point({ x: 12, y: 11 }))
+      fireEvent.pointerUp(overlay(), point({ x: 12, y: 11 }))
+      expect(selection()).toBeNull()
+      // Past the slop, it draws from the press, and can then come back.
+      fireEvent.pointerDown(overlay(), point({ x: 10, y: 10 }))
+      fireEvent.pointerMove(overlay(), point({ x: 20, y: 20 }))
+      fireEvent.pointerMove(overlay(), point({ x: 12, y: 11 }))
+      fireEvent.pointerUp(overlay(), point({ x: 12, y: 11 }))
+      expect(rect()).toEqual([10, 10, 2, 1])
+    })
+
+    it('copies at once with quick copy on', async () => {
+      windowAt = () => win
+      await quick()
+      dblclick({ x: 150, y: 80 })
+      await waitFor(() => expect(called('overlay_copy')).toHaveLength(1))
+      expect(output('overlay_copy', 0)).toMatchObject({
+        rect: { x: 200, y: 100, width: 800, height: 600 },
+        remember: false,
+      })
+    })
+
+    it('takes no double-click while a quick copy is on its way', async () => {
+      finished = () => new Promise(() => {})
+      await quick()
+      dblclick({ x: 150, y: 80 }, { ctrlKey: true })
+      await waitFor(() => expect(called('overlay_copy')).toHaveLength(1))
+      dblclick({ x: 150, y: 80 }, { ctrlKey: true })
+      await tick()
+      expect(called('overlay_copy')).toHaveLength(1)
+    })
+  })
+
   describe('quick copy', () => {
     beforeEach(() => {
       stages.length = 0
@@ -1331,7 +1513,7 @@ describe('Overlay', () => {
     it('shows the Quick copy bar instead of the key hint', async () => {
       await quick()
       expect(bar()).toHaveTextContent(
-        'Quick copy · drag to copy Annotate this time Turn off Esc cancel',
+        'Quick copy · drag or double-click a window to copy Annotate this time Turn off Esc cancel',
       )
       expect(screen.queryByTestId('hint')).toBeNull()
     })
@@ -1444,7 +1626,12 @@ describe('Overlay', () => {
       await quick()
       await userEvent.click(screen.getByRole('button', { name: 'Annotate this time' }))
       await waitFor(() => expect(bar()).toBeNull())
-      expect(hint()).toEqual(['Drag select area', 'Esc cancel'])
+      expect(hint()).toEqual([
+        'Drag select area',
+        'Double-click window',
+        'Ctrl double-click full screen',
+        'Esc cancel',
+      ])
       drag({ x: 10, y: 10 }, { x: 110, y: 60 })
       await waitFor(() => expect(stages).toHaveLength(1))
       expect(called('overlay_copy')).toHaveLength(0)
