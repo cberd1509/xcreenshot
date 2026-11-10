@@ -54,6 +54,9 @@ pub fn run() {
                     tauri_plugin_log::TargetKind::LogDir { file_name: None },
                 ))
                 .level(log::LevelFilter::Info)
+                // About 1 MB per file: the current one plus the last 3, so a test session fits.
+                .max_file_size(1_000_000)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(3))
                 .build(),
         )
         .plugin(

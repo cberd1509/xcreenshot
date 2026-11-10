@@ -27,6 +27,22 @@ pub fn event_for(service: Option<String>) -> Event {
     service.map_or(Event::Cancelled, Event::Chosen)
 }
 
+/// `NSUserCancelledError` (3072, `FoundationErrors.h`), in `NSCocoaErrorDomain`: the user
+/// cancelled inside the service.
+const USER_CANCELLED: (&str, isize) = ("NSCocoaErrorDomain", 3072);
+
+/// What to log for `sharingService:didFailToShareItems:error:`, given the error's domain, code
+/// and description: a cancel inside the service is not a failure. A failure names its domain
+/// and code, so other kinds of cancel can be told apart later.
+pub fn failure_log(domain: &str, code: isize, description: &str) -> (log::Level, String) {
+    if (domain, code) == USER_CANCELLED {
+        (log::Level::Info, "share cancelled".into())
+    } else {
+        let message = format!("sharing failed: {description} ({domain} {code})");
+        (log::Level::Warn, message)
+    }
+}
+
 /// The levels of windows lowered for the menu, by window.
 #[derive(Debug, Default)]
 pub struct Levels {
@@ -60,6 +76,32 @@ mod tests {
     fn levels_match_appkit() {
         assert_eq!(POP_UP_MENU_LEVEL, objc2_app_kit::NSPopUpMenuWindowLevel);
         assert!(BELOW_MENUS > objc2_app_kit::NSMainMenuWindowLevel);
+    }
+
+    #[test]
+    fn a_cancel_inside_the_service_is_not_a_failure() {
+        let cancelled = "The operation was cancelled.";
+        assert_eq!(
+            failure_log("NSCocoaErrorDomain", 3072, cancelled),
+            (log::Level::Info, "share cancelled".into())
+        );
+        for (domain, code) in [("NSCocoaErrorDomain", 4), ("NSPOSIXErrorDomain", 3072)] {
+            assert_eq!(
+                failure_log(domain, code, "Nope."),
+                (
+                    log::Level::Warn,
+                    format!("sharing failed: Nope. ({domain} {code})")
+                )
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_cancel_matches_foundation() {
+        // SAFETY: a constant NSString that Foundation defines.
+        let domain = unsafe { objc2_foundation::NSCocoaErrorDomain };
+        assert_eq!(domain.to_string(), USER_CANCELLED.0);
     }
 
     #[test]
