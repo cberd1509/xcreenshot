@@ -531,6 +531,11 @@ impl Phase {
         matches!(self, Phase::Open(s) if s.dialog == Some(Dialog::Save))
     }
 
+    /// Whether the share sheet is open.
+    pub fn sharing(&self) -> bool {
+        matches!(self, Phase::Open(s) if s.dialog == Some(Dialog::Share))
+    }
+
     /// Whether the Save dialog or the share sheet is open, so Esc is theirs.
     pub fn in_dialog(&self) -> bool {
         matches!(self, Phase::Open(s) if s.dialog.is_some())
@@ -1092,11 +1097,13 @@ pub(crate) mod tests {
         assert!(!p.wants_escape(), "Esc is the sheet's");
         assert!(p.in_dialog());
         assert!(!p.saving(), "the windows stay shown");
+        assert!(p.sharing());
         assert!(!p.begin_share(7), "already sharing");
         assert!(!p.begin_save(7), "no save over the sheet");
         assert_eq!(p.saves(7), None, "no copy or share over the sheet");
         assert!(!p.end_share(6), "other session");
         assert!(p.end_share(7));
+        assert!(!p.sharing());
         assert!(!p.end_share(7), "ended once");
         assert!(p.wants_escape());
         assert!(!p.in_dialog());
@@ -1104,10 +1111,12 @@ pub(crate) mod tests {
         // Nor a share over the Save dialog.
         assert!(p.begin_save(7));
         assert!(p.in_dialog());
+        assert!(!p.sharing(), "saving");
         assert!(!p.begin_share(7));
         assert!(!Phase::Idle.begin_share(7));
         assert!(!Phase::Idle.end_share(7));
         assert!(!Phase::Idle.in_dialog());
+        assert!(!Phase::Idle.sharing());
     }
 
     #[test]
