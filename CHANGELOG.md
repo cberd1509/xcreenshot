@@ -1,5 +1,13 @@
 # xcreenshot
 
+## 0.9.2
+
+### Patch Changes
+
+- [#144](https://github.com/cberd1509/xcreenshot/pull/144) [`bb02916`](https://github.com/cberd1509/xcreenshot/commit/bb0291693ca2b71b6683e331f9a2bea4c661cb28) Thanks [@cberd1509](https://github.com/cberd1509)! - Each line is written to the log file once again, not twice.
+
+- [#144](https://github.com/cberd1509/xcreenshot/pull/144) [`bb02916`](https://github.com/cberd1509/xcreenshot/commit/bb0291693ca2b71b6683e331f9a2bea4c661cb28) Thanks [@cberd1509](https://github.com/cberd1509)! - On macOS, picking a service in the share menu no longer flashes the screen black.
+
 ## 0.9.1
 
 ### Patch Changes
