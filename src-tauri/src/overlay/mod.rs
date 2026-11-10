@@ -539,6 +539,31 @@ impl Phase {
     pub fn stalled(&self, session: u64) -> bool {
         matches!(self, Phase::Open(s) if s.id == session && s.painted.is_empty())
     }
+
+    /// The displays of `session` whose page hasn't reported its paint, to show anyway, and the
+    /// one to focus if nothing painted yet. `None` if there are none, the session closed, or
+    /// the Save dialog is open (its windows stay hidden until it closes).
+    pub fn unreported(&self, session: u64) -> Option<(Vec<u32>, Option<u32>)> {
+        let Phase::Open(s) = self else {
+            return None;
+        };
+        if s.id != session || s.dialog == Some(Dialog::Save) {
+            return None;
+        }
+        let late: Vec<u32> = s
+            .slots
+            .iter()
+            .map(|slot| slot.display)
+            .filter(|d| !s.painted.contains(d))
+            .collect();
+        let focus = s.painted.is_empty().then(|| {
+            s.focus
+                .or(s.cursor)
+                .filter(|d| late.contains(d))
+                .or(late.first().copied())
+        });
+        (!late.is_empty()).then_some((late, focus.flatten()))
+    }
 }
 
 #[cfg(test)]
@@ -916,6 +941,34 @@ pub(crate) mod tests {
             assert_eq!(p.painted(7, 2).unwrap().focus, Some(2));
             assert_eq!(p.painted(7, 1).unwrap().focus, Some(2));
         }
+    }
+
+    #[test]
+    fn unreported_displays_are_shown_late_with_focus_only_if_none_painted() {
+        let mut p = open(Some(2));
+        assert_eq!(
+            p.unreported(7),
+            Some((vec![1, 2], Some(2))),
+            "focus under the cursor"
+        );
+        assert_eq!(p.unreported(6), None, "other session");
+        assert_eq!(
+            open(None).unreported(7),
+            Some((vec![1, 2], Some(1))),
+            "else the first"
+        );
+        p.painted(7, 1);
+        assert_eq!(
+            p.unreported(7),
+            Some((vec![2], None)),
+            "focus already given"
+        );
+        assert!(p.begin_save(7));
+        assert_eq!(p.unreported(7), None, "hidden for the Save dialog");
+        p.end_save(7);
+        p.painted(7, 2);
+        assert_eq!(p.unreported(7), None, "all reported");
+        assert_eq!(Phase::Idle.unreported(7), None);
     }
 
     #[test]

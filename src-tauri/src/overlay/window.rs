@@ -39,6 +39,10 @@ const ESCAPE_EVENT: &str = "overlay:escape";
 const ESCAPE: &str = "Escape";
 /// How long the pages get to handle Esc before Rust closes the overlay itself.
 const ESCAPE_TIMEOUT: Duration = Duration::from_millis(300);
+/// A window whose page hasn't reported its paint this long after the capture is shown anyway
+/// ([`reveal_late`]): the page's own fallback (`PAINT_TIMEOUT_MS`, 200 ms) reports by then, so
+/// a later report may never come. It may flash, but the capture isn't lost.
+const REVEAL_AFTER: Duration = Duration::from_millis(300);
 /// If no window paints within this time the overlay page is broken: close everything, so a
 /// hung page never locks the user out.
 const WATCHDOG: Duration = Duration::from_secs(2);
@@ -301,9 +305,45 @@ fn finish<R: Runtime>(
     }
     let app = app.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(watchdog);
+        // Tests reveal by hand, so their sessions never change under them.
+        let reveal = if cfg!(test) {
+            watchdog
+        } else {
+            reveal_after(watchdog)
+        };
+        std::thread::sleep(reveal);
+        on_main(&app, move |app| reveal_late(app, session));
+        std::thread::sleep(watchdog - reveal);
         on_main(&app, move |app| rescue(app, session));
     });
+}
+
+/// When to show windows whose page hasn't reported its paint: [`REVEAL_AFTER`], never after
+/// the watchdog.
+fn reveal_after(watchdog: Duration) -> Duration {
+    REVEAL_AFTER.min(watchdog)
+}
+
+/// Shows `session`'s windows whose page hasn't reported its paint (see [`REVEAL_AFTER`]),
+/// focusing one if nothing painted. The watchdog still closes the overlay if no page ever
+/// reports: that page is dead.
+fn reveal_late<R: Runtime>(app: &AppHandle<R>, session: u64) {
+    let Some((displays, focus_on)) = phase(app).unreported(session) else {
+        return;
+    };
+    log::warn!(
+        "overlays {displays:?} did not report their paint within {REVEAL_AFTER:?}; showing them"
+    );
+    for d in displays {
+        let shown = app
+            .get_webview_window(&label(d))
+            .map_or(Ok(()), |w| set_shown(&w, true));
+        if let Err(e) = shown {
+            log::error!("could not show the overlay: {e}");
+            return close(app);
+        }
+    }
+    focus(app, focus_on, None);
 }
 
 /// Stages `displays`' windows for `session`'s paint. Not if a close ran first: nothing would
@@ -1425,6 +1465,39 @@ pub(crate) mod tests {
         overlay_painted(window(h, 1), h.state(), session, true);
         rescue(h, session);
         assert!(is_open(h, session), "painted in time");
+    }
+
+    #[test]
+    fn unreported_windows_are_shown_after_the_page_fallback_and_before_the_watchdog() {
+        // After the page's own 200 ms fallback (`PAINT_TIMEOUT_MS` in paint.ts).
+        assert!(REVEAL_AFTER > Duration::from_millis(200) && REVEAL_AFTER < WATCHDOG);
+        assert_eq!(reveal_after(WATCHDOG), REVEAL_AFTER);
+        assert_eq!(
+            reveal_after(Duration::ZERO),
+            Duration::ZERO,
+            "never after the watchdog"
+        );
+
+        let app = app();
+        let h = app.handle();
+        let session = open(h, &[1, 2]);
+        stage_unpainted(h, session, &[1, 2]);
+        overlay_painted(window(h, 1), h.state(), session, true);
+        reveal_late(h, session + 1);
+        assert_eq!(super::shown(h), [1], "other session");
+        reveal_late(h, session);
+        assert_eq!(super::shown(h), [1, 2], "shown though it never reported");
+        assert!(staged(h).is_empty());
+        overlay_painted(window(h, 2), h.state(), session, true);
+        assert_eq!(super::shown(h), [1, 2], "a late report changes nothing");
+
+        // Nothing reported: shown, but the watchdog still closes a dead page.
+        close(h);
+        let session = open(h, &[1]);
+        reveal_late(h, session);
+        assert_eq!(super::shown(h), [1]);
+        rescue(h, session);
+        assert!(is_idle(h));
     }
 
     #[test]

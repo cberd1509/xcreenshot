@@ -417,7 +417,9 @@ Now Rust puts each window on screen fully transparent and click-through once the
 (`NSWindow` alpha 0 on macOS, a layered window at alpha 0 on Windows). The page draws,
 waits two animation frames, and only then calls `overlay_painted`, which makes the window opaque
 and shows it. If the frames don't come within 200 ms the page reports anyway, and Rust logs
-"shown before its frame was rendered". The 2 s watchdog still closes an overlay that never paints.
+"shown before its frame was rendered". A window whose page still hasn't reported 300 ms after the
+capture is shown anyway, as #105 asks: it may flash, but the capture isn't lost. The 2 s
+watchdog still closes an overlay whose pages never report at all.
 The Save dialog hides only the windows on screen: one still staged stays staged, goes on
 rendering, and shows rendered when the dialog closes.
 
