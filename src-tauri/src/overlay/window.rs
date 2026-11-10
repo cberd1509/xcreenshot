@@ -200,9 +200,6 @@ fn start_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) -> Option<u64
         app.state::<Overlay>().idle.notify_waiters();
         return None;
     };
-    // Before any overlay window takes focus.
-    let front = focus::frontmost(app);
-    phase(app).set_front(front);
     // Before the capture, so a notice or a toast isn't in the frame; with none open it costs
     // nothing. The overlay is always on top: a notice waits until it closes.
     crate::notice::hide_for_capture(app);
@@ -232,6 +229,10 @@ fn start_with<R: Runtime>(app: &AppHandle<R>, screen: impl Screen) -> Option<u64
             WATCHDOG,
         );
     });
+    // After the capture starts, and before any overlay window takes focus. A cheap read: no
+    // system call.
+    let front = focus::frontmost(app);
+    phase(app).set_front(front);
     // Once the capture is under way, in parallel with it, so a double-click can pick a window.
     crate::pick::snapshot(app, session, &displays);
     if let Err(e) = place(app, &displays) {
@@ -1093,6 +1094,11 @@ pub(crate) mod tests {
         close(h);
         assert_eq!(fake.calls(), ["hide", "activate 7"]);
         // A second close of the same capture leaves focus alone.
+        close(h);
+        assert_eq!(fake.calls().len(), 2);
+        // Started from Settings: Settings keeps focus.
+        h.state::<focus::Focus>().activated(focus::tests::us());
+        open(h, &[1]);
         close(h);
         assert_eq!(fake.calls().len(), 2);
     }
