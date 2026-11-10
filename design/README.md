@@ -8,7 +8,7 @@ Don't edit these files by hand. Change the canvas, then sync it: ask Claude to "
 
 | Artboard | Screen |
 |---|---|
-| `Main.dc.html` | Capture overlay, region selected and annotating |
+| `Main.dc.html` | Capture overlay, region selected and annotating (Record shows only with the `record` Tweak) |
 | `WindowSelect.dc.html` | Capture overlay, ready to drag (with magnifier) |
 | `Desktop.dc.html` | Mock desktop behind the overlay mockups (not a screen) |
 | `Settings.dc.html` | Settings window |

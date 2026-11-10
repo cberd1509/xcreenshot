@@ -105,6 +105,9 @@ a{color:#2563eb}a:hover{color:#1d4ed8}
     <div style="width: 1px; height: 20px; margin: 0 4px; background: #27272a;"></div>
     <!-- record (after 1.0): split button. The main part starts recording this region; the caret
          opens the audio options, remembered between recordings. -->
+    <!-- Record (after 1.0, #120): shown only with the "record" Tweak, so the shipped design
+         and the landing page don't show it -->
+    <sc-if value="{{showRecord}}" hint-placeholder-val="{{ false }}">
     <div style="position: relative; display: flex;">
       <!-- once anything is drawn, hovering Record says the annotations won't carry over. No confirm:
            Record starts clean and the annotations are dropped. -->
@@ -114,6 +117,7 @@ a{color:#2563eb}a:hover{color:#1d4ed8}
       <button title="Record" style="height: 36px; padding: 0 12px; display: flex; align-items: center; gap: 7px; border: 0; border-radius: 8px 0 0 8px; background: #27272a; color: #fafafa; font-family: inherit; font-size: 13px; font-weight: 500;"><span aria-hidden="true" style="width: 10px; height: 10px; border-radius: 50%; background: #ef4444;"></span>Record</button>
       <button aria-label="Recording options" aria-haspopup="menu" aria-expanded="{{recordOpen}}" title="Recording options" style="width: 26px; height: 36px; display: flex; align-items: center; justify-content: center; border: 0; border-left: 1px solid #3f3f46; border-radius: 0 8px 8px 0; background: {{recordCaretBg}}; color: #a1a1aa;"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg></button>
     </div>
+    </sc-if>
     <button title="Share" style="height: 36px; padding: 0 12px; display: flex; align-items: center; gap: 6px; border: 0; border-radius: 8px; background: #27272a; color: #fafafa; font-family: inherit; font-size: 13px; font-weight: 500;"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8"></path><polyline points="16 6 12 2 8 6"></polyline><line x1="12" y1="2" x2="12" y2="15"></line></svg>Share</button>
     <!-- split buttons: the main part saves/copies at 1×; the caret opens the larger sizes -->
     <div style="display: flex;">
@@ -181,10 +185,11 @@ a{color:#2563eb}a:hover{color:#1d4ed8}
   </div>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props="{&quot;menu&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;copy&quot;,&quot;save&quot;,&quot;record&quot;,&quot;record hover&quot;,&quot;more&quot;,&quot;none&quot;],&quot;default&quot;:&quot;record&quot;},&quot;devices&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true},&quot;ink&quot;:{&quot;editor&quot;:&quot;color&quot;,&quot;default&quot;:&quot;#EF4444&quot;,&quot;options&quot;:[&quot;#EF4444&quot;,&quot;#F97316&quot;,&quot;#3B82F6&quot;,&quot;#22C55E&quot;]},&quot;selection&quot;:{&quot;editor&quot;:&quot;color&quot;,&quot;default&quot;:&quot;#3B82F6&quot;},&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900}}">
+<script type="text/x-dc" data-dc-script data-props="{&quot;menu&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;copy&quot;,&quot;save&quot;,&quot;record&quot;,&quot;record hover&quot;,&quot;more&quot;,&quot;none&quot;],&quot;default&quot;:&quot;none&quot;},&quot;record&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false},&quot;devices&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true},&quot;ink&quot;:{&quot;editor&quot;:&quot;color&quot;,&quot;default&quot;:&quot;#EF4444&quot;,&quot;options&quot;:[&quot;#EF4444&quot;,&quot;#F97316&quot;,&quot;#3B82F6&quot;,&quot;#22C55E&quot;]},&quot;selection&quot;:{&quot;editor&quot;:&quot;color&quot;,&quot;default&quot;:&quot;#3B82F6&quot;},&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900}}">
 class Component extends DCLogic {
   renderVals() {
-    const menu = this.props.menu ?? 'record';
+    const menu = this.props.menu ?? 'none';
+    const showRecord = (this.props.record ?? false) || menu === 'record' || menu === 'record hover';
     const verb = menu === 'save' ? 'Save' : 'Copy';
     const options = [2, 3, 4].map((f, i) => ({
       label: `${verb} at ${f}×`,
@@ -194,7 +199,8 @@ class Component extends DCLogic {
     return {
       ink: this.props.ink ?? '#EF4444', selection: this.props.selection ?? '#3B82F6',
       options, menuLabel: `${verb} larger`,
-      menuLeft: menu === 'save' ? '821px' : '927px',
+      menuLeft: menu === 'save' ? (showRecord ? '821px' : '695px') : (showRecord ? '927px' : '801px'),
+      showRecord,
       sizeOpen: menu === 'copy' || menu === 'save', moreOpen: menu === 'more',
       copyOpen: menu === 'copy', saveOpen: menu === 'save', recordOpen: menu === 'record',
       device: 'MacBook Pro Microphone',

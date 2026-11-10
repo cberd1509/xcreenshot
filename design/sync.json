@@ -1,12 +1,12 @@
 {
   "canvas": "https://claude.ai/artifact/RAcQ8kKKNBJCeC4Z3MriRr",
-  "version": "1794323869-40a7",
-  "syncedAt": "2026-11-10T15:18:33Z",
+  "version": "1794328810-e215",
+  "syncedAt": "2026-11-10T16:40:44Z",
   "files": {
     "AppIcon.dc.html": "72f6c195721c90f77635186b9c8426f39bbeb96157eb34cdcafc793048018bee",
     "Desktop.dc.html": "9ec3e1777dea7808f8b8a632d7d41e4640d812bbe0e4d06176df3926d24a7363",
-    "Landing.dc.html": "f9ea448ae42de3a374feea2f0cf945eb25cfcb6e93ce08d5c0c3b5dd73f148b8",
-    "Main.dc.html": "f81d0d76e124eb300f834896c46db0efa61d0e16d0ad5dafaa081d2f60cb1559",
+    "Landing.dc.html": "fd47851009dd5e83ebf95f986c0f8e986e72d552b179a583f94a0382ad605a0b",
+    "Main.dc.html": "84627227b71d217988c93599ae266fdf7c508610ea3d874b1cfa8ebc25673fca",
     "Onboarding.dc.html": "e20dc1cbcb6353981be761df7cbceec72ec429684e8d060a5ea47987e1e7bc67",
     "QuickCopy.dc.html": "088cc4e49d0f9a72371e6c66084063c6cb9533beec7db13d39c0b6e180c4d012",
     "QuickCopyTip.dc.html": "ec2a2a9d98f49b12296181cffa8ae2bea99cb9e0e83440f25da8e5cf81c142ae",
