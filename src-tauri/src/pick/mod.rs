@@ -62,7 +62,7 @@ pub fn mac_target(pid: i32, layer: i32, alpha: f64, bounds: Rect) -> Option<Targ
 }
 
 /// Window classes on Windows that are not windows to select: the taskbars and the desktop.
-const WINDOWS_SHELL: [&str; 4] = [
+pub(crate) const WINDOWS_SHELL: [&str; 4] = [
     "Shell_TrayWnd",
     "Shell_SecondaryTrayWnd",
     "Progman",

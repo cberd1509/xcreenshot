@@ -50,8 +50,8 @@ pub enum Front {
 /// What [`Focus`] has seen of the apps in front.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Seen {
-    /// The app in front now.
-    front: Option<AppId>,
+    /// Whether xcreenshot is the app in front now.
+    us_in_front: bool,
     /// The last app in front that wasn't xcreenshot: where focus goes back to.
     last: Option<AppId>,
     /// How many times another app came to the front.
@@ -61,20 +61,21 @@ pub struct Seen {
 impl Seen {
     /// `app` came to the front; `ours` is our pid.
     fn activated(&mut self, app: AppId, ours: u32) {
-        self.front = Some(app);
-        if !is_ours(&app, ours) {
+        self.us_in_front = is_ours(&app, ours);
+        if !self.us_in_front {
             self.last = Some(app);
             self.switches += 1;
         }
     }
 
-    /// Who is in front, against our own pid.
-    fn front(&self, ours: u32) -> Front {
-        match self.front {
-            Some(app) if is_ours(&app, ours) => Front::Us {
+    /// Who is in front.
+    fn front(&self) -> Front {
+        if self.us_in_front {
+            Front::Us {
                 switches: self.switches,
-            },
-            _ => Front::Other,
+            }
+        } else {
+            Front::Other
         }
     }
 }
@@ -98,8 +99,10 @@ pub enum Handback {
 
 /// `window_open` says whether one of our other windows (Settings, a notice) is on screen.
 pub fn handback(before: Front, seen: &Seen, window_open: bool) -> Handback {
+    if !window_open {
+        return Handback::Hide;
+    }
     match before {
-        _ if !window_open => Handback::Hide,
         // Still where the user started: no other app came up since.
         Front::Us { switches } if switches == seen.switches => Handback::Keep,
         // Hiding beats leaving Settings in front of an app we can't name.
@@ -167,10 +170,10 @@ impl Focus {
             .running(app.pid)
             .is_some_and(|now| app.same_launch(&now));
         if !same {
-            log::info!("the app in front before xcreenshot has quit; hiding xcreenshot");
+            log::info!("the last app the user was in has quit");
             self.apps.hide();
         } else if !self.apps.activate(&app) {
-            log::info!("the system did not activate the previous app; hiding xcreenshot");
+            log::info!("the system did not activate the last app the user was in");
             self.apps.hide();
         }
     }
@@ -180,7 +183,7 @@ impl Focus {
 /// before the capture's or the notice's window takes focus. Main thread only.
 pub fn frontmost<R: Runtime>(app: &AppHandle<R>) -> Front {
     app.try_state::<Focus>()
-        .map_or(Front::Other, |focus| focus.seen().front(std::process::id()))
+        .map_or(Front::Other, |focus| focus.seen().front())
 }
 
 /// Gives focus back after a capture or a notice, once its windows are hidden; `closing` is a
@@ -196,11 +199,7 @@ pub fn hand_back<R: Runtime>(app: &AppHandle<R>, before: Front, closing: Option<
 #[cfg(all(any(target_os = "macos", target_os = "windows"), not(test)))]
 pub fn watch<R: Runtime>(app: &AppHandle<R>) {
     let handle = app.clone();
-    let activated = move |id| {
-        if let Some(focus) = handle.try_state::<Focus>() {
-            focus.activated(id);
-        }
-    };
+    let activated = move |id| handle.state::<Focus>().activated(id);
     #[cfg(target_os = "macos")]
     crate::macos::on_activate(activated);
     #[cfg(target_os = "windows")]
@@ -212,6 +211,25 @@ pub fn watch<R: Runtime>(app: &AppHandle<R>) {
 fn unix_seconds(filetime: u64) -> f64 {
     const TICKS_TO_1970: u64 = 116_444_736_000_000_000;
     filetime.saturating_sub(TICKS_TO_1970) as f64 / 1e7
+}
+
+/// Windows window classes the shell brings to the front for a moment: the Alt-Tab switcher and
+/// the tray overflow. With the taskbars and the desktop, focus never goes back to them.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const WINDOWS_PASSING: [&str; 4] = [
+    "MultitaskingViewFrame",
+    "XamlExplorerHostIslandWindow",
+    "NotifyIconOverflowWindow",
+    "TopLevelWindowForOverflowXamlIsland",
+];
+
+/// Whether focus may go back to a Windows window of `class`: not the shell's, and not a tool
+/// window (a palette or a tray pop-up).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn returns_to(class: &str, tool_window: bool) -> bool {
+    !tool_window
+        && !crate::pick::WINDOWS_SHELL.contains(&class)
+        && !WINDOWS_PASSING.contains(&class)
 }
 
 #[cfg(all(any(target_os = "macos", target_os = "windows"), not(test)))]
@@ -251,15 +269,16 @@ impl Apps for Os {
 /// The foreground window and its process, on Windows.
 #[cfg(all(target_os = "windows", not(test)))]
 mod win {
-    use super::{AppId, unix_seconds};
+    use super::{AppId, returns_to, unix_seconds};
     use ::windows::Win32::Foundation::{CloseHandle, FILETIME, HWND};
     use ::windows::Win32::System::Threading::{
         GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use ::windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
     use ::windows::Win32::UI::WindowsAndMessaging::{
-        EVENT_SYSTEM_FOREGROUND, GetForegroundWindow, GetWindowThreadProcessId, OBJID_WINDOW,
-        SetForegroundWindow, WINEVENT_OUTOFCONTEXT,
+        EVENT_SYSTEM_FOREGROUND, GWL_EXSTYLE, GetClassNameW, GetForegroundWindow, GetWindowLongW,
+        GetWindowThreadProcessId, OBJID_WINDOW, SetForegroundWindow, WINEVENT_OUTOFCONTEXT,
+        WS_EX_TOOLWINDOW,
     };
     use std::ffi::c_void;
     use std::sync::OnceLock;
@@ -273,14 +292,34 @@ mod win {
         app_of(unsafe { GetForegroundWindow() })
     }
 
-    /// The process that owns `hwnd`, with `hwnd` to raise again.
+    /// The process that owns `hwnd`, with `hwnd` to raise again; `None` for a shell window
+    /// focus shouldn't go back to (see [`returns_to`]).
     fn app_of(hwnd: HWND) -> Option<AppId> {
         if hwnd.is_invalid() {
             return None;
         }
         let pid = owner(hwnd)?;
+        let window = Some(hwnd.0 as isize);
+        // Our own windows only need the pid: no process lookup on every overlay focus.
+        if u32::try_from(pid).is_ok_and(|p| p == std::process::id()) {
+            return Some(AppId {
+                pid,
+                launched: None,
+                window,
+            });
+        }
+        let mut class = [0u16; 64];
+        // SAFETY: these calls only read `hwnd`; `class` outlives the call.
+        let (len, ex_style) = unsafe {
+            let len = GetClassNameW(hwnd, &mut class);
+            (len, GetWindowLongW(hwnd, GWL_EXSTYLE) as u32)
+        };
+        let class = String::from_utf16_lossy(&class[..usize::try_from(len).unwrap_or(0)]);
+        if !returns_to(&class, ex_style & WS_EX_TOOLWINDOW.0 != 0) {
+            return None;
+        }
         Some(AppId {
-            window: Some(hwnd.0 as isize),
+            window,
             ..running(pid)?
         })
     }
@@ -293,26 +332,32 @@ mod win {
         i32::try_from(pid).ok().filter(|&p| p != 0)
     }
 
+    /// `pid`'s app, with no launch date if Windows won't open the process (a protected one, or
+    /// one that quit): still an app the user went to, but never one to activate.
     pub(super) fn running(pid: i32) -> Option<AppId> {
         let id = u32::try_from(pid).ok()?;
+        Some(AppId {
+            pid,
+            launched: launched(id),
+            window: None,
+        })
+    }
+
+    /// When process `pid` started, in seconds since 1970.
+    fn launched(pid: u32) -> Option<f64> {
         // SAFETY: plain calls on a handle we own and close.
-        let launched = unsafe {
-            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, id).ok()?;
-            let mut times = [FILETIME::default(); 4];
-            let [created, exited, kernel, user] = &mut times;
-            let ok = GetProcessTimes(process, created, exited, kernel, user).is_ok();
+        unsafe {
+            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+            let [mut created, mut exited, mut kernel, mut user] = [FILETIME::default(); 4];
+            let ok =
+                GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user).is_ok();
             let _ = CloseHandle(process);
             ok.then(|| {
                 let ticks =
                     (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime);
                 unix_seconds(ticks)
             })
-        };
-        Some(AppId {
-            pid,
-            launched,
-            window: None,
-        })
+        }
     }
 
     /// Raises `app`'s window, if it is still that app's.
@@ -457,9 +502,9 @@ pub(crate) mod tests {
     #[test]
     fn our_own_pid_is_us() {
         let ours = AppId { pid: 42, ..SAFARI };
-        assert_eq!(seen(&[]).front(42), Front::Other);
-        assert_eq!(seen(&[SAFARI]).front(42), Front::Other);
-        assert_eq!(seen(&[SAFARI, ours]).front(42), Front::Us { switches: 1 });
+        assert_eq!(seen(&[]).front(), Front::Other);
+        assert_eq!(seen(&[SAFARI]).front(), Front::Other);
+        assert_eq!(seen(&[SAFARI, ours]).front(), Front::Us { switches: 1 });
         // No pid (-1) is never us.
         let no_pid = AppId { pid: -1, ..SAFARI };
         assert!(!is_ours(&no_pid, u32::MAX));
@@ -577,6 +622,15 @@ pub(crate) mod tests {
         assert_eq!(unix_seconds(116_444_736_000_000_000), 0.0);
         assert_eq!(unix_seconds(116_444_736_015_000_000), 1.5);
         assert_eq!(unix_seconds(0), 0.0, "before 1970 clamps");
+    }
+
+    #[test]
+    fn focus_never_goes_back_to_the_windows_shell_or_a_tool_window() {
+        assert!(returns_to("Notepad", false));
+        assert!(!returns_to("Notepad", true));
+        for class in crate::pick::WINDOWS_SHELL.iter().chain(&WINDOWS_PASSING) {
+            assert!(!returns_to(class, false), "{class}");
+        }
     }
 
     #[test]
