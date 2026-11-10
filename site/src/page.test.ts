@@ -23,6 +23,13 @@ const $$ = (selector: string) => [...document.querySelectorAll(selector)]
 const hrefs = (selector: string) =>
   $$(`${selector} a`).map((a) => [text(a), a.getAttribute('href')])
 
+/** A copy of `el` without the parts for the other OS. */
+const seenOn = (el: Element | undefined, os: string) => {
+  const copy = el?.cloneNode(true) as Element | undefined
+  for (const part of copy?.querySelectorAll(`[data-os]:not([data-os="${os}"])`) ?? []) part.remove()
+  return copy ?? null
+}
+
 /** The "Press the shortcut" key caps for one OS. */
 const shortcut = (os: string) => $(`.step .keys[data-os="${os}"]`)
 
@@ -44,6 +51,25 @@ describe.each([
     render(release)
     expect(keys(shortcut('mac'))).toEqual(['⌃', '⇧', '⌘', 'S'])
     expect(keys(shortcut('other'))).toEqual(['PrtSc'])
+  })
+
+  it('uses the artboard copy for the steps and the settings', () => {
+    render(release)
+    const [, drag, copy] = $$('.step p')
+    for (const [os, undo] of [
+      ['mac', '⌘Z'],
+      ['other', 'Ctrl+Z'],
+    ]) {
+      expect(text(seenOn(drag, os))).toBe(
+        `Or double-click a window to take all of it. Add arrows, boxes, text, a highlighter or a blur. Undo with ${undo}.`,
+      )
+    }
+    expect(text(copy)).toBe(
+      'Paste it anywhere at the size you saw it, or at 2×, 3× or 4×. Save a PNG or share it.',
+    )
+    expect(text($('.settings .intro p'))).toBe(
+      'A handful of settings: your shortcut, quick copy for when you just need a copy, whether it remembers the last region, a magnifier for exact pixels, and whether it opens at login.',
+    )
   })
 
   it('tells Windows users to press PrtSc, with Ctrl Shift PrtSc as the fallback', () => {
