@@ -11,6 +11,8 @@ name: Release
 # Developer ID signing and notarization switch on when the APPLE_CERTIFICATE secret is set.
 # Windows builds aren't code signed yet (#103).
 # When a release is published, the updater-urls job points latest.json at the tag's download URLs.
+# A prerelease version (1.0.0-beta.0, from Changesets pre mode) is drafted as a GitHub prerelease:
+# releases/latest skips prereleases, so neither the updater nor the landing page offers it.
 
 on:
   push:
@@ -108,6 +110,8 @@ jobs:
       VERSION: ${{ needs.plan.outputs.version }}
       # windows-upload drops "(adding Windows)" once the installer is in.
       DRAFT_TITLE: xcreenshot __VERSION__ (adding Windows)
+      # 1.0.0-beta.0 and the like: keeps it out of releases/latest (the updater's endpoint).
+      PRERELEASE: ${{ contains(needs.plan.outputs.version, '-') }}
       DMG: src-tauri/target/universal-apple-darwin/release/bundle/dmg/xcreenshot_${{ needs.plan.outputs.version }}_universal.dmg
       APP: src-tauri/target/universal-apple-darwin/release/bundle/macos/xcreenshot.app
       GH_TOKEN: ${{ github.token }}
@@ -216,6 +220,7 @@ jobs:
           releaseName: ${{ env.DRAFT_TITLE }}
           releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: true
+          prerelease: ${{ env.PRERELEASE }}
           uploadUpdaterJson: ${{ steps.secrets.outputs.signed == 'true' }}
 
       # The Finder layout step can time out on hosted runners. If the app was built but the DMG
@@ -245,6 +250,7 @@ jobs:
           releaseName: ${{ env.DRAFT_TITLE }}
           releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: true
+          prerelease: ${{ env.PRERELEASE }}
           uploadUpdaterJson: ${{ steps.secrets.outputs.signed == 'true' }}
 
       - name: Report DMG layout
@@ -456,6 +462,19 @@ jobs:
       TAG: ${{ github.event.release.tag_name }}
       RELEASE_ID: ${{ github.event.release.id }}
     steps:
+      # A beta published as a full release would become releases/latest and reach every user. Fix
+      # that before the URLs below make its latest.json usable (the app refuses API URLs).
+      - name: Keep prereleases out of releases/latest
+        env:
+          PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          if [[ "$TAG" == *-* ]] && [ "$PRERELEASE" != true ]; then
+            echo "::warning::$TAG was published as a full release; marking it a prerelease." \
+              "Run Pages again if the landing page picked it up."
+            gh release edit "$TAG" --prerelease
+          elif [[ "$TAG" != *-* ]] && [ "$PRERELEASE" = true ]; then
+            echo "::warning::$TAG is a prerelease, so the updater won't offer it."
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
