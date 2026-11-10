@@ -117,6 +117,8 @@
   let quick = $state(false)
   /** The last press started a draw on the frame, so a double-click there picks a window. */
   let pressedFrame = false
+  /** Counts presses, so a window found for a double-click is dropped if another gesture began. */
+  let gesture = 0
 
   /**
    * Whether annotations show in the selection. Only then does a press outside it keep them
@@ -324,6 +326,7 @@
   // Keys go to the display pressed, whoever handles the press (the annotations stop theirs).
   function onpointerdowncapture(e: PointerEvent) {
     pressedFrame = false
+    gesture++
     if (e.button !== 0 || idle) return
     view.setFocus().catch((err) => console.error('could not focus the overlay', err))
   }
@@ -407,6 +410,7 @@
   async function ondblclick(e: MouseEvent) {
     if (!pressedFrame || idle || (quick && busy)) return
     const session = current
+    const token = gesture
     const whole: Rect = { x: 0, y: 0, ...display }
     let rect = whole
     if (!modifier(e)) {
@@ -416,8 +420,8 @@
       )
       rect = picked ?? whole
     }
-    // Closed, or a new drag began while Rust answered.
-    if (session !== current || idle || drag) return
+    // Closed, or a new drag, click or double-click began while Rust answered.
+    if (session !== current || idle || token !== gesture) return
     select(rect)
     if (quick && physical) void finish('overlay_copy', physical)
   }

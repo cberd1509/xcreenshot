@@ -1469,6 +1469,30 @@ describe('Overlay', () => {
       expect(called('overlay_window_at')).toHaveLength(0)
     })
 
+    it('drops an answer that comes after a newer click or double-click', async () => {
+      const replies: ((r: unknown) => void)[] = []
+      windowAt = () => new Promise((resolve) => replies.push(resolve))
+      await shown()
+      dblclick({ x: 150, y: 80 })
+      await waitFor(() => expect(replies).toHaveLength(1))
+      // A click: the first answer no longer counts.
+      fireEvent.pointerDown(overlay(), point({ x: 900, y: 650 }))
+      fireEvent.pointerUp(overlay(), point({ x: 900, y: 650 }))
+      replies[0](win)
+      await tick()
+      expect(selection()).toBeNull()
+
+      // Two double-clicks: only the newer one's answer selects.
+      dblclick({ x: 150, y: 80 })
+      dblclick({ x: 800, y: 600 })
+      await waitFor(() => expect(replies).toHaveLength(3))
+      replies[1](win)
+      await tick()
+      expect(selection()).toBeNull()
+      replies[2]({ x: 700, y: 500, width: 200, height: 100 })
+      await waitFor(() => expect(rect()).toEqual([700, 500, 200, 100]))
+    })
+
     it('does not select on the wobble of a click', async () => {
       await shown()
       fireEvent.pointerDown(overlay(), point({ x: 10, y: 10 }))

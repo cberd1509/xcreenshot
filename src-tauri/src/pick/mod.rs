@@ -3,10 +3,11 @@
 //! The on-screen windows are listed when the hotkey is pressed, in parallel with the capture,
 //! so they match the frozen frame ([`snapshot`]). A double-click asks for the window under the
 //! pointer ([`overlay_window_at`]): the topmost one in the list, clipped to the display. On the
-//! desktop, or on a layer that is not a window to select (menu bar, Dock, taskbar), there is
-//! none and the page selects the whole display.
+//! desktop, or outside the display's work area (the menu bar, the Dock, the taskbar), there
+//! is none and the page selects the whole display.
 //!
-//! Everything here is pure except the listing, which is in `macos.rs` and `windows.rs`.
+//! Everything here is pure except the listing and the work areas, in `macos.rs` and
+//! `windows.rs`.
 //! Rects are in the displays' OS units (points on macOS, pixels on Windows; see
 //! `capture::Display`), the same space as the window bounds the OS reports.
 
@@ -19,8 +20,8 @@ use crate::capture::{Bounds, Display, Rect};
 use crate::overlay::display_id;
 use crate::region::LogicalRect;
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
-use std::time::Instant;
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, Runtime, WebviewWindow};
 
 /// Whether `r` has a size; false for NaN.
@@ -49,7 +50,8 @@ const DOCK_LAYER: i32 = 20;
 /// windows (layers 0 to 19). `None` for one of ours, an invisible one, one with no size, and
 /// the layers above and below windows. Those are left out rather than kept as unselectable:
 /// the Dock has a transparent full-screen window above every app, which would hide them all.
-/// The menu bar and the Dock cover no window, so a double-click there finds none.
+/// The visible menu bar and Dock are outside the display's work area instead (see
+/// [`work_area`]).
 pub fn mac_target(pid: i32, layer: i32, alpha: f64, bounds: Rect) -> Option<Target> {
     let ours = u32::try_from(pid).is_ok_and(|pid| pid == std::process::id());
     let window = (0..DOCK_LAYER).contains(&layer);
@@ -82,24 +84,56 @@ pub fn windows_target(class: &str, passive: bool, bounds: Rect) -> Option<Target
     })
 }
 
-/// The window a double-click at `point` selects on `display`, whose page is `size` logical
-/// px: the topmost one under it, clipped to the display, in the page's logical px. `None` on
-/// the desktop or a layer that is not a window to select (the page selects the whole display),
-/// or if `size` is not a size.
+/// A display as a double-click sees it: its bounds and its work area, the part windows may
+/// cover (without the menu bar and the Dock, or the taskbar), both in OS units. `work` is
+/// `None` if the OS did not say.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Screen {
+    pub id: u32,
+    pub bounds: Bounds,
+    pub work: Option<Rect>,
+}
+
+/// The work area of `display` in its OS units, from the OS's frame and visible (work) rect of
+/// that screen. Those two can be in another space with the same scale, with its origin at the
+/// bottom-left if `y_up` (AppKit); only the insets between them are used.
+pub fn work_area(display: Bounds, frame: Rect, visible: Rect, y_up: bool) -> Rect {
+    let top = if y_up {
+        (frame.y + frame.height) - (visible.y + visible.height)
+    } else {
+        visible.y - frame.y
+    };
+    Rect {
+        x: f64::from(display.x) + visible.x - frame.x,
+        y: f64::from(display.y) + top,
+        width: visible.width,
+        height: visible.height,
+    }
+}
+
+/// The window a double-click at `point` selects on `screen`, whose page is `size` logical px:
+/// the topmost one under it, clipped to the display, in the page's logical px. `None` (the
+/// page selects the whole display) on the desktop, a layer that is not a window to select, or
+/// outside the work area; and if `size` is not a size.
 pub(crate) fn window_at(
     targets: &[Target],
-    display: Bounds,
+    screen: &Screen,
     size: (f64, f64),
     point: (f64, f64),
 ) -> Option<LogicalRect> {
     if !(size.0.is_finite() && size.1.is_finite() && size.0 > 0.0 && size.1 > 0.0) {
         return None;
     }
+    let display = screen.bounds;
     // OS units per logical px: 1 on macOS, the display's scale on Windows.
     let sx = f64::from(display.width) / size.0;
     let sy = f64::from(display.height) / size.1;
     let (left, top) = (f64::from(display.x), f64::from(display.y));
     let (x, y) = (left + point.0 * sx, top + point.1 * sy);
+    // On the menu bar, the Dock or the taskbar.
+    if screen.work.is_some_and(|w| !contains(&w, x, y)) {
+        return None;
+    }
     let hit = targets
         .iter()
         .find(|t| contains(&t.bounds, x, y))
@@ -114,11 +148,35 @@ pub(crate) fn window_at(
     .clamp_to(size.0, size.1)
 }
 
+/// A window list being made on another thread.
+#[derive(Default)]
+struct Listed {
+    targets: Mutex<Option<Vec<Target>>>,
+    ready: Condvar,
+}
+
+impl Listed {
+    fn set(&self, targets: Vec<Target>) {
+        *self.targets.lock().unwrap_or_else(PoisonError::into_inner) = Some(targets);
+        self.ready.notify_all();
+    }
+
+    /// `pick` on the list, waiting up to `timeout` for it; `None` if it is not ready by then.
+    fn with<T>(&self, timeout: Duration, pick: impl FnOnce(&[Target]) -> T) -> Option<T> {
+        let targets = self.targets.lock().unwrap_or_else(PoisonError::into_inner);
+        let (targets, _) = self
+            .ready
+            .wait_timeout_while(targets, timeout, |t| t.is_none())
+            .unwrap_or_else(PoisonError::into_inner);
+        targets.as_deref().map(pick)
+    }
+}
+
 /// One capture's window list. It is listed on its own thread; asks wait for it.
 struct Snapshot {
     session: u64,
-    displays: Vec<Display>,
-    targets: Arc<OnceLock<Vec<Target>>>,
+    screens: Vec<Screen>,
+    targets: Arc<Listed>,
 }
 
 /// The window list of the latest capture, managed by the app.
@@ -131,13 +189,13 @@ impl Windows {
     pub fn begin(
         &self,
         session: u64,
-        displays: &[Display],
+        screens: Vec<Screen>,
         list: impl FnOnce() -> Vec<Target> + Send + 'static,
     ) {
-        let targets = Arc::new(OnceLock::new());
+        let targets = Arc::new(Listed::default());
         *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(Snapshot {
             session,
-            displays: displays.to_vec(),
+            screens,
             targets: Arc::clone(&targets),
         });
         std::thread::spawn(move || {
@@ -148,17 +206,47 @@ impl Windows {
                 listed.len(),
                 started.elapsed().as_secs_f64() * 1000.0
             );
-            let _ = targets.set(listed);
+            targets.set(listed);
         });
     }
 
-    /// The bounds of `display` in `session` and that capture's list, which may still be in
-    /// the making. `None` for another session or display.
-    fn find(&self, session: u64, display: u32) -> Option<(Bounds, Arc<OnceLock<Vec<Target>>>)> {
+    /// `display` in `session` and that capture's list, which may still be in the making.
+    /// `None` for another session or display.
+    fn find(&self, session: u64, display: u32) -> Option<(Screen, Arc<Listed>)> {
         let snapshot = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let s = snapshot.as_ref().filter(|s| s.session == session)?;
-        let d = s.displays.iter().find(|d| d.id == display)?;
-        Some((d.bounds, Arc::clone(&s.targets)))
+        let screen = s.screens.iter().find(|d| d.id == display)?;
+        Some((*screen, Arc::clone(&s.targets)))
+    }
+
+    /// The window a double-click at `point` on `display` selects in `session` (see
+    /// [`window_at`]). A list still in the making is waited for off the async runtime's
+    /// workers, for up to `deadline`; after that, or for another session, `None`.
+    async fn window_at(
+        &self,
+        session: u64,
+        display: u32,
+        size: (f64, f64),
+        point: (f64, f64),
+        deadline: Duration,
+    ) -> Option<LogicalRect> {
+        let (screen, targets) = self.find(session, display)?;
+        let pick = move |targets: &[Target]| window_at(targets, &screen, size, point);
+        if let Some(picked) = targets.with(Duration::ZERO, pick) {
+            return picked;
+        }
+        let waited = tauri::async_runtime::spawn_blocking(move || targets.with(deadline, pick));
+        match waited.await {
+            Ok(Some(picked)) => picked,
+            Ok(None) => {
+                log::warn!("the window list was not ready in {deadline:?}: whole display");
+                None
+            }
+            Err(e) => {
+                log::error!("could not wait for the window list: {e}");
+                None
+            }
+        }
     }
 }
 
@@ -172,16 +260,39 @@ pub fn list() -> Vec<Target> {
     Vec::new()
 }
 
-/// Lists the windows for a capture that just started on `displays`, while it runs.
+/// Each display's work area, as the OS reports it now (see [`Screen`]).
+fn screens(displays: &[Display]) -> Vec<Screen> {
+    #[cfg(target_os = "macos")]
+    let work = macos::work_areas(displays);
+    #[cfg(target_os = "windows")]
+    let work = windows::work_areas(displays);
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let work = vec![None; displays.len()];
+    displays
+        .iter()
+        .zip(work)
+        .map(|(d, work)| Screen {
+            id: d.id,
+            bounds: d.bounds,
+            work,
+        })
+        .collect()
+}
+
+/// Lists the windows for a capture that just started on `displays`, while it runs. Called
+/// from the hotkey, on the main thread, where macOS answers for its screens.
 pub(crate) fn snapshot<R: Runtime>(app: &AppHandle<R>, session: u64, displays: &[Display]) {
     if let Some(windows) = app.try_state::<Windows>() {
-        windows.begin(session, displays, list);
+        windows.begin(session, screens(displays), list);
     }
 }
 
+/// How long a double-click waits for a window list still being made, before it selects the
+/// whole display. The list takes about a millisecond.
+const LIST_DEADLINE: Duration = Duration::from_millis(300);
+
 /// The window a double-click at (`x`, `y`) selects on the calling overlay's display, in its
-/// logical px; the page is `width` x `height` of them. `None`: the whole display. A list still
-/// in the making is waited for off the async runtime's workers.
+/// logical px; the page is `width` x `height` of them. `None`: the whole display.
 #[tauri::command]
 pub(crate) async fn overlay_window_at<R: Runtime>(
     window: WebviewWindow<R>,
@@ -192,17 +303,12 @@ pub(crate) async fn overlay_window_at<R: Runtime>(
     width: f64,
     height: f64,
 ) -> Result<Option<LogicalRect>, ()> {
-    let Some((bounds, targets)) = display_id(window.label()).and_then(|d| state.find(session, d))
-    else {
+    let Some(display) = display_id(window.label()) else {
         return Ok(None);
     };
-    let pick = move |targets: &[Target]| window_at(targets, bounds, (width, height), (x, y));
-    if let Some(listed) = targets.get() {
-        return Ok(pick(listed));
-    }
-    tauri::async_runtime::spawn_blocking(move || pick(targets.wait()))
-        .await
-        .map_err(|e| log::error!("could not wait for the window list: {e}"))
+    Ok(state
+        .window_at(session, display, (width, height), (x, y), LIST_DEADLINE)
+        .await)
 }
 
 #[cfg(test)]
@@ -250,6 +356,78 @@ mod tests {
     };
     const PAGE: (f64, f64) = (1440.0, 900.0);
 
+    /// `bounds` as a screen with no work area reported.
+    fn on(bounds: Bounds) -> Screen {
+        Screen {
+            id: 1,
+            bounds,
+            work: None,
+        }
+    }
+
+    #[test]
+    fn the_menu_bar_and_the_dock_are_outside_the_work_area() {
+        // AppKit: the main screen is 1440 x 900 with a 25 pt menu bar and an 80 pt Dock below;
+        // the frame starts at the bottom-left.
+        let work = work_area(
+            MAIN,
+            rect(0.0, 0.0, 1440.0, 900.0),
+            rect(0.0, 80.0, 1440.0, 795.0),
+            true,
+        );
+        assert_eq!(work, rect(0.0, 25.0, 1440.0, 795.0));
+        // A window under the menu bar and the Dock, and the Dock's invisible full-screen
+        // window already left out.
+        let screen = Screen {
+            work: Some(work),
+            ..on(MAIN)
+        };
+        let targets = [window(0.0, 0.0, 1440.0, 900.0)];
+        let page = Some(area(0.0, 0.0, 1440.0, 900.0));
+        assert_eq!(
+            window_at(&targets, &screen, PAGE, (700.0, 10.0)),
+            None,
+            "menu bar"
+        );
+        assert_eq!(
+            window_at(&targets, &screen, PAGE, (700.0, 860.0)),
+            None,
+            "Dock"
+        );
+        assert_eq!(
+            window_at(&targets, &screen, PAGE, (700.0, 400.0)),
+            page,
+            "inside"
+        );
+    }
+
+    #[test]
+    fn the_taskbar_is_outside_the_work_area_of_any_display() {
+        // Windows: a 150% display to the right, a 72 px taskbar at its bottom, frames in the
+        // same space as the display bounds.
+        let display = Bounds {
+            x: 2880,
+            y: 0,
+            width: 2880,
+            height: 1620,
+        };
+        let work = work_area(
+            display,
+            rect(2880.0, 0.0, 2880.0, 1620.0),
+            rect(2880.0, 0.0, 2880.0, 1548.0),
+            false,
+        );
+        assert_eq!(work, rect(2880.0, 0.0, 2880.0, 1548.0));
+        let screen = Screen {
+            work: Some(work),
+            ..on(display)
+        };
+        let targets = [window(2880.0, 0.0, 2880.0, 1620.0)];
+        let size = (1920.0, 1080.0);
+        assert_eq!(window_at(&targets, &screen, size, (100.0, 1070.0)), None);
+        assert!(window_at(&targets, &screen, size, (100.0, 1000.0)).is_some());
+    }
+
     #[test]
     fn picks_the_topmost_window_under_the_point() {
         let targets = [
@@ -257,18 +435,18 @@ mod tests {
             window(0.0, 0.0, 800.0, 600.0),
         ];
         assert_eq!(
-            window_at(&targets, MAIN, PAGE, (150.0, 150.0)),
+            window_at(&targets, &on(MAIN), PAGE, (150.0, 150.0)),
             Some(area(100.0, 100.0, 300.0, 200.0)),
             "the front window"
         );
         assert_eq!(
-            window_at(&targets, MAIN, PAGE, (500.0, 500.0)),
+            window_at(&targets, &on(MAIN), PAGE, (500.0, 500.0)),
             Some(area(0.0, 0.0, 800.0, 600.0)),
             "the one behind, where the front one is not"
         );
         // The right and bottom edges are outside.
         assert_eq!(
-            window_at(&targets, MAIN, PAGE, (400.0, 150.0)),
+            window_at(&targets, &on(MAIN), PAGE, (400.0, 150.0)),
             Some(area(0.0, 0.0, 800.0, 600.0))
         );
     }
@@ -280,23 +458,27 @@ mod tests {
             window(0.0, 0.0, 800.0, 600.0),
         ];
         assert_eq!(
-            window_at(&targets, MAIN, PAGE, (10.0, 10.0)),
+            window_at(&targets, &on(MAIN), PAGE, (10.0, 10.0)),
             None,
             "menu bar over a window"
         );
         assert_eq!(
-            window_at(&targets, MAIN, PAGE, (1000.0, 700.0)),
+            window_at(&targets, &on(MAIN), PAGE, (1000.0, 700.0)),
             None,
             "desktop"
         );
-        assert_eq!(window_at(&[], MAIN, PAGE, (10.0, 10.0)), None, "no windows");
+        assert_eq!(
+            window_at(&[], &on(MAIN), PAGE, (10.0, 10.0)),
+            None,
+            "no windows"
+        );
     }
 
     #[test]
     fn a_window_is_clipped_to_the_display() {
         let targets = [window(-50.0, 800.0, 400.0, 300.0)];
         assert_eq!(
-            window_at(&targets, MAIN, PAGE, (10.0, 850.0)),
+            window_at(&targets, &on(MAIN), PAGE, (10.0, 850.0)),
             Some(area(0.0, 800.0, 350.0, 100.0))
         );
     }
@@ -312,11 +494,11 @@ mod tests {
         };
         let targets = [window(-500.0, 0.0, 1000.0, 400.0)];
         assert_eq!(
-            window_at(&targets, left, (1920.0, 1080.0), (1600.0, 300.0)),
+            window_at(&targets, &on(left), (1920.0, 1080.0), (1600.0, 300.0)),
             Some(area(1420.0, 200.0, 500.0, 400.0))
         );
         assert_eq!(
-            window_at(&targets, MAIN, PAGE, (10.0, 10.0)),
+            window_at(&targets, &on(MAIN), PAGE, (10.0, 10.0)),
             Some(area(0.0, 0.0, 500.0, 400.0))
         );
     }
@@ -332,7 +514,7 @@ mod tests {
         };
         let targets = [window(3030.0, 150.0, 600.0, 300.0)];
         assert_eq!(
-            window_at(&targets, display, (1920.0, 1080.0), (150.0, 150.0)),
+            window_at(&targets, &on(display), (1920.0, 1080.0), (150.0, 150.0)),
             Some(area(100.0, 100.0, 400.0, 200.0))
         );
     }
@@ -345,7 +527,11 @@ mod tests {
             (f64::NAN, 900.0),
             (f64::INFINITY, 900.0),
         ] {
-            assert_eq!(window_at(&[], MAIN, size, (1.0, 1.0)), None, "{size:?}");
+            assert_eq!(
+                window_at(&[], &on(MAIN), size, (1.0, 1.0)),
+                None,
+                "{size:?}"
+            );
         }
     }
 
@@ -394,13 +580,8 @@ mod tests {
         );
     }
 
-    fn display(id: u32) -> Display {
-        Display { id, bounds: MAIN }
-    }
-
-    #[test]
-    fn listed_windows_have_a_size() {
-        assert!(list().iter().all(|t| has_size(&t.bounds)));
+    fn screen(id: u32) -> Screen {
+        Screen { id, ..on(MAIN) }
     }
 
     type Mock = tauri::test::MockRuntime;
@@ -412,69 +593,109 @@ mod tests {
             .unwrap()
     }
 
-    fn page(app: &tauri::App<Mock>, label: &str) -> WebviewWindow<Mock> {
-        tauri::WebviewWindowBuilder::new(app.handle(), label, Default::default())
-            .build()
-            .unwrap()
+    /// The answer for a double-click at (1, 1) on display 1.
+    fn ask(
+        windows: &Windows,
+        session: u64,
+        display: u32,
+        deadline: Duration,
+    ) -> Option<LogicalRect> {
+        tauri::async_runtime::block_on(windows.window_at(
+            session,
+            display,
+            PAGE,
+            (1.0, 1.0),
+            deadline,
+        ))
     }
 
-    /// The calling page's answer for a double-click at (1, 1).
-    fn ask(handle: &AppHandle<Mock>, w: WebviewWindow<Mock>, session: u64) -> Option<LogicalRect> {
-        let state = handle.state::<Windows>();
-        tauri::async_runtime::block_on(overlay_window_at(
-            w, state, session, 1.0, 1.0, 1440.0, 900.0,
-        ))
-        .unwrap()
-    }
+    const LONG: Duration = Duration::from_secs(5);
 
     #[test]
     fn a_double_click_waits_for_its_session_s_list() {
-        let app = app();
-        let handle = app.handle().clone();
-        let overlay = page(&app, "overlay-1");
-        assert_eq!(ask(&handle, overlay.clone(), 2), None, "nothing listed");
+        let windows = Arc::new(Windows::default());
+        assert_eq!(ask(&windows, 2, 1, LONG), None, "nothing listed");
         let (tx, rx) = std::sync::mpsc::channel::<()>();
-        handle.state::<Windows>().begin(2, &[display(1)], move || {
+        windows.begin(2, vec![screen(1)], move || {
             rx.recv().unwrap();
             vec![window(0.0, 0.0, 10.0, 10.0)]
         });
-        assert_eq!(ask(&handle, overlay.clone(), 1), None, "older session");
-        assert_eq!(
-            ask(&handle, page(&app, "overlay-9"), 2),
-            None,
-            "unknown display"
-        );
-        assert_eq!(
-            ask(&handle, page(&app, "settings"), 2),
-            None,
-            "not an overlay"
-        );
+        assert_eq!(ask(&windows, 1, 1, LONG), None, "older session");
+        assert_eq!(ask(&windows, 2, 9, LONG), None, "unknown display");
         // Answered once the list is in, and at once after that.
         let asked = std::thread::spawn({
-            let (handle, overlay) = (handle.clone(), overlay.clone());
-            move || ask(&handle, overlay, 2)
+            let windows = Arc::clone(&windows);
+            move || ask(&windows, 2, 1, LONG)
         });
         tx.send(()).unwrap();
         let picked = Some(area(0.0, 0.0, 10.0, 10.0));
         assert_eq!(asked.join().unwrap(), picked);
-        assert_eq!(ask(&handle, overlay, 2), picked);
+        assert_eq!(ask(&windows, 2, 1, Duration::ZERO), picked);
+    }
+
+    #[test]
+    fn a_list_late_past_the_deadline_selects_the_whole_display() {
+        let windows = Windows::default();
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        windows.begin(1, vec![screen(1)], move || {
+            let _ = rx.recv();
+            vec![window(0.0, 0.0, 10.0, 10.0)]
+        });
+        let started = Instant::now();
+        assert_eq!(ask(&windows, 1, 1, Duration::from_millis(20)), None);
+        assert!(started.elapsed() < LONG, "gave up at the deadline");
+        drop(tx);
     }
 
     #[test]
     fn a_failed_list_finds_no_window() {
-        let app = app();
-        app.state::<Windows>()
-            .begin(1, &[display(1)], || panic!("no windows"));
-        assert_eq!(ask(app.handle(), page(&app, "overlay-1"), 1), None);
+        let windows = Windows::default();
+        windows.begin(1, vec![screen(1)], || panic!("no windows"));
+        assert_eq!(ask(&windows, 1, 1, LONG), None);
     }
 
     #[test]
-    fn a_capture_lists_the_windows_if_the_app_keeps_them() {
+    fn the_command_answers_for_the_calling_overlay_only() {
         let app = app();
-        snapshot(app.handle(), 3, &[display(1)]);
-        assert!(app.state::<Windows>().find(3, 1).is_some());
+        let handle = app.handle();
+        handle
+            .state::<Windows>()
+            .begin(3, vec![screen(1)], || vec![window(0.0, 0.0, 10.0, 10.0)]);
+        let call = |label: &str| {
+            let w = tauri::WebviewWindowBuilder::new(handle, label, Default::default())
+                .build()
+                .unwrap();
+            tauri::async_runtime::block_on(overlay_window_at(
+                w,
+                handle.state::<Windows>(),
+                3,
+                1.0,
+                1.0,
+                1440.0,
+                900.0,
+            ))
+            .unwrap()
+        };
+        assert_eq!(call("overlay-1"), Some(area(0.0, 0.0, 10.0, 10.0)));
+        assert_eq!(call("settings"), None, "not an overlay");
+    }
+
+    #[test]
+    fn a_capture_lists_this_machine_s_windows_for_its_displays() {
+        let app = app();
+        let display = Display {
+            id: 4,
+            bounds: MAIN,
+        };
+        snapshot(app.handle(), 3, &[display]);
+        let windows = app.state::<Windows>();
+        let (screen, targets) = windows.find(3, 4).unwrap();
+        assert_eq!((screen.id, screen.bounds), (4, MAIN));
+        // Whatever is on screen, the list is made, and every window in it has a size.
+        let listed = targets.with(LONG, |t| t.iter().all(|t| has_size(&t.bounds)));
+        assert_eq!(listed, Some(true));
         // Without the state, a capture lists nothing and never fails.
         let bare = mock_builder().build(mock_context(noop_assets())).unwrap();
-        snapshot(bare.handle(), 1, &[display(1)]);
+        snapshot(bare.handle(), 1, &[display]);
     }
 }
