@@ -11,13 +11,12 @@ use objc2::{
     ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel,
 };
 use objc2_app_kit::{
-    NSSharingService, NSSharingServiceDelegate, NSSharingServicePicker,
-    NSSharingServicePickerDelegate, NSWindow,
+    NSImage, NSSharingContentScope, NSSharingService, NSSharingServiceDelegate,
+    NSSharingServicePicker, NSSharingServicePickerDelegate, NSWindow,
 };
 use objc2_foundation::{NSArray, NSError, NSPoint, NSRect, NSRectEdge, NSSize, NSString, NSURL};
 use std::cell::RefCell;
 use std::path::Path;
-use std::sync::mpsc;
 use std::time::Instant;
 use tauri::{Runtime, WebviewWindow};
 
@@ -26,24 +25,12 @@ thread_local! {
     static LEVELS: RefCell<Levels> = RefCell::default();
 }
 
-/// Runs `f` on the main thread and waits for it, or runs it directly when already there.
+/// [`crate::macos::on_main`], failing as a window error.
 fn on_main<R: Runtime, T: Send + 'static>(
     window: &WebviewWindow<R>,
     f: impl FnOnce(&WebviewWindow<R>, MainThreadMarker) -> T + Send + 'static,
 ) -> Result<T, ShareError> {
-    if let Some(mtm) = MainThreadMarker::new() {
-        return Ok(f(window, mtm));
-    }
-    let (tx, rx) = mpsc::channel();
-    let target = window.clone();
-    window
-        .run_on_main_thread(move || {
-            let mtm = MainThreadMarker::new().expect("on the main thread");
-            let _ = tx.send(f(&target, mtm));
-        })
-        .map_err(|e| ShareError::Window(e.to_string()))?;
-    rx.recv()
-        .map_err(|_| ShareError::Window("the main thread did not answer".into()))
+    crate::macos::on_main(window, f).map_err(ShareError::Window)
 }
 
 pub fn show<R: Runtime>(
@@ -203,6 +190,31 @@ define_class!(
         fn did_fail(&self, _service: &NSSharingService, _items: &NSArray, error: &NSError) {
             log::warn!("sharing failed: {}", error.localizedDescription());
             self.handle(Event::Finished);
+        }
+
+        /// No window: the service shows its UI in its own window. By default it hangs a sheet
+        /// on the picker's window, the overlay, which closed as the service was chosen; AppKit
+        /// would bring it back unpainted, a black screen (#118).
+        #[unsafe(method_id(sharingService:sourceWindowForShareItems:sharingContentScope:))]
+        fn source_window(
+            &self,
+            _service: &NSSharingService,
+            _items: &NSArray,
+            _scope: *mut NSSharingContentScope,
+        ) -> Option<Retained<NSWindow>> {
+            None
+        }
+
+        /// No image, so no zoom from the overlay into the service's window: it would be drawn
+        /// from the closed overlay, which is black by then (#118).
+        #[unsafe(method_id(sharingService:transitionImageForShareItem:contentRect:))]
+        fn transition_image(
+            &self,
+            _service: &NSSharingService,
+            _item: &AnyObject,
+            _rect: *mut NSRect,
+        ) -> Option<Retained<NSImage>> {
+            None
         }
     }
 );

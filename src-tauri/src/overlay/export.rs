@@ -33,7 +33,7 @@ use crate::output::compose::{self, Layer, Marks};
 use crate::output::{self, Clipboard, Target};
 use crate::prefs;
 use crate::region::{self, Region};
-use crate::share::{self, OnDone, ShareError, ShareOutcome};
+use crate::share::{self, OnDone, Opened, ShareError, ShareOutcome};
 use crate::toast::{self, Toast};
 use chrono::NaiveDateTime;
 use image::{ImageBuffer, RgbaImage};
@@ -283,7 +283,7 @@ pub(crate) async fn overlay_save<R: Runtime>(
     let default_dir = output::default_dir(paths.desktop_dir().ok(), paths.picture_dir().ok());
     let now = chrono::Local::now().naive_local();
     let remember = remember_in(&app);
-    let saver = OsSaver(app);
+    let saver = OsSaver(window.clone());
     save_with(&window, &state, &out, saver, now, default_dir, remember).await
 }
 
@@ -499,10 +499,11 @@ fn os_sheet<R: Runtime>() -> ShowSheet<R> {
     Box::new(|w, png, anchor, done| share::share_png(w, png, anchor, done))
 }
 
-/// Shows the share sheet for a PNG under an anchor and returns once it is open
-/// (`share::share_png`). Faked in tests.
-pub(crate) type ShowSheet<R> =
-    Box<dyn FnOnce(&WebviewWindow<R>, &[u8], share::Rect, OnDone) -> Result<(), ShareError> + Send>;
+/// Shows the share sheet for a PNG under an anchor and returns once it is open, with how long
+/// that took (`share::share_png`). Faked in tests.
+pub(crate) type ShowSheet<R> = Box<
+    dyn FnOnce(&WebviewWindow<R>, &[u8], share::Rect, OnDone) -> Result<Opened, ShareError> + Send,
+>;
 
 async fn share_with<R: Runtime>(
     window: &WebviewWindow<R>,
@@ -524,12 +525,17 @@ async fn share_with<R: Runtime>(
     else {
         return Ok(());
     };
+    let started = Instant::now();
     let image = annotated(&frame, out)?;
     drop(frame);
+    let mut steps = Steps::default();
+    let cropped = steps.done("crop", started);
+    let size = image.dimensions();
     // The same PNG a save writes: the services read it from the temp file.
     let png = spawn_blocking(move || capture::encode_png(&image, density))
         .await
         .unwrap_or_else(|e| Err(CaptureError::Encode(e.to_string())))?;
+    steps.done("encode", cropped);
     if !state.phase().begin_share(session) {
         return Ok(());
     }
@@ -548,14 +554,18 @@ async fn share_with<R: Runtime>(
     let shown = spawn_blocking(move || show(&sheet, &png, anchor, done))
         .await
         .unwrap_or_else(|e| Err(ShareError::Window(e.to_string())));
-    shown.map_err(|e| {
-        log::error!("{e}");
+    let opened = shown.map_err(|e| {
+        log::error!("{e} ({steps})");
         // Ended now, so a retry right after the error is not turned away; Esc follows.
         if state.phase().end_share(session) {
             on_main(&app, take_escape_back);
         }
         CaptureError::Share(e.to_string())
-    })
+    })?;
+    steps.add("write", opened.write);
+    steps.add("picker", opened.picker);
+    log::info!("share sheet open for {}x{} px ({steps})", size.0, size.1);
+    Ok(())
 }
 
 /// The share sheet closed (main thread). A chosen service closes the overlay, leaving the app
@@ -615,9 +625,16 @@ pub(crate) trait Saver: Send + Sync + 'static {
 
 // ---- OS calls only below. ----
 
-struct OsSaver<R: Runtime>(AppHandle<R>);
+/// The calling overlay window: the dialog is centred on its display.
+struct OsSaver<R: Runtime>(WebviewWindow<R>);
 
 impl<R: Runtime> Saver for OsSaver<R> {
+    #[cfg(all(target_os = "macos", not(test)))]
+    fn ask(&self, dir: Option<PathBuf>, name: &str) -> Result<Option<PathBuf>, String> {
+        output::save_panel::ask(&self.0, dir, name)
+    }
+
+    #[cfg(not(all(target_os = "macos", not(test))))]
     fn ask(&self, dir: Option<PathBuf>, name: &str) -> Result<Option<PathBuf>, String> {
         use tauri_plugin_dialog::DialogExt;
         let mut dialog = self
@@ -638,14 +655,14 @@ impl<R: Runtime> Saver for OsSaver<R> {
     }
 
     fn last_dir(&self) -> Option<PathBuf> {
-        prefs::load(&self.0).last_save_dir()
+        prefs::load(self.0.app_handle()).last_save_dir()
     }
 
     /// Through `prefs::update`, so it can't write back settings changed meanwhile.
     fn remember_dir(&self, dir: &Path) {
         // `set_last_save_dir` logs a folder it can't remember; nothing to save then.
         const SKIPPED: &str = "not remembered";
-        let remembered = prefs::update(&self.0, |p| {
+        let remembered = prefs::update(self.0.app_handle(), |p| {
             if p.set_last_save_dir(dir) {
                 Ok(())
             } else {
@@ -1421,7 +1438,7 @@ mod tests {
                 return Err(ShareError::Window("no view".into()));
             }
             s.done = Some(done);
-            Ok(())
+            Ok(Opened::default())
         });
         (show, seen)
     }

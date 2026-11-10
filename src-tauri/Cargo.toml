@@ -44,7 +44,7 @@ tauri-plugin-clipboard-manager = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.5"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSApplication", "NSBitmapImageRep", "NSButton", "NSControl", "NSImageRep", "NSPasteboard", "NSPasteboardItem", "NSGraphics", "NSResponder", "NSRunningApplication", "NSScreen", "NSSharingService", "NSSound", "NSView", "NSWindow", "NSWorkspace"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSApplication", "NSBitmapImageRep", "NSButton", "NSControl", "NSImage", "NSImageRep", "NSPasteboard", "NSPasteboardItem", "NSGraphics", "NSPanel", "NSResponder", "NSRunningApplication", "NSSavePanel", "NSScreen", "NSSharingService", "NSSound", "NSView", "NSWindow", "NSWorkspace"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFCGTypes", "CFDictionary", "CFNumber", "CFString"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGDirectDisplay", "CGDisplayConfiguration", "CGGeometry", "CGWindow"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSDate", "NSDictionary", "NSError", "NSGeometry", "NSProcessInfo", "NSString", "NSURL", "NSValue"] }
