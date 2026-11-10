@@ -58,18 +58,38 @@ describe('SizeBadge', () => {
   it('applies the typed size before Copy and Save go on', async () => {
     const { onresize } = badge()
     await userEvent.clear(width())
-    await userEvent.type(width(), '120{Control>}c{/Control}')
+    await userEvent.type(width(), '120')
+    expect(onresize).not.toHaveBeenCalled()
+    await userEvent.keyboard('{Control>}c{/Control}')
     expect(onresize).toHaveBeenCalledWith({ width: 120, height: 200 }, false)
     expect(width()).not.toHaveFocus()
-    // Outside the fields (the lock toggle focused), or with nothing changed, they apply nothing.
-    lock().focus()
+  })
+
+  it('applies it from the lock toggle, Tabbed to after an edit', async () => {
+    const { onresize } = badge()
+    await userEvent.clear(width())
+    await userEvent.type(width(), '120')
+    await userEvent.tab()
+    expect(lock()).toHaveFocus()
+    expect(onresize).not.toHaveBeenCalled()
     await userEvent.keyboard('{Control>}s{/Control}')
+    expect(onresize).toHaveBeenCalledWith({ width: 120, height: 200 }, false)
+  })
+
+  it('applies nothing for other keys, or with nothing changed', async () => {
+    const { onresize } = badge()
     await userEvent.click(width())
     await userEvent.keyboard('{Control>}s{/Control}')
-    expect(onresize).toHaveBeenCalledOnce()
-    // Other shortcuts leave the edit alone.
-    await userEvent.type(height(), '{Control>}a{/Control}')
-    expect(onresize).toHaveBeenCalledOnce()
+    lock().focus()
+    await userEvent.keyboard('{Control>}c{/Control}')
+    // Other shortcuts leave the edit pending.
+    await userEvent.clear(height())
+    await userEvent.type(height(), '70{Control>}a{/Control}')
+    expect(height()).toHaveFocus()
+    expect(height().value).toBe('70')
+    expect(onresize).not.toHaveBeenCalled()
+    await userEvent.keyboard('{Enter}')
+    expect(onresize).toHaveBeenCalledWith({ width: 400, height: 70 }, false)
   })
 
   it('ignores an empty size', async () => {

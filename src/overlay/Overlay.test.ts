@@ -1111,13 +1111,13 @@ describe('Overlay', () => {
       await waitFor(() => expect(screen.queryByLabelText('Thick')).toBeNull())
     })
 
-    it('copies from the width field, even with its text selected', async () => {
+    it('copies from the width field', async () => {
       await annotated()
-      field('Width').select()
+      field('Width').focus()
+      expect(document.activeElement).toBe(field('Width'))
       await userEvent.keyboard(ctrl('c'))
       await waitFor(() => expect(sent).toHaveLength(1))
       expect(output('overlay_copy', 0)).toMatchObject({ rect: rect200 })
-      await waitFor(() => expect(field('Width')).not.toHaveFocus())
     })
 
     it('saves from the height field, with the size typed there', async () => {

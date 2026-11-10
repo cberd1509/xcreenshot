@@ -62,7 +62,7 @@
   }
 
   // Copy and Save that go on to the capture (see `fieldShortcut`) take the size typed so far,
-  // if it changed. This runs first: Svelte delegates it to the app root, below the overlay's
+  // if it changed, from a field or the lock toggle Tabbed to after one. This runs first: Svelte delegates it to the app root, below the overlay's
   // window listener.
   function onkeydown(e: KeyboardEvent) {
     const copy = shortcut(e, 'c')
@@ -117,6 +117,7 @@
     title="Lock aspect ratio"
     onclick={toggle}
     onmousedown={(e) => e.preventDefault()}
+    {onkeydown}
   >
     <LockIcon class="size-3.5" />
   </button>
