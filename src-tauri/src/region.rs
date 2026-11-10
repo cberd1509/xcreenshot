@@ -255,21 +255,12 @@ fn save_to(
     seq: u64,
     order: &Order,
 ) -> Result<(), &'static str> {
-    const UNCHANGED: &str = "unchanged";
     // Under the prefs lock, which orders this with other saves and with `forget`.
-    let change = |p: &mut Prefs| {
-        (order.admits(seq) && remember(p, region))
-            .then_some(())
-            .ok_or(UNCHANGED)
-    };
-    match prefs::modify(storage, change) {
-        Ok(_) => {
-            order.written(seq);
-            Ok(())
-        }
-        Err(UNCHANGED) => Ok(()),
-        Err(e) => Err(e),
+    let saved = prefs::modify_if(storage, |p| order.admits(seq) && remember(p, region))?;
+    if saved {
+        order.written(seq);
     }
+    Ok(())
 }
 
 #[cfg(test)]

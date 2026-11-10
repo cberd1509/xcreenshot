@@ -1920,10 +1920,20 @@ describe('Overlay', () => {
       expect(screen.getAllByTestId('hint')).toHaveLength(2)
     })
 
-    it('goes when another display starts a selection', async () => {
+    it('goes on every display once a drag starts on one', async () => {
+      await twoTipped()
+      const [first] = screen.getAllByTestId('overlay')
+      fireEvent.pointerDown(first, point({ x: 10, y: 10 }))
+      fireEvent.pointerMove(first, point({ x: 110, y: 60 }))
+      fireEvent.pointerUp(first, point({ x: 110, y: 60 }))
+      await waitFor(() => expect(tipBars()).toHaveLength(0))
+    })
+
+    it('stays when another display starts from a remembered region', async () => {
       await tipped()
       await other(true)
-      await waitFor(() => expect(tipBar()).toBeNull())
+      await tick()
+      expect(tipBar()).toBeInTheDocument()
     })
 
     it('is gone for the next capture unless Rust says so', async () => {

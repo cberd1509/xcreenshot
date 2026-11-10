@@ -1,7 +1,6 @@
 <script lang="ts">
   import ZapIcon from '@lucide/svelte/icons/zap'
-  import { cn } from '$lib/utils'
-  import { PANEL } from './panel'
+  import { BAR } from './panel'
 
   /**
    * Suggests quick copy after a few plain copies in a row (artboard `QuickCopyTip.dc.html`).
@@ -21,14 +20,7 @@
     'h-[30px] rounded-md text-[13px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--selection)'
 </script>
 
-<div
-  class={cn(
-    PANEL,
-    'fixed bottom-7 left-1/2 flex -translate-x-1/2 cursor-default items-center gap-3 rounded-[12px] bg-zinc-900/94 py-1.5 pr-1.5 pl-3.5 text-[13px] whitespace-nowrap text-zinc-400',
-  )}
-  role="status"
-  onpointerdown={(e) => e.stopPropagation()}
->
+<div class={BAR} role="status" onpointerdown={(e) => e.stopPropagation()}>
   <ZapIcon class="size-4 text-zinc-50" aria-hidden="true" />
   <span
     ><b class="font-semibold text-zinc-50">Just copying?</b> Quick copy copies as soon as you drag.</span

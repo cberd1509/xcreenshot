@@ -201,9 +201,11 @@ fn remember_in<R: Runtime>(app: &AppHandle<R>) -> Remember {
     })
 }
 
-/// How a copy ended, for the tip: plain, or with annotations.
-fn copy_output(marks: &Marks) -> tip::Output {
-    if marks.layer.is_none() && marks.blurs.is_empty() {
+/// How a copy ended, for the tip: plain, or with annotations. A capture where a save was started
+/// stays open after a copy (see `Phase::copy_may_close`), so it may copy again: it never counts
+/// as plain, or one capture could make a whole streak.
+fn copy_output(marks: &Marks, saves: u32) -> tip::Output {
+    if saves == 0 && marks.layer.is_none() && marks.blurs.is_empty() {
         tip::Output::PlainCopy
     } else {
         tip::Output::Other
@@ -252,7 +254,7 @@ async fn copy_with<R: Runtime>(
     };
     let ms = started.elapsed().as_secs_f64() * 1000.0;
     log::info!("copied {width}x{height} px ({factor}x) in {ms:.0} ms");
-    remember(region, copy_output(&out.marks));
+    remember(region, copy_output(&out.marks, saves));
     // Only if nothing happened meanwhile: a save started (even cancelled) keeps the overlay.
     // The clipboard changed either way, so the copy gets its toast even if Esc ended its
     // capture, unless a newer one started: its frame may not be taken yet, and the toast would
@@ -891,13 +893,14 @@ mod tests {
             pixels: ImageBuffer::from_raw(1, 1, &pixels[..]).unwrap(),
         };
         let marks = |layer, blurs| Marks { layer, blurs };
-        assert_eq!(copy_output(&marks(None, vec![])), tip::Output::PlainCopy);
+        assert_eq!(copy_output(&marks(None, vec![]), 0), tip::Output::PlainCopy);
+        assert_eq!(copy_output(&marks(None, vec![]), 1), tip::Output::Other);
         assert_eq!(
-            copy_output(&marks(Some(layer()), vec![])),
+            copy_output(&marks(Some(layer()), vec![]), 0),
             tip::Output::Other
         );
         assert_eq!(
-            copy_output(&marks(None, vec![px(0, 0, 1, 1)])),
+            copy_output(&marks(None, vec![px(0, 0, 1, 1)]), 0),
             tip::Output::Other
         );
 

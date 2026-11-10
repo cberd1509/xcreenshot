@@ -66,8 +66,9 @@
   type Selected = { label: string; active: boolean; session: number; stamp: number }
   /** Broadcast to every overlay page: this capture goes on without quick copy. */
   const ANNOTATE = 'overlay:annotate'
-  /** Broadcast to every overlay page: the tip was answered; `quick` if quick copy went on. */
+  /** Broadcast to every overlay page: the tip goes, and `quick` copy goes on if set. */
   const TIP = 'overlay:tip'
+  type TipEvent = { session: number; quick: boolean }
   /** How far (logical px) a press may move before it draws: less is a click. */
   const CLICK_SLOP = 4
 
@@ -183,7 +184,6 @@
   })
 
   function reset() {
-    tip = false
     restored = false
     selection = null
     drag = null
@@ -207,6 +207,8 @@
     escapeShortcut = info.escapeShortcut
     reset()
     quick = info.quickCopy
+    // Before the frame arrives, so the tip going on another display meanwhile is not undone.
+    tip = info.quickCopyTip
     try {
       const data = await invoke<ArrayBuffer | Uint8Array<ArrayBuffer>>('overlay_frame', {
         session: info.session,
@@ -229,10 +231,9 @@
       display = { width: info.logicalWidth, height: info.logicalHeight }
       // Remember region: the same state as just after a drag. Rust clamped it to the display.
       if (info.region) {
-        select(info.region)
+        select(info.region, false)
         restored = true
       }
-      tip = info.quickCopyTip
       // Shown only once the frame is on screen: shown earlier, the window would flash what
       // the webview last rendered (black, or the previous capture).
       const rendered = await afterPaint()
@@ -247,13 +248,14 @@
 
   /**
    * Sets the selection and tells the other displays when this one gains or loses it. A rect
-   * under one physical pixel on either side is no selection.
+   * under one physical pixel on either side is no selection. One the user made (`byUser`, so
+   * not a remembered region) ends the tip on every display.
    */
-  function select(next: Rect | null) {
+  function select(next: Rect | null, byUser = true) {
     const rect = next && !isEmpty(toPhysical(next, scale, frame)) ? next : null
     const active = rect !== null
     restored = false
-    if (active) tip = false
+    if (active && byUser && tip) hideTip(false)
     if (active !== (selection !== null)) {
       seen = Math.max(Date.now(), seen + 1)
       const event: Selected = { label: view.label, active, session: current, stamp: seen }
@@ -460,17 +462,24 @@
   /** The tip's Turn on: quick copy for good, and for the rest of this capture. */
   function turnOn() {
     setCaptureOption('quickCopy', true)
-    void emit(TIP, { session: current, quick: true })
+    hideTip(true)
   }
 
   /** The tip's Not now: it never shows again. */
   function notNow() {
     invoke('quick_copy_tip_not_now').catch(failed('quick_copy_tip_not_now'))
-    void emit(TIP, { session: current, quick: false })
+    hideTip(false)
   }
 
-  /** The tip was answered on some display: it goes on every one. */
-  function answered(payload: { session: number; quick: boolean }) {
+  /** Hides the tip on every display, turning quick copy on for this capture if `quickOn`. */
+  function hideTip(quickOn: boolean) {
+    tip = false
+    const event: TipEvent = { session: current, quick: quickOn }
+    void emit(TIP, event)
+  }
+
+  /** The tip went on some display: it goes on every one. */
+  function answered(payload: TipEvent) {
     if (payload.session !== current) return
     tip = false
     if (!payload.quick) return
@@ -574,7 +583,7 @@
       listen<{ session: number }>(ANNOTATE, ({ payload }) => {
         if (payload.session === current) quick = false
       }),
-      listen<{ session: number; quick: boolean }>(TIP, ({ payload }) => answered(payload)),
+      listen<TipEvent>(TIP, ({ payload }) => answered(payload)),
     ])
     // Asked only once the listeners are registered, so a frame sent while this window was
     // loading is never missed.

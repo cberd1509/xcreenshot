@@ -278,6 +278,20 @@ pub fn modify(
     Ok(prefs)
 }
 
+/// [`modify`] with a `change` that says whether it changed anything: nothing is saved if not.
+/// Returns whether it saved.
+pub fn modify_if(
+    storage: &impl Storage,
+    change: impl FnOnce(&mut Prefs) -> bool,
+) -> Result<bool, &'static str> {
+    const UNCHANGED: &str = "unchanged";
+    match modify(storage, |p| change(p).then_some(()).ok_or(UNCHANGED)) {
+        Ok(_) => Ok(true),
+        Err(UNCHANGED) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 /// Whether the file was checked this run (see [`check`]); after that the open store is reused.
 static CHECKED: AtomicBool = AtomicBool::new(false);
 
