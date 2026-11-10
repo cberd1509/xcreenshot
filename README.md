@@ -53,14 +53,21 @@ Download the `x64-setup.exe` installer from the [latest release](https://github.
 
 ## Usage
 
-| Action                  | macOS                                                              | Windows                                                                                                       |
-| ----------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
-| Take a screenshot       | <kbd>⌃</kbd> <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>S</kbd>                | <kbd>PrtSc</kbd>, or <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>PrtSc</kbd> if Snipping Tool uses <kbd>PrtSc</kbd> |
-| Copy                    | <kbd>⌘</kbd> <kbd>C</kbd> or <kbd>Enter</kbd>                      | <kbd>Ctrl</kbd> <kbd>C</kbd> or <kbd>Enter</kbd>                                                              |
-| Save as PNG             | <kbd>⌘</kbd> <kbd>S</kbd>                                          | <kbd>Ctrl</kbd> <kbd>S</kbd>                                                                                  |
-| Undo / Redo             | <kbd>⌘</kbd> <kbd>Z</kbd> / <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>Z</kbd> | <kbd>Ctrl</kbd> <kbd>Z</kbd> / <kbd>Ctrl</kbd> <kbd>Y</kbd>                                                   |
-| Straight lines, circles | Hold <kbd>⇧</kbd> while drawing                                    | Hold <kbd>Shift</kbd> while drawing                                                                           |
-| Cancel                  | <kbd>Esc</kbd>                                                     | <kbd>Esc</kbd>                                                                                                |
+| Action                                             | macOS                                                              | Windows                                                                                                       |
+| -------------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| Take a screenshot                                  | <kbd>⌃</kbd> <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>S</kbd>                | <kbd>PrtSc</kbd>, or <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>PrtSc</kbd> if Snipping Tool uses <kbd>PrtSc</kbd> |
+| Select a window                                    | Double-click                                                       | Double-click                                                                                                  |
+| Select the whole screen                            | <kbd>⌘</kbd> double-click                                          | <kbd>Ctrl</kbd> double-click                                                                                  |
+| Copy                                               | <kbd>⌘</kbd> <kbd>C</kbd> or <kbd>Enter</kbd>                      | <kbd>Ctrl</kbd> <kbd>C</kbd> or <kbd>Enter</kbd>                                                              |
+| Save as PNG                                        | <kbd>⌘</kbd> <kbd>S</kbd>                                          | <kbd>Ctrl</kbd> <kbd>S</kbd>                                                                                  |
+| Undo / Redo                                        | <kbd>⌘</kbd> <kbd>Z</kbd> / <kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>Z</kbd> | <kbd>Ctrl</kbd> <kbd>Z</kbd> / <kbd>Shift</kbd> <kbd>Ctrl</kbd> <kbd>Z</kbd>                                  |
+| Tools: select, pen, line, arrow                    | <kbd>V</kbd> <kbd>P</kbd> <kbd>L</kbd> <kbd>A</kbd>                | <kbd>V</kbd> <kbd>P</kbd> <kbd>L</kbd> <kbd>A</kbd>                                                           |
+| Tools: rectangle, ellipse, highlighter, text, blur | <kbd>R</kbd> <kbd>O</kbd> <kbd>H</kbd> <kbd>T</kbd> <kbd>B</kbd>   | <kbd>R</kbd> <kbd>O</kbd> <kbd>H</kbd> <kbd>T</kbd> <kbd>B</kbd>                                              |
+| Straight lines, circles                            | Hold <kbd>⇧</kbd>                                                  | Hold <kbd>Shift</kbd>                                                                                         |
+| Move the selection or a shape                      | Arrows, or <kbd>⇧</kbd> + <kbd>←</kbd>                             | Arrows, or <kbd>Shift</kbd> + <kbd>←</kbd>                                                                    |
+| Delete a shape                                     | <kbd>⌫</kbd>                                                       | <kbd>Delete</kbd>                                                                                             |
+| Edit a text                                        | <kbd>Enter</kbd> or double-click                                   | <kbd>Enter</kbd> or double-click                                                                              |
+| Go back a step, then cancel                        | <kbd>Esc</kbd>                                                     | <kbd>Esc</kbd>                                                                                                |
 
 On first launch, macOS asks for **Screen Recording** permission. xcreenshot walks you through it.
 
