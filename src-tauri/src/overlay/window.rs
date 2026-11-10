@@ -3,9 +3,10 @@
 //! Hotkey (main thread): claim the [`Phase`], take Esc, start the capture on a worker
 //! thread and place the hidden windows while it runs. Capture done (worker): open the session
 //! and send `overlay:show` with each frame's size. Each window fetches its frame
-//! (`overlay_frame`: a copy of the raw RGBA buffer), draws it and calls `overlay_painted`,
-//! which shows that window. Esc goes to every page (`overlay:escape` with a token); each
-//! answers `overlay_escaped`, saying whether it undid something (a size edit, a selection).
+//! (`overlay_frame`: a copy of the raw RGBA buffer), draws it, waits until it is rendered and
+//! calls `overlay_painted`, which shows that window. Esc goes to every page (`overlay:escape`
+//! with a token); each answers `overlay_escaped`, saying whether it undid something (a size
+//! edit, a selection).
 //! Rust closes when every shown page had nothing to undo, or when no page answers in time.
 //! Copy and save are in `export.rs`. `close_overlay`, closing a window or the watchdog hide
 //! everything and tell the pages to free their frames (`overlay:closed`); calls from a page
@@ -38,6 +39,10 @@ const ESCAPE_EVENT: &str = "overlay:escape";
 const ESCAPE: &str = "Escape";
 /// How long the pages get to handle Esc before Rust closes the overlay itself.
 const ESCAPE_TIMEOUT: Duration = Duration::from_millis(300);
+/// A window whose page hasn't reported its paint this long after the capture is shown anyway
+/// ([`reveal_late`]): the page's own fallback (`PAINT_TIMEOUT_MS`, 200 ms) reports by then, so
+/// a later report may never come. It may flash, but the capture isn't lost.
+const REVEAL_AFTER: Duration = Duration::from_millis(300);
 /// If no window paints within this time the overlay page is broken: close everything, so a
 /// hung page never locks the user out.
 const WATCHDOG: Duration = Duration::from_secs(2);
@@ -51,6 +56,9 @@ pub struct Overlay {
     phase: Mutex<Phase>,
     /// The displays whose overlay window is on screen, as Rust last showed or hid them.
     shown: Mutex<Vec<u32>>,
+    /// The displays whose overlay window is transparent and click-through ([`stage`]), on
+    /// screen while it renders its frame or hidden since.
+    staged: Mutex<Vec<u32>>,
     /// Fired when the phase returns to Idle; the update restart waits for it.
     pub(crate) idle: tokio::sync::Notify,
 }
@@ -69,13 +77,16 @@ pub(crate) fn phase<R: Runtime>(app: &AppHandle<R>) -> MutexGuard<'_, Phase> {
     app.state::<Overlay>().inner().phase()
 }
 
-/// Shows or hides an overlay window and records which are on screen ([`shown`]).
-fn set_shown<R: Runtime>(window: &WebviewWindow<R>, on: bool) -> tauri::Result<()> {
+/// Shows or hides an overlay window and records which are on screen ([`shown`]). A staged
+/// window that can't be made opaque and clickable is not shown (see [`unstage_steps`]).
+fn set_shown<R: Runtime>(window: &WebviewWindow<R>, on: bool) -> Result<(), String> {
     if on {
-        window.show()?;
+        unstage(window)?;
+        window.show()
     } else {
-        window.hide()?;
+        window.hide()
     }
+    .map_err(|e| e.to_string())?;
     if let Some(display) = display_id(window.label()) {
         let overlay = window.state::<Overlay>();
         let mut shown = lock(&overlay.shown);
@@ -91,10 +102,20 @@ fn set_shown<R: Runtime>(window: &WebviewWindow<R>, on: bool) -> tauri::Result<(
 /// visibility of its own.
 #[cfg(test)]
 pub(super) fn shown<R: Runtime>(app: &AppHandle<R>) -> Vec<u32> {
-    let overlay = app.state::<Overlay>();
-    let mut shown = lock(&overlay.shown).clone();
-    shown.sort_unstable();
-    shown
+    sorted(&app.state::<Overlay>().shown)
+}
+
+/// The displays whose overlay window is staged ([`stage`]).
+#[cfg(test)]
+pub(super) fn staged<R: Runtime>(app: &AppHandle<R>) -> Vec<u32> {
+    sorted(&app.state::<Overlay>().staged)
+}
+
+#[cfg(test)]
+fn sorted(displays: &Mutex<Vec<u32>>) -> Vec<u32> {
+    let mut displays = lock(displays).clone();
+    displays.sort_unstable();
+    displays
 }
 
 /// The OS side of a capture: permission, listing displays and grabbing them. Faked in tests.
@@ -272,8 +293,10 @@ fn finish<R: Runtime>(
     let Some(shows) = opened else {
         return;
     };
-    on_main(app, |app| {
+    let displays: Vec<u32> = shows.iter().map(|(d, _)| *d).collect();
+    on_main(app, move |app| {
         sync_escape(app);
+        stage_unpainted(app, session, &displays);
     });
     for (display, info) in shows {
         if let Err(e) = app.emit_to(label(display).as_str(), SHOW_EVENT, info) {
@@ -282,9 +305,59 @@ fn finish<R: Runtime>(
     }
     let app = app.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(watchdog);
+        // Tests reveal by hand, so their sessions never change under them.
+        let reveal = if cfg!(test) {
+            watchdog
+        } else {
+            reveal_after(watchdog)
+        };
+        std::thread::sleep(reveal);
+        on_main(&app, move |app| reveal_late(app, session));
+        std::thread::sleep(watchdog - reveal);
         on_main(&app, move |app| rescue(app, session));
     });
+}
+
+/// When to show windows whose page hasn't reported its paint: [`REVEAL_AFTER`], never after
+/// the watchdog.
+fn reveal_after(watchdog: Duration) -> Duration {
+    REVEAL_AFTER.min(watchdog)
+}
+
+/// Shows `session`'s windows whose page hasn't reported its paint (see [`REVEAL_AFTER`]),
+/// focusing one if nothing painted. The watchdog still closes the overlay if no page ever
+/// reports: that page is dead.
+fn reveal_late<R: Runtime>(app: &AppHandle<R>, session: u64) {
+    let Some((displays, focus_on)) = phase(app).unreported(session) else {
+        return;
+    };
+    log::warn!(
+        "overlays {displays:?} did not report their paint within {REVEAL_AFTER:?}; showing them"
+    );
+    for d in displays {
+        let shown = app
+            .get_webview_window(&label(d))
+            .map_or(Ok(()), |w| set_shown(&w, true));
+        if let Err(e) = shown {
+            log::error!("could not show the overlay: {e}");
+            return close(app);
+        }
+    }
+    focus(app, focus_on, None);
+}
+
+/// Stages `displays`' windows for `session`'s paint. Not if a close ran first: nothing would
+/// hide them again. Not one that already painted: it would turn invisible and click-through.
+fn stage_unpainted<R: Runtime>(app: &AppHandle<R>, session: u64, displays: &[u32]) {
+    if phase(app).session() != Some(session) {
+        return;
+    }
+    let shown = lock(&app.state::<Overlay>().shown).clone();
+    for &d in displays.iter().filter(|d| !shown.contains(d)) {
+        if let Some(window) = app.get_webview_window(&label(d)) {
+            stage(&window);
+        }
+    }
 }
 
 pub(super) fn on_main<R: Runtime>(
@@ -358,7 +431,7 @@ fn end_if<R: Runtime>(
         (phase.end(), shown)
     };
     sync_escape(app);
-    hide(app);
+    hide_if(app, |_| true);
     for label in app
         .webview_windows()
         .keys()
@@ -381,11 +454,18 @@ fn end_if<R: Runtime>(
     before
 }
 
-/// Hides every overlay window, keeping the session (the Save dialog hides them this way).
-/// Main thread only.
+/// Hides the overlay windows on screen, keeping the session (the Save dialog hides them this
+/// way). A window still staged for its paint stays staged: invisible and click-through, it
+/// goes on rendering its frame, so it is ready when [`reshow`] shows it. Main thread only.
 pub(super) fn hide<R: Runtime>(app: &AppHandle<R>) {
+    let shown = lock(&app.state::<Overlay>().shown).clone();
+    hide_if(app, |d| shown.contains(&d));
+}
+
+/// Hides the overlay windows of the displays where `which` holds. Main thread only.
+fn hide_if<R: Runtime>(app: &AppHandle<R>, which: impl Fn(u32) -> bool) {
     for (label, window) in app.webview_windows() {
-        if display_id(&label).is_some()
+        if display_id(&label).is_some_and(&which)
             && let Err(e) = set_shown(&window, false)
         {
             // A window left on screen would block input: remove it; `sync` rebuilds it.
@@ -570,7 +650,8 @@ fn build<R: Runtime>(app: &AppHandle<R>, display: u32) -> tauri::Result<WebviewW
         .always_on_top(true)
         .visible_on_all_workspaces(true)
         .background_color(tauri::window::Color(0, 0, 0, 255))
-        // The page draws while its window is hidden; WebKit would otherwise throttle it.
+        // The page fetches and draws its frame while the window is hidden or transparent;
+        // WebKit would otherwise throttle it.
         .background_throttling(BackgroundThrottlingPolicy::Disabled);
     // The first click on the overlay starts the selection instead of only focusing it.
     #[cfg(target_os = "macos")]
@@ -591,29 +672,156 @@ fn build<R: Runtime>(app: &AppHandle<R>, display: u32) -> tauri::Result<WebviewW
     Ok(window)
 }
 
+/// Stages a hidden overlay window: on screen but fully transparent and click-through, so its
+/// webview renders the frame while nothing shows yet. A hidden webview renders nothing, so a
+/// window shown as soon as the page drew would first show what it rendered last (black, or
+/// the previous capture). The page reports the paint once the frame is rendered, and
+/// [`set_shown`] unstages it (opaque, taking clicks again). Main thread only.
+fn stage<R: Runtime>(window: &WebviewWindow<R>) {
+    let Some(display) = display_id(window.label()) else {
+        return;
+    };
+    let staged = stage_steps(
+        window.label(),
+        |on| click_through(window, on),
+        || present(window, true),
+    );
+    // A window already listed stays listed: it may still be transparent from before.
+    let overlay = window.state::<Overlay>();
+    let mut list = lock(&overlay.staged);
+    if staged && !list.contains(&display) {
+        list.push(display);
+    }
+}
+
+/// Makes a staged window opaque and clickable again; does nothing to one that isn't staged.
+/// Main thread only.
+fn unstage<R: Runtime>(window: &WebviewWindow<R>) -> Result<(), String> {
+    let Some(display) = display_id(window.label()) else {
+        return Ok(());
+    };
+    let overlay = window.state::<Overlay>();
+    if !lock(&overlay.staged).contains(&display) {
+        return Ok(());
+    }
+    unstage_steps(|| present(window, false), |on| click_through(window, on)).map_err(|e| {
+        format!(
+            "could not make {} opaque and clickable: {e}",
+            window.label()
+        )
+    })?;
+    lock(&overlay.staged).retain(|&d| d != display);
+    Ok(())
+}
+
+/// Staging, in order: click-through, then on screen at alpha 0 (`present`). If click-through
+/// fails the window isn't staged: a transparent window taking clicks would swallow them, so it
+/// stays hidden and shows opaque on its paint, as before staging. If it can't go on screen
+/// transparent, click-through is undone. Returns whether the window must be unstaged before it
+/// shows: staged, or still click-through because undoing that failed too.
+fn stage_steps(
+    label: &str,
+    mut click_through: impl FnMut(bool) -> Result<(), String>,
+    present: impl FnOnce() -> Result<(), String>,
+) -> bool {
+    if let Err(e) = click_through(true) {
+        log::warn!("could not make {label} click-through; it shows when painted: {e}");
+        return false;
+    }
+    let Err(e) = present() else {
+        return true;
+    };
+    log::warn!("could not stage {label}; it shows when painted: {e}");
+    click_through(false)
+        .inspect_err(|e| log::warn!("could not make {label} clickable again: {e}"))
+        .is_err()
+}
+
+/// Unstaging, in order: opaque, then taking clicks, each tried twice. An error means the
+/// window would be invisible or ignore clicks, so the caller must not show it.
+fn unstage_steps(
+    mut opaque: impl FnMut() -> Result<(), String>,
+    mut click_through: impl FnMut(bool) -> Result<(), String>,
+) -> Result<(), String> {
+    opaque().or_else(|_| opaque())?;
+    click_through(false).or_else(|_| click_through(false))
+}
+
+fn click_through<R: Runtime>(window: &WebviewWindow<R>, on: bool) -> Result<(), String> {
+    window
+        .set_ignore_cursor_events(on)
+        .map_err(|e| e.to_string())
+}
+
+/// The platform half of staging: on screen at alpha 0 (`staged`), or opaque again.
+fn present<R: Runtime>(window: &WebviewWindow<R>, staged: bool) -> Result<(), String> {
+    #[cfg(all(target_os = "macos", not(test)))]
+    {
+        macos::stage(window, staged)
+    }
+    #[cfg(all(target_os = "windows", not(test)))]
+    {
+        win::stage(window, staged)
+    }
+    // The mock runtime has no native window.
+    #[cfg(any(test, not(any(target_os = "macos", target_os = "windows"))))]
+    {
+        let _ = (window, staged);
+        Ok(())
+    }
+}
+
 /// Window level and Spaces: `always_on_top` alone stays under the menu bar and the Dock.
 #[cfg(all(target_os = "macos", not(test)))]
 mod macos {
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior};
+    use crate::macos::{SCREEN_SAVER_LEVEL, main_ns_window};
+    use objc2_app_kit::NSWindowCollectionBehavior;
     use tauri::{Runtime, WebviewWindow};
 
-    pub fn raise<R: Runtime>(window: &WebviewWindow<R>) {
-        if MainThreadMarker::new().is_none() {
-            return log::error!("overlay window level must be set on the main thread");
+    /// Staged: ordered in at alpha 0 without taking focus. Unstaged: opaque.
+    pub fn stage<R: Runtime>(window: &WebviewWindow<R>, staged: bool) -> Result<(), String> {
+        let ns_window = main_ns_window(window).ok_or("no NSWindow on the main thread")?;
+        ns_window.setAlphaValue(if staged { 0.0 } else { 1.0 });
+        if staged {
+            ns_window.orderFrontRegardless();
         }
-        let ptr = match window.ns_window() {
-            Ok(ptr) => ptr,
-            Err(e) => return log::error!("no NSWindow for {}: {e}", window.label()),
+        Ok(())
+    }
+
+    pub fn raise<R: Runtime>(window: &WebviewWindow<R>) {
+        let Some(ns_window) = main_ns_window(window) else {
+            return;
         };
-        // SAFETY: Tauri returns the live NSWindow of this window, and we are on the main thread.
-        let ns_window = unsafe { &*ptr.cast::<NSWindow>() };
         // Above the menu bar (24), the Dock (20) and pop-up menus (101).
-        ns_window.setLevel(NSScreenSaverWindowLevel);
+        ns_window.setLevel(SCREEN_SAVER_LEVEL);
         // Over full-screen apps too. `visible_on_all_workspaces` already set CanJoinAllSpaces.
         ns_window.setCollectionBehavior(
             ns_window.collectionBehavior() | NSWindowCollectionBehavior::FullScreenAuxiliary,
         );
+    }
+}
+
+#[cfg(all(target_os = "windows", not(test)))]
+mod win {
+    use tauri::{Runtime, WebviewWindow};
+    use windows::Win32::Foundation::COLORREF;
+    use windows::Win32::UI::WindowsAndMessaging::{LWA_ALPHA, SetLayeredWindowAttributes};
+
+    /// Staged: shown at alpha 0. Click-through (`set_ignore_cursor_events`) already made the
+    /// window layered, and Tauri keeps that style while it is set. Shown through Tauri, which
+    /// activates it, so Tauri's own style updates keep it visible; the capture is already taken
+    /// and the overlay takes focus anyway once revealed. Unstaged: alpha 255, before
+    /// click-through goes and with it the layered style.
+    pub fn stage<R: Runtime>(window: &WebviewWindow<R>, staged: bool) -> Result<(), String> {
+        let hwnd = window.hwnd().map_err(|e| format!("no HWND: {e}"))?;
+        let alpha = if staged { 0 } else { 255 };
+        // SAFETY: Tauri returns the live HWND of this window, and we are on its thread.
+        unsafe { SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA) }
+            .map_err(|e| format!("could not set the alpha: {e}"))?;
+        if staged {
+            window.show().map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 }
 
@@ -668,13 +876,16 @@ pub(crate) fn overlay_escape<R: Runtime>(app: AppHandle<R>) {
     let _ = escape(&app, ESCAPE_TIMEOUT);
 }
 
-/// The window drew its frame: show it (only if its session is still open), focus the
-/// display under the cursor, and log the time on the first paint.
+/// The window rendered its frame: show it (only if its session is still open), focus the
+/// display under the cursor, and log the time on the first paint. The page calls this only
+/// once its frame is on screen, so the window never shows what the webview drew before.
+/// `rendered` is false if the page gave up waiting for that and the window may flash.
 #[tauri::command]
 pub(crate) fn overlay_painted<R: Runtime>(
     window: WebviewWindow<R>,
     state: tauri::State<'_, Overlay>,
     session: u64,
+    rendered: bool,
 ) {
     let Some(display) = display_id(window.label()) else {
         return;
@@ -684,6 +895,9 @@ pub(crate) fn overlay_painted<R: Runtime>(
     };
     if paint.hidden {
         return;
+    }
+    if !rendered {
+        log::warn!("overlay {display} shown before its frame was rendered");
     }
     let app = window.app_handle();
     if let Err(e) = set_shown(&window, true) {
@@ -1049,14 +1263,117 @@ pub(crate) mod tests {
         let app = app();
         let h = app.handle();
         let session = open(h, &[1, 2]);
-        overlay_painted(window(h, 1), h.state(), session);
+        overlay_painted(window(h, 1), h.state(), session, true);
         assert!(!phase(h).stalled(session));
         close_overlay(h.clone(), session + 1);
         assert!(is_open(h, session), "another session is left alone");
         close_overlay(h.clone(), session);
         // A late paint from the closed session must not reopen anything.
-        overlay_painted(window(h, 2), h.state(), session);
+        overlay_painted(window(h, 2), h.state(), session, false);
         assert!(is_idle(h));
+    }
+
+    #[test]
+    fn only_the_open_sessions_unpainted_windows_are_staged() {
+        let app = app();
+        let h = app.handle();
+        let session = open(h, &[1, 2]);
+        overlay_painted(window(h, 1), h.state(), session, true);
+        stage_unpainted(h, session, &[1, 2]);
+        assert_eq!(staged(h), [2], "a painted window is not staged again");
+        overlay_painted(window(h, 2), h.state(), session, true);
+        assert_eq!(super::shown(h), [1, 2]);
+        assert!(staged(h).is_empty(), "shown means unstaged");
+        close(h);
+        stage_unpainted(h, session, &[1, 2]);
+        assert!(staged(h).is_empty(), "closed first");
+    }
+
+    /// A step that fails its first `fails` calls, recording each call's argument.
+    fn step(
+        fails: usize,
+        calls: &std::cell::RefCell<Vec<bool>>,
+    ) -> impl FnMut(bool) -> Result<(), String> {
+        move |on| {
+            calls.borrow_mut().push(on);
+            if calls.borrow().len() <= fails {
+                Err("no".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn staging_needs_click_through_first() {
+        let clicks = Default::default();
+        let mut presented = false;
+        let staged = stage_steps("w", step(1, &clicks), || {
+            presented = true;
+            Ok(())
+        });
+        assert!(!staged, "never transparent while taking clicks");
+        assert!(!presented);
+        assert_eq!(*clicks.borrow(), [true]);
+    }
+
+    #[test]
+    fn staging_that_cannot_go_on_screen_undoes_click_through() {
+        let clicks = Default::default();
+        assert!(stage_steps("w", step(0, &clicks), || Ok(())), "staged");
+        let clicks = Default::default();
+        assert!(!stage_steps("w", step(0, &clicks), || Err("no".into())));
+        assert_eq!(*clicks.borrow(), [true, false], "clickable again");
+        // Still click-through: it must be unstaged before it shows.
+        let undo_fails = |on: bool| if on { Ok(()) } else { Err("no".to_owned()) };
+        assert!(stage_steps("w", undo_fails, || Err("no".into())));
+    }
+
+    #[test]
+    fn unstaging_retries_each_step_once_then_fails() {
+        let run = |opaque_fails: usize, click_fails: usize| {
+            let mut opaque_calls = 0;
+            let clicks = Default::default();
+            let result = unstage_steps(
+                || {
+                    opaque_calls += 1;
+                    if opaque_calls <= opaque_fails {
+                        Err("no".into())
+                    } else {
+                        Ok(())
+                    }
+                },
+                step(click_fails, &clicks),
+            );
+            (result.is_ok(), opaque_calls, clicks.borrow().len())
+        };
+        assert_eq!(run(0, 0), (true, 1, 1));
+        assert_eq!(run(1, 1), (true, 2, 2), "one retry each");
+        assert_eq!(run(2, 0), (false, 2, 0), "never clickable while invisible");
+        assert_eq!(run(0, 2), (false, 1, 2));
+    }
+
+    #[test]
+    fn the_save_dialog_leaves_a_staged_window_rendering() {
+        let app = app();
+        let h = app.handle();
+        let session = open(h, &[1, 2]);
+        stage_unpainted(h, session, &[1, 2]);
+        overlay_painted(window(h, 1), h.state(), session, true);
+        assert!(phase(h).begin_save(session));
+        hide(h);
+        assert!(super::shown(h).is_empty());
+        assert_eq!(staged(h), [2], "still staged, so it goes on rendering");
+        overlay_painted(window(h, 2), h.state(), session, true);
+        assert_eq!(
+            staged(h),
+            [2],
+            "painted during the dialog: shown with the others"
+        );
+        let displays = phase(h).end_save(session).unwrap();
+        reshow(h, &displays, 1);
+        assert_eq!(super::shown(h), [1, 2]);
+        assert!(staged(h).is_empty());
     }
 
     #[test]
@@ -1145,9 +1462,42 @@ pub(crate) mod tests {
         assert!(is_idle(h));
 
         let session = open(h, &[1]);
-        overlay_painted(window(h, 1), h.state(), session);
+        overlay_painted(window(h, 1), h.state(), session, true);
         rescue(h, session);
         assert!(is_open(h, session), "painted in time");
+    }
+
+    #[test]
+    fn unreported_windows_are_shown_after_the_page_fallback_and_before_the_watchdog() {
+        // After the page's own 200 ms fallback (`PAINT_TIMEOUT_MS` in paint.ts).
+        assert!(REVEAL_AFTER > Duration::from_millis(200) && REVEAL_AFTER < WATCHDOG);
+        assert_eq!(reveal_after(WATCHDOG), REVEAL_AFTER);
+        assert_eq!(
+            reveal_after(Duration::ZERO),
+            Duration::ZERO,
+            "never after the watchdog"
+        );
+
+        let app = app();
+        let h = app.handle();
+        let session = open(h, &[1, 2]);
+        stage_unpainted(h, session, &[1, 2]);
+        overlay_painted(window(h, 1), h.state(), session, true);
+        reveal_late(h, session + 1);
+        assert_eq!(super::shown(h), [1], "other session");
+        reveal_late(h, session);
+        assert_eq!(super::shown(h), [1, 2], "shown though it never reported");
+        assert!(staged(h).is_empty());
+        overlay_painted(window(h, 2), h.state(), session, true);
+        assert_eq!(super::shown(h), [1, 2], "a late report changes nothing");
+
+        // Nothing reported: shown, but the watchdog still closes a dead page.
+        close(h);
+        let session = open(h, &[1]);
+        reveal_late(h, session);
+        assert_eq!(super::shown(h), [1]);
+        rescue(h, session);
+        assert!(is_idle(h));
     }
 
     #[test]
@@ -1191,7 +1541,7 @@ pub(crate) mod tests {
     pub(crate) fn shown(app: &Handle, ids: &[u32]) -> u64 {
         let session = open(app, ids);
         for &id in ids {
-            overlay_painted(window(app, id), app.state(), session);
+            overlay_painted(window(app, id), app.state(), session, true);
         }
         session
     }
@@ -1253,7 +1603,7 @@ pub(crate) mod tests {
             .build()
             .unwrap();
         assert_eq!(overlay_ready(settings.clone(), h.state()), None);
-        overlay_painted(settings, h.state(), session);
+        overlay_painted(settings, h.state(), session, true);
         assert!(phase(h).stalled(session));
     }
 }

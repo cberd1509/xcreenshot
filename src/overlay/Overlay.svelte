@@ -29,6 +29,7 @@
   import Annotator from './annotate/Annotator.svelte'
   import { outputRequest } from './annotate/output'
   import { control, fieldShortcut, keyLabels, modifier, shortcut, typing } from './keys'
+  import { afterPaint } from './paint'
   import { TOAST } from './panel'
   import Magnifier from './Magnifier.svelte'
   import QuickBar from './QuickBar.svelte'
@@ -222,7 +223,11 @@
         select(info.region)
         restored = true
       }
-      await invoke('overlay_painted', { session: info.session })
+      // Shown only once the frame is on screen: shown earlier, the window would flash what
+      // the webview last rendered (black, or the previous capture).
+      const rendered = await afterPaint()
+      if (current !== info.session || generation !== drawing) return
+      await invoke('overlay_painted', { session: info.session, rendered })
     } catch (e) {
       // Never leave the user on a dead overlay.
       console.error('overlay could not draw its frame', e)

@@ -405,3 +405,47 @@ every platform; only the registry reads are Windows-only.
   blocks ScreenCaptureKit until answered.
 - Re-prompt behavior on macOS 26/27 needs checking on a signed build over a few weeks.
 - Windows mixed-DPI: logical origins are approximate; use the physical bounds (see Windows).
+
+## Overlay flash (#105)
+
+A hidden webview renders nothing: the page drew its frame while hidden, but WebKit rendered it
+only once the window was shown, so the first frame on screen was whatever it rendered last
+(black, or the end of the previous capture). On macOS, `requestAnimationFrame` never ran in the
+hidden window (every paint gave up waiting for it, below).
+
+Now Rust puts each window on screen fully transparent and click-through once the capture is done
+(`NSWindow` alpha 0 on macOS, a layered window at alpha 0 on Windows). The page draws,
+waits two animation frames, and only then calls `overlay_painted`, which makes the window opaque
+and shows it. If the frames don't come within 200 ms the page reports anyway, and Rust logs
+"shown before its frame was rendered". A window whose page still hasn't reported 300 ms after the
+capture is shown anyway, as #105 asks: it may flash, but the capture isn't lost. The 2 s
+watchdog still closes an overlay whose pages never report at all.
+The Save dialog hides only the windows on screen: one still staged stays staged, goes on
+rendering, and shows rendered when the dialog closes.
+
+Release build with debug assertions (`XCREENSHOT_DEBUG_CAPTURE`), one 3600x2338 display, warm
+captures:
+
+| | hotkey to painted (median, range) | after capture (median) |
+| --- | --- | --- |
+| Before | 109 ms, 71–200 ms (11 runs) | 38 ms |
+| Waiting for frames in the hidden window | 213 ms, 202–367 ms (8 runs, all gave up) | 135 ms |
+| After (transparent window, two frames) | 133 ms, 89–233 ms (8 runs, none gave up) | 56 ms |
+
+A second pair, run back to back on a quieter machine: before 95 ms (67–187 ms, after capture
+24 ms), after 121 ms (83–144 ms, after capture 58 ms, none gave up). The wait costs about two
+frames. Before, "painted" was logged before the frame reached the screen, so the real
+difference on screen is smaller.
+
+After rebasing on 0.4.0, interleaved runs on a busy machine (load 10–20), 23 warm captures each:
+
+| | hotkey to painted (median, range) | capture | after capture |
+| --- | --- | --- | --- |
+| Before | 133 ms, 83–251 ms | 92 ms | 44 ms |
+| Two frames | 135 ms, 109–311 ms | 75 ms | 62 ms |
+| One frame, then a posted task | 136 ms, 103–706 ms | 84 ms | 53 ms |
+
+None gave up waiting. One frame saves about 9 ms, but a 60 fps screen recording of six captures
+each caught a near-black frame as the overlay opened in two of six with one frame, and in none
+with two frames. Two frames stay. Under heavier load (load 45–60) some captures took over 100 ms
+to render, which is why the fallback waits 200 ms.
