@@ -38,7 +38,17 @@ fn main() {
         attributes = attributes
             .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest());
     }
+    weak_link_core_graphics();
     tauri_build::try_build(attributes).expect("failed to run tauri-build");
+}
+
+/// xcap captures with `CGWindowListCreateImage`, which Apple has deprecated. Linked strongly, a
+/// macOS without it would not even start the app. Weakly linked, it starts, the missing symbol is
+/// found at runtime and capture uses ScreenCaptureKit instead (`src/capture/mod.rs`).
+fn weak_link_core_graphics() {
+    if std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "macos") {
+        println!("cargo:rustc-link-arg=-Wl,-weak_framework,CoreGraphics");
+    }
 }
 
 /// Tauri embeds its Windows manifest (Common Controls v6) into the app binary only, so test
