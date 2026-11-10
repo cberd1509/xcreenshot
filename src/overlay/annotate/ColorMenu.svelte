@@ -1,6 +1,7 @@
 <script lang="ts">
   import { ToggleGroup } from 'bits-ui'
   import * as Popover from '$lib/components/ui/popover'
+  import { fieldShortcut, shortcut } from '../keys'
   import { PANEL } from '../panel'
   import { COLORS, SIZES, parseHex, type Style } from './shapes'
   import Tip from './Tip.svelte'
@@ -53,8 +54,16 @@
     to?.focus()
   }
 
-  /** Enter takes the color and gives focus back. */
+  /**
+   * Enter takes the color and gives focus back. Copy and Save that go on to the capture (see
+   * `fieldShortcut`; text being typed keeps them) take it too, before the capture closes the menu.
+   */
   function onkeydown(e: KeyboardEvent) {
+    const copy = shortcut(e, 'c')
+    if (copy || shortcut(e, 's')) {
+      if (!keepFocus && !fieldShortcut(e.currentTarget, copy)) commit()
+      return
+    }
     if (e.key !== 'Enter') return
     e.preventDefault()
     commit()

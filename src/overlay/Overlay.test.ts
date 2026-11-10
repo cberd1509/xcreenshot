@@ -154,6 +154,9 @@ async function annotated() {
   await waitFor(() => expect(shapes()).toHaveLength(1))
 }
 
+/** The toolbar's ⋯ button. */
+const more = () => screen.getByRole('button', { name: 'More' })
+
 /** Opens the color popover, as when picking a color. */
 async function colors() {
   await userEvent.click(screen.getByRole('button', { name: 'Color and size' }))
@@ -1015,7 +1018,7 @@ describe('Overlay', () => {
 
     it('leaves keys to an open toolbar menu', async () => {
       await annotated()
-      await userEvent.click(screen.getByRole('button', { name: 'More' }))
+      await userEvent.click(more())
       await screen.findByText('Magnifier')
       fireEvent.keyDown(window, { key: 'Enter' })
       await tick()
@@ -1047,6 +1050,117 @@ describe('Overlay', () => {
       await waitFor(() => expect(sent).toHaveLength(2))
       expect(sent[1]).toMatchObject({ cmd: 'overlay_save', header: { rect: rect200 } })
       await waitFor(() => expect(screen.queryByLabelText('Thick')).toBeNull())
+    })
+
+    it('copies and saves with the ⋯ menu open, closing it first', async () => {
+      await annotated()
+      await userEvent.click(more())
+      await screen.findByText('Magnifier')
+      await userEvent.keyboard(ctrl('c'))
+      await waitFor(() => expect(sent).toHaveLength(1))
+      expect(sent[0].cmd).toBe('overlay_copy')
+      await waitFor(() => expect(screen.queryByText('Magnifier')).toBeNull())
+      await userEvent.click(more())
+      await screen.findByText('Magnifier')
+      await userEvent.keyboard(ctrl('s'))
+      await waitFor(() => expect(sent).toHaveLength(2))
+      expect(sent[1].cmd).toBe('overlay_save')
+      await waitFor(() => expect(screen.queryByText('Magnifier')).toBeNull())
+    })
+
+    it('copies with ⌘C on macOS with the color menu open', async () => {
+      platform.mac = true
+      await annotated()
+      await colors()
+      await userEvent.keyboard('{Meta>}c{/Meta}')
+      await waitFor(() => expect(sent).toHaveLength(1))
+      expect(sent[0].cmd).toBe('overlay_copy')
+      await waitFor(() => expect(screen.queryByLabelText('Thick')).toBeNull())
+    })
+
+    it('saves from the hex field, with the color typed there', async () => {
+      await annotated()
+      shapes()[0].fire('pointerdown')
+      await colors()
+      const hex = screen.getByLabelText<HTMLInputElement>('Hex')
+      await userEvent.clear(hex)
+      await userEvent.type(hex, '#22c55e')
+      await userEvent.keyboard(ctrl('s'))
+      await waitFor(() => expect(sent).toHaveLength(1))
+      expect(sent[0].cmd).toBe('overlay_save')
+      expect(shapes()[0].attrs.stroke).toBe('#22C55E')
+      await waitFor(() => expect(screen.queryByLabelText('Thick')).toBeNull())
+    })
+
+    it('copies from the hex field, unless its text is selected', async () => {
+      await annotated()
+      await colors()
+      const hex = screen.getByLabelText<HTMLInputElement>('Hex')
+      await userEvent.clear(hex)
+      await userEvent.type(hex, '#22c5')
+      hex.select()
+      await userEvent.keyboard(ctrl('c'))
+      await tick()
+      // The text selected is the field's to copy: what was typed stays, selected.
+      expect(sent).toHaveLength(0)
+      expect(hex).toHaveValue('#22c5')
+      expect([hex.selectionStart, hex.selectionEnd]).toEqual([0, 5])
+      expect(screen.getByLabelText('Thick')).toBeInTheDocument()
+      hex.setSelectionRange(5, 5)
+      await userEvent.keyboard(ctrl('c'))
+      await waitFor(() => expect(sent).toHaveLength(1))
+      expect(sent[0].cmd).toBe('overlay_copy')
+    })
+
+    it('closes an open toolbar menu with Esc first, then goes on as without it', async () => {
+      await shown()
+      drag({ x: 10, y: 10 }, { x: 110, y: 60 })
+      await screen.findByRole('button', { name: 'Color and size' }, { timeout: 5000 })
+      await colors()
+      await esc(1)
+      await waitFor(() => expect(screen.queryByLabelText('Thick')).toBeNull())
+      expect(selection()).not.toBeNull()
+      await userEvent.click(more())
+      await screen.findByText('Magnifier')
+      await esc(2)
+      await waitFor(() => expect(screen.queryByText('Magnifier')).toBeNull())
+      expect(selection()).not.toBeNull()
+      // Then the selection, then the overlay.
+      await esc(3)
+      await waitFor(() => expect(selection()).toBeNull())
+      await esc(4)
+      await waitFor(() =>
+        expect(answers().map((a) => (a as { handled: boolean }).handled)).toEqual([
+          true,
+          true,
+          true,
+          false,
+        ]),
+      )
+    })
+
+    it('leaves Copy to the text being typed with the color menu open', async () => {
+      await annotated()
+      await userEvent.keyboard('t')
+      fireEvent.pointerDown(layer(), point({ x: 70, y: 30 }))
+      fireEvent.pointerUp(layer(), point({ x: 70, y: 30 }))
+      const text = await screen.findByRole('textbox', { name: 'Text' })
+      await waitFor(() => expect(text).toHaveFocus())
+      await userEvent.click(screen.getByRole('button', { name: 'Color and size' }))
+      await screen.findByLabelText('Thick')
+      await userEvent.keyboard(`a${ctrl('c')}${ctrl('s')}`)
+      await tick()
+      expect(text).toHaveValue('a')
+      expect(sent).toHaveLength(0)
+      // In the hex field meanwhile, they neither take the color typed there nor go on.
+      const hex = screen.getByLabelText<HTMLInputElement>('Hex')
+      await userEvent.clear(hex)
+      await userEvent.type(hex, '#22c55e')
+      await userEvent.keyboard(ctrl('s'))
+      await tick()
+      expect(hex).toHaveValue('#22c55e')
+      expect(screen.getByTestId('current-color')).not.toHaveStyle({ background: '#22C55E' })
+      expect(sent).toHaveLength(0)
     })
 
     it('drops them for a new selection on another display', async () => {

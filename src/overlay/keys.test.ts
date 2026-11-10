@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { control, keyLabels, shortcut, typing } from './keys'
+import { control, fieldShortcut, keyLabels, shortcut, typing } from './keys'
 
 const platform = vi.hoisted(() => ({ mac: true }))
 vi.mock('$lib/settings.svelte', () => ({
@@ -62,5 +62,26 @@ describe('typing and control', () => {
     expect(control(el('<div role="menuitemcheckbox"></div>'))).toBe(true)
     expect(control(el('<div></div>'))).toBe(false)
     expect(control(null)).toBe(false)
+  })
+})
+
+describe('fieldShortcut', () => {
+  it('leaves Copy and Save to the capture outside fields', () => {
+    expect(fieldShortcut(el('<button></button>'), true)).toBe(false)
+    expect(fieldShortcut(null, false)).toBe(false)
+  })
+
+  it('gives them to a multi-line field', () => {
+    expect(fieldShortcut(el('<textarea></textarea>'), true)).toBe(true)
+    expect(fieldShortcut(el('<textarea></textarea>'), false)).toBe(true)
+  })
+
+  it('gives a one-line field only a Copy of the text selected in it', () => {
+    const hex = el('<input value="#EF4444">') as HTMLInputElement
+    hex.setSelectionRange(7, 7)
+    expect(fieldShortcut(hex, true)).toBe(false)
+    hex.setSelectionRange(0, 7)
+    expect(fieldShortcut(hex, true)).toBe(true)
+    expect(fieldShortcut(hex, false)).toBe(false)
   })
 })
