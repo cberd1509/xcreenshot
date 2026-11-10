@@ -161,6 +161,44 @@ The log now has what is needed to measure this in a release build:
 after the warm-up, and `-- memory 30` prints the process footprint over 30 captures and the
 idle minute after them.
 
+## Fewer frame copies: direct CoreGraphics capture (#55)
+
+`capture/cg.rs` makes the same `CGWindowListCreateImage(CGDisplayBounds(id), OptionAll, 0,
+Default)` call as xcap, then copies the image's `CFData` into the RGBA frame in one pass
+(`backend::bgra_to_rgba`: each row without its padding, then blue and red swapped in place). That
+skips xcap's `.to_vec()` copy, its separate swap pass over the whole frame, and its
+`Monitor::all` lookup. Geometry comes from CoreGraphics, as for ScreenCaptureKit (both use
+`cg::geometry` and `cg::to_rgba`, which refuses anything but BGRA). It keeps nothing between
+captures, and needs no new permission: it is the call xcap makes.
+
+`-- versus 30` captures every display 30 times with each backend, in turns, after one untimed
+capture each. Same Mac, one 3600x2338 display, release build, other agents' builds running:
+
+| Run | CoreGraphics median | p90 | xcap median (baseline) | p90 |
+| --- | --- | --- | --- | --- |
+| 1 | 41.9 ms | 46.5 ms | 43.6 ms | 50.9 ms |
+| 2 | 43.9 ms | 47.8 ms | 44.6 ms | 50.8 ms |
+| 3 | 43.5 ms | 55.0 ms | 43.4 ms | 56.1 ms |
+
+An earlier version of the copy (one pass writing swapped pixels into a zeroed buffer) measured
+40.7 vs 44.4 ms and 45.0 vs 49.3 ms. First call in a fresh process: CoreGraphics 101–111 ms,
+xcap 125–129 ms. Frames: same size, bounds and scale; on a still screen 99.7% of pixels were
+identical (mean difference 0.02 per channel, from the screen changing between the captures).
+
+Memory, one capture of every display in a fresh process (`-- held cg`, `-- held xcap`), the
+frame dropped at once, same result in two runs each:
+
+| Backend | Resident before | Peak resident | Resident 5 s after |
+| --- | --- | --- | --- |
+| CoreGraphics | 10 MB | 79 MB | 47 MB |
+| xcap | 10 MB | 112 MB | 80 MB |
+
+**Decision:** xcap stays the default. CoreGraphics is 0–4 ms (up to 9%) faster at the median,
+below the 15% or 15 ms a switch needs, so the copies are not where the capture time goes. It does
+hold one frame (about 33 MB) less at the peak and 5 s after, which the allocator keeps either
+way. That is a reason to revisit it for memory alone, not for speed. It stays available for
+measuring: `XCREENSHOT_CAPTURE_BACKEND=cg`, and the `cg` rows of the example.
+
 ## Crop source (#9)
 
 The crop for copy and save (#12) needs the exact captured pixels. Two options:

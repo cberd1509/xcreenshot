@@ -1,11 +1,15 @@
 //! Which capture backend runs, and whether what it returned can be used, plus the pure parts of
-//! the ScreenCaptureKit backend (pixel copy, pixel size, when to refetch content), so they are
-//! tested on every platform. The OS calls are xcap (`capture/mod.rs`) and ScreenCaptureKit
-//! (`capture/sck.rs`, macOS 14+).
+//! the macOS backends (pixel copy, pixel size, when to refetch content), so they are tested on
+//! every platform. The OS calls are xcap (`capture/mod.rs`), CoreGraphics (`capture/cg.rs`) and
+//! ScreenCaptureKit (`capture/sck.rs`, macOS 14+).
 //!
 //! xcap goes through `CGWindowListCreateImage`, which Apple has deprecated (#49). It is the
 //! default while it works because it is faster. ScreenCaptureKit takes over when that call is
 //! missing, fails, or returns only empty or black images, so a future macOS cannot break capture.
+//!
+//! CoreGraphics makes the same call as xcap with fewer copies of the frame (#55). It runs only
+//! when forced ([`ENV`]): it measured 0–4 ms faster than xcap, too little to switch the default
+//! (`docs/spikes/capture.md`).
 
 use super::{CaptureError, DisplayFrame};
 use image::RgbaImage;
@@ -13,11 +17,14 @@ use std::fmt;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-/// Forces a backend for testing: `xcap`, `screencapturekit` (or `sck`), or `auto` (the default).
+/// Forces a backend for testing: `cg` (or `coregraphics`), `xcap`, `screencapturekit` (or
+/// `sck`), or `auto` (the default).
 pub const ENV: &str = "XCREENSHOT_CAPTURE_BACKEND";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
+    /// `CGWindowListCreateImage` called directly (macOS only).
+    CoreGraphics,
     Xcap,
     ScreenCaptureKit,
 }
@@ -25,6 +32,7 @@ pub enum Backend {
 impl fmt::Display for Backend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Self::CoreGraphics => "CoreGraphics",
             Self::Xcap => "xcap",
             Self::ScreenCaptureKit => "ScreenCaptureKit",
         })
@@ -42,6 +50,7 @@ impl Preference {
     /// Reads the value of [`ENV`]. Anything unknown is `Auto`.
     pub fn parse(value: Option<&str>) -> Self {
         match value.map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+            Some("cg" | "coregraphics") => Self::Only(Backend::CoreGraphics),
             Some("xcap") => Self::Only(Backend::Xcap),
             Some("sck" | "screencapturekit") => Self::Only(Backend::ScreenCaptureKit),
             Some("" | "auto") | None => Self::Auto,
@@ -65,6 +74,7 @@ pub struct Support {
 impl Support {
     fn has(self, backend: Backend) -> bool {
         match backend {
+            Backend::CoreGraphics => cfg!(target_os = "macos") && self.xcap,
             Backend::Xcap => self.xcap,
             Backend::ScreenCaptureKit => self.sck,
         }
@@ -259,12 +269,14 @@ pub fn bgra_to_rgba(
     if data.len() < needed {
         return None;
     }
-    let mut out = Vec::with_capacity(row * height);
-    // One pass: copy each row without its padding, swapping blue and red on the way.
-    for y in 0..height {
-        let start = y * bytes_per_row;
-        for &[b, g, r, a] in data[start..start + row].as_chunks::<4>().0 {
-            out.extend_from_slice(&[r, g, b, a]);
+    let mut out = Vec::with_capacity(row.checked_mul(height)?);
+    // Each row without its padding, then blue and red swapped while the row is still in cache.
+    // Fixed-size pixels let the compiler vectorise the swap.
+    for src in data.chunks(bytes_per_row).take(height) {
+        let start = out.len();
+        out.extend_from_slice(&src[..row]);
+        for pixel in out[start..].as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
         }
     }
     RgbaImage::from_raw(u32::try_from(width).ok()?, u32::try_from(height).ok()?, out)
@@ -304,6 +316,7 @@ mod tests {
         xcap: true,
         sck: true,
     };
+    const CG: Backend = Backend::CoreGraphics;
     const XCAP: Backend = Backend::Xcap;
     const SCK: Backend = Backend::ScreenCaptureKit;
 
@@ -343,13 +356,15 @@ mod tests {
         assert_eq!(p(Some("")), Preference::Auto);
         assert_eq!(p(Some("auto")), Preference::Auto);
         assert_eq!(p(Some("nonsense")), Preference::Auto);
+        assert_eq!(p(Some("cg")), Preference::Only(CG));
+        assert_eq!(p(Some("CoreGraphics")), Preference::Only(CG));
         assert_eq!(p(Some("xcap")), Preference::Only(XCAP));
         assert_eq!(p(Some(" XCAP ")), Preference::Only(XCAP));
         assert_eq!(p(Some("sck")), Preference::Only(SCK));
         assert_eq!(p(Some("ScreenCaptureKit")), Preference::Only(SCK));
         assert_eq!(
-            (XCAP.to_string(), SCK.to_string()),
-            ("xcap".into(), "ScreenCaptureKit".into())
+            [CG, XCAP, SCK].map(|b| b.to_string()),
+            ["CoreGraphics", "xcap", "ScreenCaptureKit"]
         );
     }
 
@@ -371,6 +386,14 @@ mod tests {
         let c = Chooser::new();
         assert_eq!(c.order(Preference::Only(SCK), BOTH), [SCK]);
         assert_eq!(c.order(Preference::Only(XCAP), BOTH), [XCAP]);
+        // CoreGraphics is macOS only, and needs the call xcap makes.
+        let cg = c.order(Preference::Only(CG), BOTH);
+        assert_eq!(cg.len(), usize::from(cfg!(target_os = "macos")));
+        let removed = Support {
+            xcap: false,
+            ..BOTH
+        };
+        assert!(c.order(Preference::Only(CG), removed).is_empty());
         let old_macos = Support { sck: false, ..BOTH };
         assert!(c.order(Preference::Only(SCK), old_macos).is_empty());
         let (result, used) = c.run(&[], &[1], BUDGET, |_, _, _| unreachable!());
@@ -385,8 +408,8 @@ mod tests {
         let (result, used) = c.run(&[XCAP, SCK], &[1], BUDGET, |b, ids, _| {
             tried.borrow_mut().push(b);
             each(ids, |id| match b {
-                XCAP => Err(CaptureError::Backend("gone".into())),
                 SCK => Ok(frame(id, [9, 9, 9])),
+                _ => Err(CaptureError::Backend("gone".into())),
             })
         });
         assert_eq!(used, [(SCK, 1)]);
@@ -395,8 +418,8 @@ mod tests {
 
         let (_, used) = c.run(&[XCAP, SCK], &[1, 2], BUDGET, |b, ids, _| {
             each(ids, |id| match b {
-                XCAP => Ok(frame(id, [0, 0, 0])),
                 SCK => Ok(frame(id, [1, 2, 3])),
+                _ => Ok(frame(id, [0, 0, 0])),
             })
         });
         assert_eq!(used, [(SCK, 2)]);
@@ -413,7 +436,7 @@ mod tests {
                 (XCAP, 1) => Ok(frame(id, [5, 5, 5])),
                 (XCAP, 2) => Err(CaptureError::Backend("display 2 timed out".into())),
                 (XCAP, _) => Ok(frame(id, [0, 0, 0])),
-                (SCK, _) => Ok(frame(id, [7, 7, 7])),
+                _ => Ok(frame(id, [7, 7, 7])),
             })
         });
         assert_eq!(*asked.borrow(), [(XCAP, vec![1, 2, 3]), (SCK, vec![2, 3])]);
@@ -431,7 +454,7 @@ mod tests {
             each(ids, |id| match (b, id) {
                 (XCAP, 1) => Ok(frame(id, [0, 0, 0])),
                 (XCAP, _) => Ok(frame(id, [4, 4, 4])),
-                (SCK, _) => Err(CaptureError::Backend("alert".into())),
+                _ => Err(CaptureError::Backend("alert".into())),
             })
         });
         assert_eq!(ids(&result.unwrap()), [1, 2]);
@@ -501,8 +524,8 @@ mod tests {
         let c = Chooser::new();
         let broken = |b, ids: &[u32], _| {
             each(ids, |id| match b {
-                XCAP => Err(CaptureError::EmptyImage),
                 SCK => Ok(frame(id, [1, 1, 1])),
+                _ => Err(CaptureError::EmptyImage),
             })
         };
         for _ in 0..XCAP_STRIKES {
@@ -547,6 +570,35 @@ mod tests {
             3,
             image::Rgba([0, 9, 0, 255])
         )));
+    }
+
+    #[test]
+    fn padded_rows_lose_their_padding() {
+        // 3x3 pixels in rows of 16 bytes (4 of padding filled with 0xEE), as CoreGraphics pads a
+        // row to its alignment. Each pixel is BGRA with blue = x, green = y, red = 9.
+        let (w, h, stride) = (3, 3, 16);
+        let data: Vec<u8> = (0..h)
+            .flat_map(|y| {
+                let pixels = (0..w).flat_map(move |x| [x as u8, y as u8, 9, 255]);
+                pixels.chain([0xEE; 4])
+            })
+            .collect();
+        assert_eq!(data.len(), stride * h);
+        let img = bgra_to_rgba(&data, w, h, stride).unwrap();
+        assert_eq!(img.as_raw().len(), w * h * 4, "no padding kept");
+        for (x, y, p) in img.enumerate_pixels() {
+            assert_eq!(p.0, [9, y as u8, x as u8, 255], "pixel {x},{y}");
+        }
+        // No padding: the stride is the row.
+        let tight: Vec<u8> = data
+            .chunks(stride)
+            .flat_map(|r| r[..w * 4].to_vec())
+            .collect();
+        assert_eq!(bgra_to_rgba(&tight, w, h, w * 4), Some(img.clone()));
+        // Extra bytes after the last row are ignored.
+        let mut longer = data.clone();
+        longer.extend([1; 64]);
+        assert_eq!(bgra_to_rgba(&longer, w, h, stride), Some(img));
     }
 
     #[test]

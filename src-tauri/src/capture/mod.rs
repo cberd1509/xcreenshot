@@ -1,14 +1,30 @@
 //! Screen capture: grab every display at native resolution, then crop a selection.
 //!
-//! The OS calls (via the `xcap` crate, and ScreenCaptureKit in `sck.rs` on macOS) are the few
-//! functions at the bottom of this file. Geometry, cropping, error handling, encoding and the
-//! choice of backend (`backend.rs`) are pure and unit-tested.
+//! The OS calls (via the `xcap` crate, and on macOS CoreGraphics in `cg.rs` and ScreenCaptureKit
+//! in `sck.rs`) are the few functions at the bottom of this file. Geometry, cropping, error
+//! handling, encoding and the choice of backend (`backend.rs`) are pure and unit-tested.
 //! See `docs/spikes/capture.md` for the choice of `xcap` and measured latency.
 
 mod backend;
+#[cfg(target_os = "macos")]
+mod cg;
 mod geometry;
 #[cfg(target_os = "macos")]
 mod sck;
+
+/// CoreGraphics is macOS only. Elsewhere it is not in [`support`], so these never run.
+#[cfg(not(target_os = "macos"))]
+mod cg {
+    use super::{Bounds, CaptureError};
+
+    pub fn capture(_id: u32) -> Result<(Bounds, f64, image::RgbaImage), CaptureError> {
+        Err(super::backend::no_backend())
+    }
+
+    pub fn warm_up(_id: u32) -> Result<(), CaptureError> {
+        Err(super::backend::no_backend())
+    }
+}
 
 /// ScreenCaptureKit is macOS only. Elsewhere `available` is false, so the rest never runs.
 #[cfg(not(target_os = "macos"))]
@@ -177,7 +193,8 @@ fn to_frame(
 const DISPLAY_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Displays whose capture thread is still running (stalled past the timeout), per backend, so
-/// a display stuck in xcap can still fall back to ScreenCaptureKit.
+/// a display stuck in one backend can still fall back to the next.
+static IN_FLIGHT_CG: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 static IN_FLIGHT: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 static IN_FLIGHT_SCK: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
@@ -391,6 +408,7 @@ fn capture_with(
     timeout: Duration,
 ) -> Vec<Result<DisplayFrame, CaptureError>> {
     let in_flight = match backend {
+        Backend::CoreGraphics => &IN_FLIGHT_CG,
         Backend::Xcap => &IN_FLIGHT,
         Backend::ScreenCaptureKit => &IN_FLIGHT_SCK,
     };
@@ -455,10 +473,11 @@ fn monitor(id: u32) -> Result<xcap::Monitor, CaptureError> {
         .ok_or_else(|| CaptureError::Backend(format!("display {id} disappeared")))
 }
 
-/// ScreenCaptureKit reads the display's geometry itself, so a display xcap cannot describe
-/// can still fall back to it.
+/// CoreGraphics and ScreenCaptureKit read the display's geometry themselves, so a display xcap
+/// cannot describe can still be captured.
 fn capture_display(with: Backend, id: u32) -> Result<DisplayFrame, CaptureError> {
     let (bounds, scale, image) = match with {
+        Backend::CoreGraphics => cg::capture(id)?,
         Backend::Xcap => {
             let m = monitor(id)?;
             let bounds = os_bounds(&m)?;
@@ -472,6 +491,7 @@ fn capture_display(with: Backend, id: u32) -> Result<DisplayFrame, CaptureError>
 
 fn warm_display(backend: Backend, id: u32) -> Result<(), CaptureError> {
     match backend {
+        Backend::CoreGraphics => cg::warm_up(id),
         Backend::Xcap => monitor(id)?
             .capture_region(0, 0, 1, 1)
             .map(drop)
@@ -484,8 +504,8 @@ fn backend(e: xcap::XCapError) -> CaptureError {
     CaptureError::Backend(e.to_string())
 }
 
-/// What can capture here: ScreenCaptureKit from macOS 14, and xcap while
-/// `CGWindowListCreateImage` exists. It is weakly linked (`build.rs`), so if a future macOS
+/// What can capture here: ScreenCaptureKit from macOS 14, and CoreGraphics (macOS) and xcap
+/// while `CGWindowListCreateImage` exists. It is weakly linked (`build.rs`), so if a future macOS
 /// removes it the app still starts and this is false.
 fn support() -> backend::Support {
     static XCAP: OnceLock<bool> = OnceLock::new();
@@ -859,8 +879,10 @@ mod tests {
 
     #[test]
     #[cfg(not(target_os = "macos"))]
-    fn screencapturekit_is_macos_only() {
+    fn screencapturekit_and_coregraphics_are_macos_only() {
         assert!(sck::capture(1).is_err());
         assert!(sck::warm_up(1).is_err());
+        assert!(cg::capture(1).is_err());
+        assert!(cg::warm_up(1).is_err());
     }
 }
