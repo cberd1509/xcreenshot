@@ -1,5 +1,35 @@
 # xcreenshot
 
+## 0.9.0
+
+### Minor Changes
+
+- [#123](https://github.com/cberd1509/xcreenshot/pull/123) [`b9158a5`](https://github.com/cberd1509/xcreenshot/commit/b9158a5921e17690988e5255a33b9f4e0962724f) Thanks [@cberd1509](https://github.com/cberd1509)! - Double-click a window to select it, or ⌘/Ctrl double-click for the whole screen.
+
+- [#130](https://github.com/cberd1509/xcreenshot/pull/130) [`968e70e`](https://github.com/cberd1509/xcreenshot/commit/968e70ebc05968596d29a6c13c5acb8da2d10ee3) Thanks [@cberd1509](https://github.com/cberd1509)! - After a few plain copies in a row, the next capture suggests turning on quick copy.
+
+- [#129](https://github.com/cberd1509/xcreenshot/pull/129) [`fa6e792`](https://github.com/cberd1509/xcreenshot/commit/fa6e792da4af2c6a3d2619239f222f709462f72b) Thanks [@cberd1509](https://github.com/cberd1509)! - Copy and Save now have a menu to copy or save at 2×, 3× or 4× the size.
+
+- [#131](https://github.com/cberd1509/xcreenshot/pull/131) [`b739929`](https://github.com/cberd1509/xcreenshot/commit/b739929a4798578598e11bb6cf86c24776685605) Thanks [@cberd1509](https://github.com/cberd1509)! - Share works on Windows too, with the Windows share sheet.
+
+### Patch Changes
+
+- [#132](https://github.com/cberd1509/xcreenshot/pull/132) [`4f9dc5c`](https://github.com/cberd1509/xcreenshot/commit/4f9dc5c02d28b8f48d33a327440301d33be374a8) Thanks [@cberd1509](https://github.com/cberd1509)! - Closing a capture or answering a notice returns you to the last app you were using.
+
+- [#114](https://github.com/cberd1509/xcreenshot/pull/114) [`617531f`](https://github.com/cberd1509/xcreenshot/commit/617531f0082a3e8752316a8b6ebee7f7eabd4ddc) Thanks [@cberd1509](https://github.com/cberd1509)! - The capture overlay no longer flashes as it opens.
+
+- [#133](https://github.com/cberd1509/xcreenshot/pull/133) [`9510ab9`](https://github.com/cberd1509/xcreenshot/commit/9510ab9cdb3650b1e4056f122a8c09a49d0f2264) Thanks [@cberd1509](https://github.com/cberd1509)! - The capture overlay uses less memory after it closes.
+
+- [#121](https://github.com/cberd1509/xcreenshot/pull/121) [`b0e778b`](https://github.com/cberd1509/xcreenshot/commit/b0e778b782a8a7b3f79e1f8ea3bc3042bc104b88) Thanks [@cberd1509](https://github.com/cberd1509)! - Copy and Save shortcuts now work while typing in the color menu's hex field.
+
+- [#126](https://github.com/cberd1509/xcreenshot/pull/126) [`48d6629`](https://github.com/cberd1509/xcreenshot/commit/48d6629b423935d77e6dade1c6062762f1f46d1d) Thanks [@cberd1509](https://github.com/cberd1509)! - On macOS the Save dialog opens in the middle of the screen you captured and can be moved.
+
+- [#124](https://github.com/cberd1509/xcreenshot/pull/124) [`330f7ee`](https://github.com/cberd1509/xcreenshot/commit/330f7ee73dc35b69fc65bd1255fddd50448e45da) Thanks [@cberd1509](https://github.com/cberd1509)! - On macOS, screenshots keep working if Apple removes the older capture API.
+
+- [#126](https://github.com/cberd1509/xcreenshot/pull/126) [`48d6629`](https://github.com/cberd1509/xcreenshot/commit/48d6629b423935d77e6dade1c6062762f1f46d1d) Thanks [@cberd1509](https://github.com/cberd1509)! - Sharing no longer flashes the screen black after you pick a service.
+
+- [#127](https://github.com/cberd1509/xcreenshot/pull/127) [`2a0f297`](https://github.com/cberd1509/xcreenshot/commit/2a0f297d1442a6918f88ca8d654bf348f6a6752f) Thanks [@cberd1509](https://github.com/cberd1509)! - Copy and Save shortcuts now work while typing in the size badge's width and height fields.
+
 ## 0.4.0
 
 ### Minor Changes
