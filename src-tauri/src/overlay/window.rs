@@ -73,14 +73,16 @@ pub(crate) fn phase<R: Runtime>(app: &AppHandle<R>) -> MutexGuard<'_, Phase> {
     app.state::<Overlay>().inner().phase()
 }
 
-/// Shows or hides an overlay window and records which are on screen ([`shown`]).
-fn set_shown<R: Runtime>(window: &WebviewWindow<R>, on: bool) -> tauri::Result<()> {
+/// Shows or hides an overlay window and records which are on screen ([`shown`]). A staged
+/// window that can't be made opaque and clickable is not shown (see [`unstage_steps`]).
+fn set_shown<R: Runtime>(window: &WebviewWindow<R>, on: bool) -> Result<(), String> {
     if on {
-        stage(window, false);
-        window.show()?;
+        unstage(window)?;
+        window.show()
     } else {
-        window.hide()?;
+        window.hide()
     }
+    .map_err(|e| e.to_string())?;
     if let Some(display) = display_id(window.label()) {
         let overlay = window.state::<Overlay>();
         let mut shown = lock(&overlay.shown);
@@ -313,7 +315,7 @@ fn stage_unpainted<R: Runtime>(app: &AppHandle<R>, session: u64, displays: &[u32
     let shown = lock(&app.state::<Overlay>().shown).clone();
     for &d in displays.iter().filter(|d| !shown.contains(d)) {
         if let Some(window) = app.get_webview_window(&label(d)) {
-            stage(&window, true);
+            stage(&window);
         }
     }
 }
@@ -634,40 +636,98 @@ fn build<R: Runtime>(app: &AppHandle<R>, display: u32) -> tauri::Result<WebviewW
 /// webview renders the frame while nothing shows yet. A hidden webview renders nothing, so a
 /// window shown as soon as the page drew would first show what it rendered last (black, or
 /// the previous capture). The page reports the paint once the frame is rendered, and
-/// [`set_shown`] unstages it (opaque, taking clicks again); a window that isn't staged is left
-/// as it is. Main thread only.
-fn stage<R: Runtime>(window: &WebviewWindow<R>, staged: bool) {
+/// [`set_shown`] unstages it (opaque, taking clicks again). Main thread only.
+fn stage<R: Runtime>(window: &WebviewWindow<R>) {
     let Some(display) = display_id(window.label()) else {
         return;
     };
-    let was_staged = {
-        let overlay = window.state::<Overlay>();
-        let mut list = lock(&overlay.staged);
-        let was = list.contains(&display);
-        list.retain(|&d| d != display);
-        if staged {
-            list.push(display);
-        }
-        was
-    };
-    if !staged && !was_staged {
-        return;
+    let staged = stage_steps(
+        window.label(),
+        |on| click_through(window, on),
+        || present(window, true),
+    );
+    // A window already listed stays listed: it may still be transparent from before.
+    let overlay = window.state::<Overlay>();
+    let mut list = lock(&overlay.staged);
+    if staged && !list.contains(&display) {
+        list.push(display);
     }
-    let click_through = || {
-        if let Err(e) = window.set_ignore_cursor_events(staged) {
-            log::warn!("could not change clicks on {}: {e}", window.label());
-        }
+}
+
+/// Makes a staged window opaque and clickable again; does nothing to one that isn't staged.
+/// Main thread only.
+fn unstage<R: Runtime>(window: &WebviewWindow<R>) -> Result<(), String> {
+    let Some(display) = display_id(window.label()) else {
+        return Ok(());
     };
-    // Click-through before it goes on screen; taking clicks only once it is opaque.
-    if staged {
-        click_through();
+    let overlay = window.state::<Overlay>();
+    if !lock(&overlay.staged).contains(&display) {
+        return Ok(());
     }
+    unstage_steps(|| present(window, false), |on| click_through(window, on)).map_err(|e| {
+        format!(
+            "could not make {} opaque and clickable: {e}",
+            window.label()
+        )
+    })?;
+    lock(&overlay.staged).retain(|&d| d != display);
+    Ok(())
+}
+
+/// Staging, in order: click-through, then on screen at alpha 0 (`present`). If click-through
+/// fails the window isn't staged: a transparent window taking clicks would swallow them, so it
+/// stays hidden and shows opaque on its paint, as before staging. If it can't go on screen
+/// transparent, click-through is undone. Returns whether the window must be unstaged before it
+/// shows: staged, or still click-through because undoing that failed too.
+fn stage_steps(
+    label: &str,
+    mut click_through: impl FnMut(bool) -> Result<(), String>,
+    present: impl FnOnce() -> Result<(), String>,
+) -> bool {
+    if let Err(e) = click_through(true) {
+        log::warn!("could not make {label} click-through; it shows when painted: {e}");
+        return false;
+    }
+    let Err(e) = present() else {
+        return true;
+    };
+    log::warn!("could not stage {label}; it shows when painted: {e}");
+    click_through(false)
+        .inspect_err(|e| log::warn!("could not make {label} clickable again: {e}"))
+        .is_err()
+}
+
+/// Unstaging, in order: opaque, then taking clicks, each tried twice. An error means the
+/// window would be invisible or ignore clicks, so the caller must not show it.
+fn unstage_steps(
+    mut opaque: impl FnMut() -> Result<(), String>,
+    mut click_through: impl FnMut(bool) -> Result<(), String>,
+) -> Result<(), String> {
+    opaque().or_else(|_| opaque())?;
+    click_through(false).or_else(|_| click_through(false))
+}
+
+fn click_through<R: Runtime>(window: &WebviewWindow<R>, on: bool) -> Result<(), String> {
+    window
+        .set_ignore_cursor_events(on)
+        .map_err(|e| e.to_string())
+}
+
+/// The platform half of staging: on screen at alpha 0 (`staged`), or opaque again.
+fn present<R: Runtime>(window: &WebviewWindow<R>, staged: bool) -> Result<(), String> {
     #[cfg(all(target_os = "macos", not(test)))]
-    macos::stage(window, staged);
+    {
+        macos::stage(window, staged)
+    }
     #[cfg(all(target_os = "windows", not(test)))]
-    win::stage(window, staged);
-    if !staged {
-        click_through();
+    {
+        win::stage(window, staged)
+    }
+    // The mock runtime has no native window.
+    #[cfg(any(test, not(any(target_os = "macos", target_os = "windows"))))]
+    {
+        let _ = (window, staged);
+        Ok(())
     }
 }
 
@@ -679,14 +739,13 @@ mod macos {
     use tauri::{Runtime, WebviewWindow};
 
     /// Staged: ordered in at alpha 0 without taking focus. Unstaged: opaque.
-    pub fn stage<R: Runtime>(window: &WebviewWindow<R>, staged: bool) {
-        let Some(ns_window) = main_ns_window(window) else {
-            return;
-        };
+    pub fn stage<R: Runtime>(window: &WebviewWindow<R>, staged: bool) -> Result<(), String> {
+        let ns_window = main_ns_window(window).ok_or("no NSWindow on the main thread")?;
         ns_window.setAlphaValue(if staged { 0.0 } else { 1.0 });
         if staged {
             ns_window.orderFrontRegardless();
         }
+        Ok(())
     }
 
     pub fn raise<R: Runtime>(window: &WebviewWindow<R>) {
@@ -713,20 +772,16 @@ mod win {
     /// activates it, so Tauri's own style updates keep it visible; the capture is already taken
     /// and the overlay takes focus anyway once revealed. Unstaged: alpha 255, before
     /// click-through goes and with it the layered style.
-    pub fn stage<R: Runtime>(window: &WebviewWindow<R>, staged: bool) {
-        let hwnd = match window.hwnd() {
-            Ok(hwnd) => hwnd,
-            Err(e) => return log::error!("no HWND for {}: {e}", window.label()),
-        };
+    pub fn stage<R: Runtime>(window: &WebviewWindow<R>, staged: bool) -> Result<(), String> {
+        let hwnd = window.hwnd().map_err(|e| format!("no HWND: {e}"))?;
         let alpha = if staged { 0 } else { 255 };
         // SAFETY: Tauri returns the live HWND of this window, and we are on its thread.
-        if let Err(e) = unsafe { SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA) } {
-            // Staging failed: it stays hidden and shows opaque on the paint, as before.
-            return log::warn!("could not set the alpha of {}: {e}", window.label());
+        unsafe { SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA) }
+            .map_err(|e| format!("could not set the alpha: {e}"))?;
+        if staged {
+            window.show().map_err(|e| e.to_string())?;
         }
-        if staged && let Err(e) = window.show() {
-            log::warn!("could not show {} for its paint: {e}", window.label());
-        }
+        Ok(())
     }
 }
 
@@ -1192,6 +1247,70 @@ pub(crate) mod tests {
         close(h);
         stage_unpainted(h, session, &[1, 2]);
         assert!(staged(h).is_empty(), "closed first");
+    }
+
+    /// A step that fails its first `fails` calls, recording each call's argument.
+    fn step(
+        fails: usize,
+        calls: &std::cell::RefCell<Vec<bool>>,
+    ) -> impl FnMut(bool) -> Result<(), String> {
+        move |on| {
+            calls.borrow_mut().push(on);
+            if calls.borrow().len() <= fails {
+                Err("no".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn staging_needs_click_through_first() {
+        let clicks = Default::default();
+        let mut presented = false;
+        let staged = stage_steps("w", step(1, &clicks), || {
+            presented = true;
+            Ok(())
+        });
+        assert!(!staged, "never transparent while taking clicks");
+        assert!(!presented);
+        assert_eq!(*clicks.borrow(), [true]);
+    }
+
+    #[test]
+    fn staging_that_cannot_go_on_screen_undoes_click_through() {
+        let clicks = Default::default();
+        assert!(stage_steps("w", step(0, &clicks), || Ok(())), "staged");
+        let clicks = Default::default();
+        assert!(!stage_steps("w", step(0, &clicks), || Err("no".into())));
+        assert_eq!(*clicks.borrow(), [true, false], "clickable again");
+        // Still click-through: it must be unstaged before it shows.
+        let undo_fails = |on: bool| if on { Ok(()) } else { Err("no".to_owned()) };
+        assert!(stage_steps("w", undo_fails, || Err("no".into())));
+    }
+
+    #[test]
+    fn unstaging_retries_each_step_once_then_fails() {
+        let run = |opaque_fails: usize, click_fails: usize| {
+            let mut opaque_calls = 0;
+            let clicks = Default::default();
+            let result = unstage_steps(
+                || {
+                    opaque_calls += 1;
+                    if opaque_calls <= opaque_fails {
+                        Err("no".into())
+                    } else {
+                        Ok(())
+                    }
+                },
+                step(click_fails, &clicks),
+            );
+            (result.is_ok(), opaque_calls, clicks.borrow().len())
+        };
+        assert_eq!(run(0, 0), (true, 1, 1));
+        assert_eq!(run(1, 1), (true, 2, 2), "one retry each");
+        assert_eq!(run(2, 0), (false, 2, 0), "never clickable while invisible");
+        assert_eq!(run(0, 2), (false, 1, 2));
     }
 
     #[test]
