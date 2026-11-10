@@ -55,7 +55,7 @@ The **Release** workflow (`.github/workflows/release.yml`, see [releasing.md](re
 | `xcreenshot_<version>_x64-setup.exe.sig`         | its signature, copied into `latest.json` |
 | `latest.json` (signed macOS builds only)         | the updater (the manifest)  |
 
-The updater only sees it once the release is **published** (not a draft or prerelease, and marked "latest"), so `releases/latest/download/latest.json` resolves to it. After publishing, `latest.json` looks like this; all the macOS entries point at the same universal `.app.tar.gz`, and both Windows entries at the installer:
+The updater only sees it once the release is **published** (not a draft or prerelease, and marked "latest"), so `releases/latest/download/latest.json` resolves to it. Betas are prereleases, so the updater never offers them ([releasing.md](releasing.md#beta)). After publishing, `latest.json` looks like this; all the macOS entries point at the same universal `.app.tar.gz`, and both Windows entries at the installer:
 
 ```json
 {

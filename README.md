@@ -11,7 +11,7 @@ Website: https://cberd1509.github.io/xcreenshot/
 
 [![CI](https://github.com/cberd1509/xcreenshot/actions/workflows/ci.yml/badge.svg)](https://github.com/cberd1509/xcreenshot/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/cberd1509/xcreenshot/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/cberd1509/xcreenshot/security/code-scanning)
-[![Latest release](https://img.shields.io/github/v/release/cberd1509/xcreenshot?include_prereleases&sort=semver)](https://github.com/cberd1509/xcreenshot/releases)
+[![Latest release](https://img.shields.io/github/v/release/cberd1509/xcreenshot?sort=semver)](https://github.com/cberd1509/xcreenshot/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 <br />
 [![macOS](https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white)](#install)
