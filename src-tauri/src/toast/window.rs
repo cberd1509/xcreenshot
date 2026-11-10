@@ -1,13 +1,15 @@
-//! Tauri glue for the toasts: the window, the sound and the page's two commands.
+//! Tauri glue for the toasts: the window, the sound and the page's commands.
 //!
 //! [`show`] builds the window if needed, moves it to the bottom of the work area of the display the
 //! capture was on, plays the sound and sends the toast (`toast:show`), or keeps it until the page
 //! asks for it (`toast_ready`). The page calls `toast_idle` when its last toast has faded; the
 //! window then hides. A capture hides it at once ([`hide_for_capture`]), so no toast is in the
-//! frame.
+//! frame. While a Saved toast is up, the page makes the window take clicks (`toast_clickable`)
+//! and its buttons open the file (`toast_action`).
 
-use super::{LABEL, Queue, SIZE, Shown, Toast, place, room, sound};
+use super::{Action, LABEL, Queue, SIZE, Shown, Toast, open, place, room, sound};
 use crate::capture::{Bounds, Display};
+use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use tauri::utils::config::BackgroundThrottlingPolicy;
 use tauri::webview::{PageLoadEvent, PageLoadPayload};
@@ -148,13 +150,15 @@ pub fn prewarm<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-/// The toast window, built hidden if it isn't yet. It can't take focus or clicks.
+/// The toast window, built hidden if it isn't yet. It can't take focus (`focusable(false)` is
+/// `WS_EX_NOACTIVATE` on Windows; a non-activating panel on macOS), and takes clicks only while
+/// a Saved toast is up.
 fn window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<WebviewWindow<R>> {
     if let Some(window) = app.get_webview_window(LABEL) {
         return Ok(window);
     }
     let url = WebviewUrl::App("toast.html".into());
-    let window = WebviewWindowBuilder::new(app, LABEL, url)
+    let builder = WebviewWindowBuilder::new(app, LABEL, url)
         .title("xcreenshot")
         .inner_size(f64::from(SIZE.0), f64::from(SIZE.1))
         .visible(false)
@@ -169,8 +173,11 @@ fn window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<WebviewWindow<R>> {
         .transparent(true)
         .background_color(tauri::window::Color(0, 0, 0, 0))
         // It gets toasts while hidden; WebKit would otherwise throttle it.
-        .background_throttling(BackgroundThrottlingPolicy::Disabled)
-        .build()?;
+        .background_throttling(BackgroundThrottlingPolicy::Disabled);
+    // The first click on a button acts, instead of only reaching the window.
+    #[cfg(target_os = "macos")]
+    let builder = builder.accept_first_mouse(true);
+    let window = builder.build()?;
     window.set_ignore_cursor_events(true)?;
     #[cfg(all(target_os = "macos", not(test)))]
     native::prepare(&window);
@@ -190,16 +197,34 @@ fn present<R: Runtime>(window: &WebviewWindow<R>) {
     }
 }
 
-/// Takes the window off screen.
-#[cfg(all(target_os = "windows", not(test)))]
+/// Takes the window off screen, ignoring the mouse again.
 fn conceal<R: Runtime>(window: &WebviewWindow<R>) {
+    clickable(window, false);
+    hide(window);
+}
+
+#[cfg(all(target_os = "windows", not(test)))]
+fn hide<R: Runtime>(window: &WebviewWindow<R>) {
     native::conceal(window);
 }
 
 #[cfg(not(all(target_os = "windows", not(test))))]
-fn conceal<R: Runtime>(window: &WebviewWindow<R>) {
+fn hide<R: Runtime>(window: &WebviewWindow<R>) {
     if let Err(e) = window.hide() {
         log::warn!("could not hide the toasts: {e}");
+    }
+}
+
+/// Makes the window take clicks (`on`) or let them through to what is under it.
+#[cfg(all(target_os = "windows", not(test)))]
+fn clickable<R: Runtime>(window: &WebviewWindow<R>, on: bool) {
+    native::clickable(window, on);
+}
+
+#[cfg(not(all(target_os = "windows", not(test))))]
+fn clickable<R: Runtime>(window: &WebviewWindow<R>, on: bool) {
+    if let Err(e) = window.set_ignore_cursor_events(!on) {
+        log::warn!("could not make the toasts take clicks ({on}): {e}");
     }
 }
 
@@ -228,20 +253,100 @@ pub(crate) fn toast_idle<R: Runtime>(window: WebviewWindow<R>, state: State<'_, 
     }
 }
 
-/// Window level, Spaces and hiding: what Tauri's builder can't set.
+/// A Saved toast came up (`on`) or the last one went: the window takes clicks only meanwhile.
+#[tauri::command]
+pub(crate) fn toast_clickable<R: Runtime>(
+    window: WebviewWindow<R>,
+    state: State<'_, Toasts>,
+    on: bool,
+) {
+    if window.label() == LABEL {
+        clickable(&window, state.queue().clickable(on));
+    }
+}
+
+/// A Saved toast's button: does `action` with the file that toast `seq` is about.
+#[tauri::command]
+pub(crate) fn toast_action<R: Runtime>(
+    window: WebviewWindow<R>,
+    state: State<'_, Toasts>,
+    seq: u64,
+    action: Action,
+) -> Result<(), String> {
+    if window.label() != LABEL {
+        return Err("not the toast window".into());
+    }
+    let path = state
+        .queue()
+        .file(seq)
+        .map(Path::to_path_buf)
+        .ok_or_else(|| format!("no saved file for toast {seq}"))?;
+    open::run(action, &path).inspect_err(|e| log::warn!("{e}"))
+}
+
+/// Panel, window level, Spaces and hiding: what Tauri's builder can't set.
 #[cfg(all(target_os = "macos", not(test)))]
 mod native {
     use crate::macos::main_ns_window;
-    use objc2_app_kit::{NSStatusWindowLevel, NSWindowCollectionBehavior};
+    use objc2::runtime::{AnyObject, NSObject};
+    use objc2::{ClassType, MainThreadOnly, define_class};
+    use objc2_app_kit::{
+        NSPanel, NSResponder, NSStatusWindowLevel, NSWindow, NSWindowCollectionBehavior,
+        NSWindowStyleMask,
+    };
     use tauri::{Runtime, WebviewWindow};
 
-    /// Above the Dock and the menu bar, on every Space and over full-screen apps, out of the
-    /// window cycle, and still on screen while the app is hidden (closing the overlay hides the
-    /// app to give focus back).
+    define_class!(
+        /// The toast window as a panel: only a panel can take clicks without activating its app.
+        #[unsafe(super(NSPanel, NSWindow, NSResponder, NSObject))]
+        #[thread_kind = MainThreadOnly]
+        #[name = "XcreenshotToastPanel"]
+        struct ToastPanel;
+
+        impl ToastPanel {
+            #[unsafe(method(canBecomeKeyWindow))]
+            fn can_become_key(&self) -> bool {
+                false
+            }
+
+            #[unsafe(method(canBecomeMainWindow))]
+            fn can_become_main(&self) -> bool {
+                false
+            }
+        }
+    );
+
+    /// Turns Tauri's window into a non-activating [`ToastPanel`], so a click on a Saved toast's
+    /// button leaves the app the user is in active (Tauri can only build an `NSWindow`).
+    fn make_panel(ns_window: &NSWindow) {
+        let panel = ToastPanel::class();
+        // Only if neither NSPanel nor the panel class adds instance variables, so none can land
+        // on Tauri's own. Tauri's overrides go with its class: the panel makes the same two
+        // answers, and the rest (dragging) is for movable windows.
+        if panel.instance_size() != NSWindow::class().instance_size() {
+            return log::warn!("the toast window can't be a panel; clicks will activate the app");
+        }
+        // SAFETY: on the main thread, a live NSWindow (subclass), turned into a class with the
+        // same instance variables as NSWindow (checked above) that only overrides two getters.
+        unsafe {
+            objc2::ffi::object_setClass(
+                std::ptr::from_ref(ns_window).cast::<AnyObject>().cast_mut(),
+                std::ptr::from_ref(panel),
+            );
+        }
+        ns_window.setStyleMask(ns_window.styleMask() | NSWindowStyleMask::NonactivatingPanel);
+        // Panels hide when their app is inactive, which it is while the toasts are up.
+        ns_window.setHidesOnDeactivate(false);
+    }
+
+    /// A non-activating panel above the Dock and the menu bar, on every Space and over
+    /// full-screen apps, out of the window cycle, and still on screen while the app is hidden
+    /// (closing the overlay hides the app to give focus back).
     pub fn prepare<R: Runtime>(window: &WebviewWindow<R>) {
         let Some(ns_window) = main_ns_window(window) else {
             return;
         };
+        make_panel(ns_window);
         ns_window.setLevel(NSStatusWindowLevel);
         ns_window.setCollectionBehavior(
             ns_window.collectionBehavior()
@@ -260,13 +365,40 @@ mod native {
     }
 }
 
-/// Showing without activating: Tauri's `show` activates the window.
+/// Showing without activating (Tauri's `show` activates the window), and clicks. The window is
+/// `WS_EX_NOACTIVATE` already (`focusable(false)`), so a click doesn't activate it.
 #[cfg(all(target_os = "windows", not(test)))]
 mod native {
     use tauri::{Runtime, WebviewWindow};
     use windows::Win32::UI::WindowsAndMessaging::{
-        SHOW_WINDOW_CMD, SW_HIDE, SW_SHOWNOACTIVATE, ShowWindow,
+        GWL_EXSTYLE, GetWindowLongW, SHOW_WINDOW_CMD, SW_HIDE, SW_SHOWNOACTIVATE, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongW, SetWindowPos,
+        ShowWindow, WS_EX_TRANSPARENT,
     };
+
+    /// Takes clicks (`on`) or lets them through, by hand: Tauri thinks the window is hidden (see
+    /// `conceal`), and changing its flags through Tauri would hide it again.
+    pub fn clickable<R: Runtime>(window: &WebviewWindow<R>, on: bool) {
+        let hwnd = match window.hwnd() {
+            Ok(hwnd) => hwnd,
+            Err(e) => return log::warn!("no window handle for the toasts: {e}"),
+        };
+        // SAFETY: a live window handle from Tauri; only its WS_EX_TRANSPARENT bit changes (Tauri
+        // made it layered and click-through when it built it).
+        unsafe {
+            let style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+            let style = if on {
+                style & !WS_EX_TRANSPARENT.0
+            } else {
+                style | WS_EX_TRANSPARENT.0
+            };
+            SetWindowLongW(hwnd, GWL_EXSTYLE, style as i32);
+            let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED;
+            if let Err(e) = SetWindowPos(hwnd, None, 0, 0, 0, 0, flags) {
+                log::warn!("could not make the toasts take clicks ({on}): {e}");
+            }
+        }
+    }
 
     fn set<R: Runtime>(window: &WebviewWindow<R>, how: SHOW_WINDOW_CMD) {
         match window.hwnd() {
@@ -412,12 +544,49 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_toasts_buttons_open_only_the_file_saved() {
+        let app = app();
+        let h = app.handle();
+        let overlay = anchor(h);
+        let path = std::path::PathBuf::from("/shots/a.png");
+        show(&overlay, Toast::saved(&path));
+        let window = h.get_webview_window(LABEL).unwrap();
+        toast_ready(window.clone(), h.state());
+        toast_clickable(window.clone(), h.state(), true);
+        assert_eq!(
+            toast_action(window.clone(), h.state(), 1, Action::Open),
+            Ok(())
+        );
+        assert_eq!(
+            toast_action(window.clone(), h.state(), 1, Action::Reveal),
+            Ok(())
+        );
+        assert_eq!(
+            open::tests::launched(),
+            [(Action::Open, path.clone()), (Action::Reveal, path)]
+        );
+        assert_eq!(
+            toast_action(window.clone(), h.state(), 2, Action::Open),
+            Err("no saved file for toast 2".into())
+        );
+        assert_eq!(
+            toast_action(overlay, h.state(), 1, Action::Open),
+            Err("not the toast window".into())
+        );
+        assert!(open::tests::launched().is_empty());
+        toast_clickable(window.clone(), h.state(), false);
+        toast_idle(window, h.state(), 1);
+        assert!(!h.state::<Toasts>().queue().clickable(true), "hidden");
+    }
+
+    #[test]
     fn other_windows_and_apps_without_toasts_are_ignored() {
         let app = app();
         let h = app.handle();
         let overlay = anchor(h);
         assert!(toast_ready(overlay.clone(), h.state()).is_empty());
         toast_idle(overlay.clone(), h.state(), 0);
+        toast_clickable(overlay.clone(), h.state(), true);
         let bare = mock_builder().build(mock_context(noop_assets())).unwrap();
         let other = anchor(bare.handle());
         show(&other, copied(1));

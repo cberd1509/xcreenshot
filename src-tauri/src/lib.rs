@@ -119,6 +119,8 @@ pub fn run() {
             about::open_repo,
             toast::window::toast_ready,
             toast::window::toast_idle,
+            toast::window::toast_clickable,
+            toast::window::toast_action,
         ])
         // A page recording a new shortcut pauses the capture shortcut: take it back if that
         // page reloads or its window closes mid-recording.

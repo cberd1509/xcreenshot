@@ -29,6 +29,8 @@ fn main() {
         "open_repo",
         "toast_ready",
         "toast_idle",
+        "toast_clickable",
+        "toast_action",
         "onboarding_print_screen",
         "onboarding_tried",
         "open_keyboard_settings",

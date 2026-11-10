@@ -1,5 +1,23 @@
 import { describe, expect, it } from 'vitest'
-import { FADE, SHOWN, TITLES, detail, look, next, prune, push, up, type ToastEvent } from './stack'
+import {
+  FADE,
+  HELD,
+  SAVED_SHOWN,
+  SHOWN,
+  TITLES,
+  clickable,
+  detail,
+  dismiss,
+  hover,
+  leave,
+  look,
+  next,
+  prune,
+  push,
+  reveal,
+  up,
+  type ToastEvent,
+} from './stack'
 
 const copied = (seq: number, width = 1260): ToastEvent => ({
   seq,
@@ -27,7 +45,7 @@ describe('toast stack', () => {
       kind: 'saved',
       detail: 'shot.png',
       count: 1,
-      fades: SHOWN,
+      fades: SAVED_SHOWN,
     })
     expect(TITLES).toEqual({ copied: 'Copied', saved: 'Saved', shared: 'Shared' })
   })
@@ -38,7 +56,7 @@ describe('toast stack', () => {
     stack = push(stack, copied(3), 20)
     expect(stack.map((t) => t.kind)).toEqual(['saved', 'shared', 'copied'])
     // Saved again once its toast is fading: a new one, and the oldest goes.
-    stack = push(stack, saved(4), SHOWN)
+    stack = push(stack, saved(4), SAVED_SHOWN)
     expect(stack.map((t) => t.id)).toEqual([2, 3, 4])
   })
 
@@ -63,7 +81,7 @@ describe('toast stack', () => {
     stack = push(stack, copied(1), 0)
     expect(stack[2]).toMatchObject({ seq: 4, detail: '640 × 1064', count: 2 })
     // Older than all three: it goes past the top.
-    const late = push(stack, { seq: 0, kind: 'saved', file: 'old.png' }, SHOWN)
+    const late = push(stack, { seq: 0, kind: 'saved', file: 'old.png' }, SAVED_SHOWN)
     expect(late.map((t) => t.seq)).toEqual([2, 3, 4])
   })
 
@@ -75,22 +93,64 @@ describe('toast stack', () => {
     ])
   })
 
-  it('fades each toast after it shows, then drops it', () => {
+  it('fades each toast after it shows, then drops it; Saved stays longer', () => {
     const stack = push(push([], copied(1), 0), saved(2), 500)
     expect(up(stack[0], SHOWN - 1)).toBe(true)
     expect(up(stack[0], SHOWN)).toBe(false)
     expect(prune(stack, SHOWN + FADE - 1)).toHaveLength(2)
     expect(prune(stack, SHOWN + FADE)).toEqual([stack[1]])
-    expect(prune(stack, 500 + SHOWN + FADE)).toEqual([])
+    expect(up(stack[1], 500 + SAVED_SHOWN - 1)).toBe(true)
+    expect(prune(stack, 500 + SAVED_SHOWN + FADE)).toEqual([])
   })
 
   it('wakes up when a toast starts or ends its fade', () => {
     const stack = push(push([], copied(1), 0), saved(2), 500)
     expect(next(stack, 0)).toBe(SHOWN)
     expect(next(stack, SHOWN)).toBe(SHOWN + FADE)
-    expect(next(stack, SHOWN + FADE)).toBe(500 + SHOWN)
-    expect(next(stack, 500 + SHOWN + FADE)).toBe(null)
+    expect(next(stack, SHOWN + FADE)).toBe(500 + SAVED_SHOWN)
+    expect(next(stack, 500 + SAVED_SHOWN + FADE)).toBe(null)
     expect(next([], 0)).toBe(null)
+  })
+
+  it('keeps a Saved toast up while the mouse is on it, then its full time again', () => {
+    let stack = push(push([], saved(1), 0), copied(2), 0)
+    stack = hover(stack, 1, 3000)
+    expect(up(stack[0], 3000 + HELD - 1)).toBe(true)
+    // At most HELD, in case the mouse leaving is never heard.
+    expect(up(stack[0], 3000 + HELD)).toBe(false)
+    expect(next(stack, SHOWN + FADE)).toBe(3000 + HELD)
+    // A repeat while hovered stays up as long.
+    expect(push(stack, saved(3), 5000)[1]).toMatchObject({ count: 2, fades: 3000 + HELD })
+    stack = leave(stack, 1, 9000)
+    expect(stack[0].fades).toBe(9000 + SAVED_SHOWN)
+  })
+
+  it('does not bring back a toast already fading', () => {
+    const stack = push([], saved(1), 0)
+    expect(hover(stack, 1, SAVED_SHOWN)).toEqual(stack)
+    expect(leave(stack, 1, SAVED_SHOWN)).toEqual(stack)
+    expect(hover(stack, 7, 0)).toEqual(stack)
+  })
+
+  it('fades a toast at once when acted on', () => {
+    const stack = dismiss(push(push([], saved(1), 0), copied(2), 0), 1, 100)
+    expect(up(stack[0], 100)).toBe(false)
+    expect(up(stack[1], 100)).toBe(true)
+    expect(next(stack, 100)).toBe(100 + FADE)
+  })
+
+  it('takes clicks only while a Saved toast is up', () => {
+    expect(clickable([], 0)).toBe(false)
+    expect(clickable(push([], copied(1), 0), 0)).toBe(false)
+    const stack = push(push([], copied(1), 0), saved(2), 0)
+    expect(clickable(stack, SAVED_SHOWN - 1)).toBe(true)
+    expect(clickable(stack, SAVED_SHOWN)).toBe(false)
+    expect(clickable(dismiss(stack, 2, 10), 10)).toBe(false)
+  })
+
+  it('names the reveal button for the platform', () => {
+    expect(reveal(true)).toBe('Show in Finder')
+    expect(reveal(false)).toBe('Show in folder')
   })
 
   it('shows older toasts smaller and dimmer', () => {

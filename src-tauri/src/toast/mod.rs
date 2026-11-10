@@ -3,21 +3,26 @@
 //! screenshot sound on macOS (Windows has none).
 //!
 //! One window (`toast.html`), built hidden at startup and shown only while toasts are up. It never
-//! takes focus: it can't become the key window, ignores the mouse, and is shown without
-//! activating the app. The page stacks, counts and fades the toasts (`src/toast/stack.ts`).
-//! Rust numbers them, keeps the ones sent before the page loaded, places the window and hides
-//! it once the page has nothing left on screen.
+//! takes focus: it can't become the key window and is shown without activating the app. It
+//! ignores the mouse, except while a Saved toast is up: its Open and Show in Finder (Show in
+//! folder) buttons take clicks, still without activating the app. The page stacks, counts and
+//! fades the toasts (`src/toast/stack.ts`). Rust numbers them, keeps the ones sent before the
+//! page loaded, remembers the files saved, places the window and hides it once the page has
+//! nothing left on screen.
 //!
-//! This file is the pure part; the Tauri calls are in `window.rs` and the sound in `sound.rs`.
+//! This file is the pure part; the Tauri calls are in `window.rs`, the sound in `sound.rs` and
+//! opening the saved file in `open.rs`.
 
+mod open;
 mod sound;
 /// Public to the crate so `generate_handler!` can reach the commands.
 pub(crate) mod window;
 
+pub use open::Action;
 pub use window::{Toasts, hide_for_capture, on_page_load, prewarm, show};
 
 use crate::capture::{Bounds, Rect};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The toast window's label.
 pub const LABEL: &str = "toast";
@@ -32,8 +37,12 @@ pub const LABEL: &str = "toast";
 pub enum Toast {
     /// Copied: the image's size in pixels.
     Copied { width: u32, height: u32 },
-    /// Saved: the file's name.
-    Saved { file: String },
+    /// Saved: the file's name. The page only gets the name; the path stays in Rust.
+    Saved {
+        file: String,
+        #[serde(skip)]
+        path: PathBuf,
+    },
     /// Shared: the service picked, if the share sheet said which.
     Shared { service: Option<String> },
 }
@@ -45,7 +54,10 @@ impl Toast {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
-        Self::Saved { file }
+        Self::Saved {
+            file,
+            path: path.to_path_buf(),
+        }
     }
 }
 
@@ -111,6 +123,9 @@ pub fn place(area: Bounds, scale: f64) -> Bounds {
 
 /// Toasts kept for a page that has not loaded yet: it shows three at most.
 const PENDING: usize = 3;
+/// Saved files kept for the Saved toasts' buttons: as many as the page shows (`MOST` in
+/// `src/toast/stack.ts`).
+const SAVED: usize = 3;
 
 /// Which toasts went to the page, and whether the window is on screen.
 #[derive(Debug, Default)]
@@ -123,6 +138,8 @@ pub struct Queue {
     pending: Vec<Shown>,
     /// The window is shown.
     on_screen: bool,
+    /// The newest files saved, by toast number.
+    saved: Vec<(u64, PathBuf)>,
 }
 
 impl Queue {
@@ -130,6 +147,12 @@ impl Queue {
     /// screen), or keeps it for [`Queue::ready`].
     pub fn push(&mut self, toast: Toast) -> Option<Shown> {
         self.seq += 1;
+        if let Toast::Saved { path, .. } = &toast {
+            self.saved.push((self.seq, path.clone()));
+            if self.saved.len() > SAVED {
+                self.saved.remove(0);
+            }
+        }
         let shown = Shown {
             seq: self.seq,
             toast,
@@ -182,6 +205,22 @@ impl Queue {
         true
     }
 
+    /// The file the Saved toast numbered `seq` is about, if it is one of the newest saved. The
+    /// page names a toast, never a path, so its buttons only reach files the app just saved.
+    pub fn file(&self, seq: u64) -> Option<&Path> {
+        self.saved
+            .iter()
+            .find(|(s, _)| *s == seq)
+            .map(|(_, path)| path.as_path())
+    }
+
+    /// The page asks for the window to take clicks (`on`: a Saved toast is up) or not. Returns
+    /// whether it should: only while on screen, so a late ask can't leave the window catching
+    /// clicks when it is shown again for another toast.
+    pub fn clickable(&self, on: bool) -> bool {
+        on && self.on_screen
+    }
+
     /// A capture is starting: drops the toasts. Returns whether the window was on screen.
     pub fn clear(&mut self) -> bool {
         self.pending.clear();
@@ -223,7 +262,8 @@ mod tests {
         assert_eq!(
             Toast::saved(Path::new("/")),
             Toast::Saved {
-                file: String::new()
+                file: String::new(),
+                path: PathBuf::from("/"),
             }
         );
     }
@@ -393,5 +433,46 @@ mod tests {
         assert!(q.clear());
         assert!(!q.clear());
         assert!(!q.idle(2));
+    }
+
+    fn saved(name: &str) -> Toast {
+        Toast::saved(&PathBuf::from("/shots").join(name))
+    }
+
+    #[test]
+    fn the_newest_saved_files_are_kept_for_their_buttons() {
+        let mut q = Queue::default();
+        q.ready();
+        q.push(saved("1.png"));
+        q.push(copied(2));
+        for name in ["3.png", "4.png", "5.png"] {
+            q.push(saved(name));
+        }
+        assert_eq!(q.file(1), None, "only the newest three");
+        assert_eq!(q.file(2), None, "not a Saved toast");
+        assert_eq!(q.file(3), Some(Path::new("/shots/3.png")));
+        assert_eq!(q.file(5), Some(Path::new("/shots/5.png")));
+        assert_eq!(q.file(6), None, "no such toast");
+        q.clear();
+        assert_eq!(
+            q.file(5),
+            Some(Path::new("/shots/5.png")),
+            "kept by a capture"
+        );
+    }
+
+    #[test]
+    fn the_window_takes_clicks_only_while_on_screen() {
+        let mut q = Queue::default();
+        assert!(!q.clickable(true), "hidden");
+        q.ready();
+        q.push(saved("a.png"));
+        assert!(q.clickable(true));
+        assert!(!q.clickable(false));
+        q.clear();
+        assert!(!q.clickable(true), "a late ask after a capture");
+        q.push(saved("b.png"));
+        assert!(q.idle(2));
+        assert!(!q.clickable(true), "a late ask after the last toast faded");
     }
 }
