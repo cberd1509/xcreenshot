@@ -1,6 +1,6 @@
-//! Confirmation toasts: "Copied", "Saved" or "Shared" at the bottom of the display the capture
-//! was on, after every finished copy, save and share, with the system screenshot sound on
-//! macOS (Windows has none).
+//! Confirmation toasts: "Copied", "Saved" or "Shared" at the bottom of the display the capture was
+//! on, above the taskbar or the Dock, after every finished copy, save and share, with the system
+//! screenshot sound on macOS (Windows has none).
 //!
 //! One window (`toast.html`), built hidden at startup and shown only while toasts are up. It never
 //! takes focus: it can't become the key window, ignores the mouse, and is shown without
@@ -16,7 +16,7 @@ pub(crate) mod window;
 
 pub use window::{Toasts, hide_for_capture, on_page_load, prewarm, show};
 
-use crate::capture::Bounds;
+use crate::capture::{Bounds, Rect};
 use std::path::Path;
 
 /// The toast window's label.
@@ -58,23 +58,52 @@ pub struct Shown {
 }
 
 /// The window's size in logical px: room for three toasts and their shadows. The page puts
-/// them 28 px above the bottom, as designed.
+/// them 28 px above the bottom, as designed, so they sit 28 px above the work area.
 pub const SIZE: (u32, u32) = (560, 180);
 
-/// Where the window goes: centred at the bottom of `display`, in its OS units (points on
-/// macOS, pixels on Windows), `scale` of them per logical px. Never wider or taller than it.
-pub fn place(display: Bounds, scale: f64) -> Bounds {
+/// The part of `display` the toasts go in: its `work` area (without the taskbar, or the menu
+/// bar and the Dock), wherever those are, in whole OS units inside it. The whole display if the
+/// OS didn't say or the work area isn't on it.
+pub fn room(display: Bounds, work: Option<Rect>) -> Bounds {
+    let Some(work) = work.filter(|w| [w.x, w.y, w.width, w.height].iter().all(|v| v.is_finite()))
+    else {
+        return display;
+    };
+    let left = work.x.max(f64::from(display.x)).ceil();
+    let top = work.y.max(f64::from(display.y)).ceil();
+    let right = (work.x + work.width)
+        .min(f64::from(display.x) + f64::from(display.width))
+        .floor();
+    let bottom = (work.y + work.height)
+        .min(f64::from(display.y) + f64::from(display.height))
+        .floor();
+    if right <= left || bottom <= top {
+        return display;
+    }
+    // Inside the display, so the casts can't overflow.
+    Bounds {
+        x: left as i32,
+        y: top as i32,
+        width: (right - left) as u32,
+        height: (bottom - top) as u32,
+    }
+}
+
+/// Where the window goes: centred at the bottom of `area` (see [`room`]), in its OS units
+/// (points on macOS, pixels on Windows), `scale` of them per logical px. Never wider or taller
+/// than it.
+pub fn place(area: Bounds, scale: f64) -> Bounds {
     let fit = |logical: u32, room: u32| {
         // At most `room`, so the cast can't overflow.
         (f64::from(logical) * scale)
             .round()
             .clamp(0.0, f64::from(room)) as u32
     };
-    let width = fit(SIZE.0, display.width);
-    let height = fit(SIZE.1, display.height);
+    let width = fit(SIZE.0, area.width);
+    let height = fit(SIZE.1, area.height);
     Bounds {
-        x: display.x + ((display.width - width) / 2) as i32,
-        y: display.y + (display.height - height) as i32,
+        x: area.x + ((area.width - width) / 2) as i32,
+        y: area.y + (area.height - height) as i32,
         width,
         height,
     }
@@ -225,6 +254,69 @@ mod tests {
             place(bounds(10, 20, 300, 100), 1.0),
             bounds(10, 20, 300, 100)
         );
+    }
+
+    fn rect(x: f64, y: f64, width: f64, height: f64) -> Rect {
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn the_toasts_sit_above_the_taskbar_wherever_it_is() {
+        // A 2880 x 1620 px display at 150% (Windows), right of the main one; the 48 px taskbar
+        // is 72 px.
+        let display = bounds(1920, 0, 2880, 1620);
+        let bottom = room(display, Some(rect(1920.0, 0.0, 2880.0, 1548.0)));
+        assert_eq!(bottom, bounds(1920, 0, 2880, 1548));
+        assert_eq!(
+            place(bottom, 1.5),
+            bounds(1920 + 1020, 1548 - 270, 840, 270),
+            "the window ends where the taskbar starts, so the toasts are 28 px above it"
+        );
+        let top = room(display, Some(rect(1920.0, 72.0, 2880.0, 1548.0)));
+        assert_eq!(place(top, 1.5), bounds(1920 + 1020, 1350, 840, 270));
+        // On the left or right, the toasts centre on what's left.
+        let left = room(display, Some(rect(1992.0, 0.0, 2808.0, 1620.0)));
+        assert_eq!(place(left, 1.5), bounds(1992 + 984, 1350, 840, 270));
+        let right = room(display, Some(rect(1920.0, 0.0, 2808.0, 1620.0)));
+        assert_eq!(place(right, 1.5), bounds(1920 + 984, 1350, 840, 270));
+    }
+
+    #[test]
+    fn the_toasts_sit_above_the_dock() {
+        // macOS, in points: a 25 pt menu bar and a 70 pt Dock at the bottom.
+        let display = bounds(0, 0, 1512, 982);
+        let work = room(display, Some(rect(0.0, 25.0, 1512.0, 887.0)));
+        assert_eq!(work, bounds(0, 25, 1512, 887));
+        assert_eq!(place(work, 1.0), bounds(476, 912 - 180, 560, 180));
+    }
+
+    #[test]
+    fn the_room_stays_in_whole_units_inside_the_display() {
+        let display = bounds(-1440, 0, 1440, 900);
+        // Fractional work areas round inward.
+        assert_eq!(
+            room(display, Some(rect(-1439.5, 24.5, 1439.0, 800.7))),
+            bounds(-1439, 25, 1438, 800)
+        );
+        // A work area that spills past the display is cut to it.
+        assert_eq!(
+            room(display, Some(rect(-2000.0, -10.0, 5000.0, 860.0))),
+            bounds(-1440, 0, 1440, 850)
+        );
+        // None, empty, off the display or NaN: the whole display.
+        for work in [
+            None,
+            Some(rect(-1440.0, 0.0, 0.0, 900.0)),
+            Some(rect(5000.0, 0.0, 100.0, 100.0)),
+            Some(rect(f64::NAN, 0.0, 100.0, 100.0)),
+        ] {
+            assert_eq!(room(display, work), display);
+        }
     }
 
     #[test]

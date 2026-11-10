@@ -45,6 +45,11 @@ const ESCAPE_TIMEOUT: Duration = Duration::from_millis(300);
 /// ([`reveal_late`]): the page's own fallback (`PAINT_TIMEOUT_MS`, 200 ms) reports by then, so
 /// a later report may never come. It may flash, but the capture isn't lost.
 const REVEAL_AFTER: Duration = Duration::from_millis(300);
+/// [`REVEAL_AFTER`] for a capture on a window that hasn't painted yet (see [`is_cold`]): a cold
+/// webview can take that long to render its first frame, and showing it before then flashes
+/// black. A late overlay beats a black flash. Well after the page's own first wait
+/// (`FIRST_PAINT_TIMEOUT_MS`, 600 ms), which starts only once the frame is fetched and drawn.
+const FIRST_REVEAL_AFTER: Duration = Duration::from_millis(1000);
 /// If no window paints within this time the overlay page is broken: close everything, so a
 /// hung page never locks the user out.
 const WATCHDOG: Duration = Duration::from_secs(2);
@@ -70,6 +75,8 @@ pub struct Overlay {
     /// unstaged before it shows: staged for its paint ([`stage`]), on screen while it renders
     /// its frame or hidden since, or concealed as the overlay closed ([`conceal`]).
     staged: Mutex<Vec<u32>>,
+    /// The displays whose overlay window hasn't rendered a frame since it was built.
+    cold: Mutex<Vec<u32>>,
     /// Fired when the phase returns to Idle; the update restart waits for it.
     pub(crate) idle: tokio::sync::Notify,
 }
@@ -341,6 +348,7 @@ fn finish<R: Runtime>(
         return false;
     };
     let displays: Vec<u32> = shows.iter().map(|(d, _)| *d).collect();
+    let cold = is_cold(&lock(&app.state::<Overlay>().cold), &displays);
     on_main(app, move |app| {
         sync_escape(app);
         stage_unpainted(app, session, &displays);
@@ -352,38 +360,47 @@ fn finish<R: Runtime>(
             Err(e) => log::warn!("could not tell overlay {display} to draw: {e}"),
         }
     }
+    // Tests reveal by hand, so their sessions never change under them.
+    let reveal = if cfg!(test) {
+        watchdog
+    } else {
+        reveal_after(watchdog, cold)
+    };
     let app = app.clone();
     std::thread::spawn(move || {
-        // Tests reveal by hand, so their sessions never change under them.
-        let reveal = if cfg!(test) {
-            watchdog
-        } else {
-            reveal_after(watchdog)
-        };
         std::thread::sleep(reveal);
-        on_main(&app, move |app| reveal_late(app, session));
+        on_main(&app, move |app| reveal_late(app, session, reveal));
         std::thread::sleep(watchdog - reveal);
         on_main(&app, move |app| rescue(app, session));
     });
     told
 }
 
-/// When to show windows whose page hasn't reported its paint: [`REVEAL_AFTER`], never after
-/// the watchdog.
-fn reveal_after(watchdog: Duration) -> Duration {
-    REVEAL_AFTER.min(watchdog)
+/// Whether a capture on `displays` waits for a `cold` window, one that hasn't rendered a frame
+/// yet: the first capture since launch, or on a display added since.
+fn is_cold(cold: &[u32], displays: &[u32]) -> bool {
+    displays.iter().any(|d| cold.contains(d))
+}
+
+/// When to show windows whose page hasn't reported its paint: [`REVEAL_AFTER`], or
+/// [`FIRST_REVEAL_AFTER`] if one is `cold` (see [`is_cold`]); never after the watchdog.
+fn reveal_after(watchdog: Duration, cold: bool) -> Duration {
+    let after = if cold {
+        FIRST_REVEAL_AFTER
+    } else {
+        REVEAL_AFTER
+    };
+    after.min(watchdog)
 }
 
 /// Shows `session`'s windows whose page hasn't reported its paint (see [`REVEAL_AFTER`]),
 /// focusing one if nothing painted. The watchdog still closes the overlay if no page ever
 /// reports: that page is dead.
-fn reveal_late<R: Runtime>(app: &AppHandle<R>, session: u64) {
+fn reveal_late<R: Runtime>(app: &AppHandle<R>, session: u64, after: Duration) {
     let Some((displays, focus_on)) = phase(app).unreported(session) else {
         return;
     };
-    log::warn!(
-        "overlays {displays:?} did not report their paint within {REVEAL_AFTER:?}; showing them"
-    );
+    log::warn!("overlays {displays:?} did not report their paint within {after:?}; showing them");
     for d in displays {
         let shown = app
             .get_webview_window(&label(d))
@@ -708,6 +725,10 @@ fn sync<R: Runtime>(app: &AppHandle<R>, displays: &[u32]) -> tauri::Result<()> {
 }
 
 fn build<R: Runtime>(app: &AppHandle<R>, display: u32) -> tauri::Result<WebviewWindow<R>> {
+    // A new page: cold until it paints.
+    if let Some(overlay) = app.try_state::<Overlay>() {
+        lock(&overlay.cold).push(display);
+    }
     let url = WebviewUrl::App("overlay.html".into());
     let builder = WebviewWindowBuilder::new(app, label(display), url)
         .title("xcreenshot")
@@ -995,6 +1016,9 @@ pub(crate) fn overlay_painted<R: Runtime>(
     let Some(paint) = state.phase().painted(session, display) else {
         return;
     };
+    if rendered {
+        lock(&state.cold).retain(|&d| d != display);
+    }
     if paint.hidden {
         return;
     }
@@ -1626,23 +1650,32 @@ pub(crate) mod tests {
 
     #[test]
     fn unreported_windows_are_shown_after_the_page_fallback_and_before_the_watchdog() {
-        // After the page's own 200 ms fallback (`PAINT_TIMEOUT_MS` in paint.ts).
+        // After the page's own fallback (`PAINT_TIMEOUT_MS` in paint.ts, 200 ms, or 600 ms
+        // for its first draw: `FIRST_PAINT_TIMEOUT_MS`), with room for fetching the frame.
         assert!(REVEAL_AFTER > Duration::from_millis(200) && REVEAL_AFTER < WATCHDOG);
-        assert_eq!(reveal_after(WATCHDOG), REVEAL_AFTER);
+        assert!(FIRST_REVEAL_AFTER >= Duration::from_millis(900) && FIRST_REVEAL_AFTER < WATCHDOG);
+        assert_eq!(reveal_after(WATCHDOG, false), REVEAL_AFTER);
         assert_eq!(
-            reveal_after(Duration::ZERO),
-            Duration::ZERO,
-            "never after the watchdog"
+            reveal_after(WATCHDOG, true),
+            FIRST_REVEAL_AFTER,
+            "a cold webview gets longer"
         );
+        for cold in [false, true] {
+            assert_eq!(
+                reveal_after(Duration::ZERO, cold),
+                Duration::ZERO,
+                "never after the watchdog"
+            );
+        }
 
         let app = app();
         let h = app.handle();
         let session = open(h, &[1, 2]);
         stage_unpainted(h, session, &[1, 2]);
         overlay_painted(window(h, 1), h.state(), session, true);
-        reveal_late(h, session + 1);
+        reveal_late(h, session + 1, REVEAL_AFTER);
         assert_eq!(super::shown(h), [1], "other session");
-        reveal_late(h, session);
+        reveal_late(h, session, REVEAL_AFTER);
         assert_eq!(super::shown(h), [1, 2], "shown though it never reported");
         assert!(staged(h).is_empty());
         overlay_painted(window(h, 2), h.state(), session, true);
@@ -1651,10 +1684,35 @@ pub(crate) mod tests {
         // Nothing reported: shown, but the watchdog still closes a dead page.
         close(h);
         let session = open(h, &[1]);
-        reveal_late(h, session);
+        reveal_late(h, session, REVEAL_AFTER);
         assert_eq!(super::shown(h), [1]);
         rescue(h, session);
         assert!(is_idle(h));
+    }
+
+    #[test]
+    fn a_window_is_cold_until_it_renders() {
+        assert!(is_cold(&[1], &[1]));
+        assert!(is_cold(&[2], &[1, 2]), "a display added since");
+        assert!(!is_cold(&[], &[1, 2]));
+        assert!(!is_cold(&[3], &[1, 2]));
+
+        let app = app();
+        let h = app.handle();
+        let cold = || {
+            let mut cold = lock(&h.state::<Overlay>().cold).clone();
+            cold.sort_unstable();
+            cold
+        };
+        let session = open(h, &[1, 2]);
+        assert_eq!(cold(), [1, 2], "new windows");
+        overlay_painted(window(h, 2), h.state(), session, false);
+        assert_eq!(cold(), [1, 2], "reported, but not rendered");
+        overlay_painted(window(h, 1), h.state(), session, true);
+        assert_eq!(cold(), [2]);
+        // A display added later gets a new page.
+        build(h, 3).unwrap();
+        assert_eq!(cold(), [2, 3]);
     }
 
     #[test]

@@ -279,6 +279,12 @@ fn screens(displays: &[Display]) -> Vec<Screen> {
         .collect()
 }
 
+/// The work area of `display` as the OS reports it now, in its OS units (see [`Screen`]).
+/// On macOS, main thread only.
+pub(crate) fn work_area_now(display: Display) -> Option<Rect> {
+    screens(&[display]).pop()?.work
+}
+
 /// Lists the windows for a capture that just started on `displays`, while it runs. Called
 /// from the hotkey, on the main thread, where macOS answers for its screens.
 pub(crate) fn snapshot<R: Runtime>(app: &AppHandle<R>, session: u64, displays: &[Display]) {

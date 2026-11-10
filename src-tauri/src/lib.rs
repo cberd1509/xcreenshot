@@ -44,7 +44,8 @@ const SETTINGS_WINDOW: &str = "settings";
 pub fn run() {
     let builder = tauri::Builder::default()
         // Must be first: a second launch focuses the running app instead.
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _| {
+            log::info!("opened again with {args:?}");
             let _ = windows::open_from(app, Source::SecondLaunch, open_settings);
         }))
         // Local log file only (nothing is sent anywhere); stderr is invisible in Windows release builds.
@@ -141,6 +142,13 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // How the app was started, to tell a launch at login from a crash right after it.
+            log::info!(
+                "xcreenshot {} started: {:?}, args {:?}",
+                app.package_info().version,
+                std::env::current_exe(),
+                std::env::args().skip(1).collect::<Vec<_>>()
+            );
             // Menu bar app: no Dock icon.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -166,6 +174,7 @@ pub fn run() {
             overlay::debug::schedule(app.handle());
             #[cfg(debug_assertions)]
             share::debug::schedule(app.handle(), open_settings);
+            log::info!("ready");
             Ok(())
         })
         .build(tauri::generate_context!())

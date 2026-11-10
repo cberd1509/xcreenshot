@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fakeFrames } from '../test/frames'
-import { PAINT_TIMEOUT_MS, afterPaint } from './paint'
+import { FIRST_PAINT_TIMEOUT_MS, PAINT_TIMEOUT_MS, afterPaint } from './paint'
 
 describe('afterPaint', () => {
   let frames: ReturnType<typeof fakeFrames>
@@ -17,7 +17,7 @@ describe('afterPaint', () => {
 
   it('resolves once a whole frame has been rendered, not at the next one', async () => {
     let done: boolean | undefined
-    void afterPaint().then((rendered) => (done = rendered))
+    void afterPaint(PAINT_TIMEOUT_MS).then((rendered) => (done = rendered))
     frames.next()
     await Promise.resolve()
     expect(done, 'the first frame may not have rendered yet').toBeUndefined()
@@ -30,9 +30,18 @@ describe('afterPaint', () => {
 
   it('gives up when no frame comes, so a webview that renders nothing still opens', async () => {
     let done: boolean | undefined
-    void afterPaint().then((rendered) => (done = rendered))
+    void afterPaint(PAINT_TIMEOUT_MS).then((rendered) => (done = rendered))
     frames.next()
     await vi.advanceTimersByTimeAsync(PAINT_TIMEOUT_MS - 1)
+    expect(done).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(done).toBe(false)
+  })
+
+  it('waits as long as it is told', async () => {
+    let done: boolean | undefined
+    void afterPaint(FIRST_PAINT_TIMEOUT_MS).then((rendered) => (done = rendered))
+    await vi.advanceTimersByTimeAsync(FIRST_PAINT_TIMEOUT_MS - 1)
     expect(done).toBeUndefined()
     await vi.advanceTimersByTimeAsync(1)
     expect(done).toBe(false)

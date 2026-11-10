@@ -9,6 +9,7 @@ import { fakeFrames } from '../test/frames'
 import { stages } from '../test/konva'
 import { OUTPUT_HEADER } from './annotate/output'
 import type { Rect } from './geometry'
+import { FIRST_PAINT_TIMEOUT_MS, PAINT_TIMEOUT_MS } from './paint'
 
 type Invoke = (
   cmd: string,
@@ -16,6 +17,8 @@ type Invoke = (
   options?: { headers?: Record<string, string> },
 ) => Promise<unknown>
 import Overlay from './Overlay.svelte'
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /** The platform the overlay sees (`isMac`, `isWindows`). */
 const platform = vi.hoisted(() => ({ mac: false, windows: false }))
@@ -52,6 +55,8 @@ let selected: Selected[]
 
 const rgba = (width: number, height: number) => new Uint8Array(width * height * 4).fill(7).buffer
 const called = (cmd: string) => calls.filter((c) => c.cmd === cmd)
+/** What the page reported with each `overlay_painted`. */
+const painted = () => called('overlay_painted').map((c) => c.args)
 /** Copy and save requests: their header (parsed) and raw body. */
 let sent: { cmd: string; header: unknown; body: unknown }[]
 const output = (cmd: string, i: number) => sent.filter((c) => c.cmd === cmd)[i]?.header
@@ -64,6 +69,16 @@ const small = (session: number): Info => ({
   logicalHeight: 1,
   escapeShortcut: true,
 })
+
+// Draws session `n`, which never renders, and checks how long the page waits for it.
+const unrendered = async (n: number, cold: boolean) => {
+  await emit('overlay:show', small(n))
+  await sleep(PAINT_TIMEOUT_MS + 100)
+  expect(painted(), 'a cold webview gets longer').toHaveLength(cold ? n - 1 : n)
+  await waitFor(() => expect(painted()).toHaveLength(n), { timeout: FIRST_PAINT_TIMEOUT_MS })
+  expect(painted()[n - 1]).toEqual({ session: n, rendered: false })
+}
+
 // A 2x display of 1000 x 700 points.
 const info: Info = {
   session: 9,
@@ -344,6 +359,26 @@ describe('Overlay', () => {
       frames.next()
       await tick()
       expect(called('overlay_painted')).toHaveLength(1)
+    } finally {
+      frames.restore()
+    }
+  })
+
+  it('waits longer for the frame to render until the page has rendered one', async () => {
+    const frames = fakeFrames()
+    try {
+      await mount()
+      await unrendered(1, true)
+      // Still cold: nothing has rendered yet.
+      await unrendered(2, true)
+      await emit('overlay:show', small(3))
+      await waitFor(() => expect(frames.pending()).toBeGreaterThan(0))
+      frames.next()
+      frames.next()
+      await waitFor(() => expect(painted()).toHaveLength(3))
+      expect(painted()[2]).toEqual({ session: 3, rendered: true })
+      // Warm: the next draw gives up sooner.
+      await unrendered(4, false)
     } finally {
       frames.restore()
     }
