@@ -56,15 +56,8 @@ pub fn show<R: Runtime>(
         .map_err(ShareError::Window)?
 }
 
-/// Callable from any thread.
+/// Main thread.
 pub fn restore_level<R: Runtime>(window: &WebviewWindow<R>) {
-    let target = window.clone();
-    if let Err(e) = window.run_on_main_thread(move || restore(&target)) {
-        log::error!("could not put the window back on top: {e}");
-    }
-}
-
-fn restore<R: Runtime>(window: &WebviewWindow<R>) {
     let topmost = window.is_always_on_top().unwrap_or(false);
     if LOWERED.with_borrow_mut(|l| l.restore(window.label(), topmost))
         && let Err(e) = window.set_always_on_top(true)
@@ -128,17 +121,17 @@ fn present<R: Runtime>(
     // Listed before the sheet shows: its handlers may run as soon as it does.
     let dropped = OPEN.with_borrow_mut(|open| open.push(Instant::now(), sheet.clone()));
     drop(dropped);
-    let topmost = window.is_always_on_top().unwrap_or(false);
-    if LOWERED.with_borrow_mut(|l| l.lower(window.label(), topmost))
-        && let Err(e) = window.set_always_on_top(false)
-    {
-        log::warn!("could not lower the window for the share sheet: {e}");
+    if window.is_always_on_top().unwrap_or(false) {
+        LOWERED.with_borrow_mut(|l| l.lower(window.label()));
+        if let Err(e) = window.set_always_on_top(false) {
+            log::warn!("could not lower the window for the share sheet: {e}");
+        }
     }
     // SAFETY: as above.
     if let Err(e) = unsafe { interop.ShowShareUIForWindow(hwnd) } {
         sheet.abandon();
         prune();
-        restore(window);
+        restore_level(window);
         return Err(failed(e));
     }
     let app = notify.app;

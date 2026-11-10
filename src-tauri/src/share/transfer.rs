@@ -102,12 +102,9 @@ impl<H: Handlers> Entry for Rc<Sheet<H>> {
 pub struct Lowered(HashSet<String>);
 
 impl Lowered {
-    /// Whether to take `window` out of the topmost band before showing the sheet.
-    pub fn lower(&mut self, window: &str, topmost: bool) -> bool {
-        if topmost {
-            self.0.insert(window.to_owned());
-        }
-        topmost
+    /// Records that `window` was taken out of the topmost band for the sheet.
+    pub fn lower(&mut self, window: &str) {
+        self.0.insert(window.to_owned());
     }
 
     /// Whether to put `window` back in the topmost band: we took it out, and nobody has put it
@@ -216,22 +213,21 @@ mod tests {
     #[test]
     fn a_topmost_window_is_lowered_and_put_back_once() {
         let mut lowered = Lowered::default();
-        assert!(lowered.lower("overlay-1", true));
+        lowered.lower("overlay-1");
         assert!(lowered.restore("overlay-1", false));
         assert!(!lowered.restore("overlay-1", false), "only once");
     }
 
     #[test]
-    fn a_normal_window_is_left_alone() {
+    fn a_window_never_lowered_is_left_alone() {
         let mut lowered = Lowered::default();
-        assert!(!lowered.lower("settings", false));
         assert!(!lowered.restore("settings", false));
     }
 
     #[test]
     fn a_window_raised_by_someone_else_is_left_alone() {
         let mut lowered = Lowered::default();
-        lowered.lower("overlay-1", true);
+        lowered.lower("overlay-1");
         assert!(!lowered.restore("overlay-1", true));
         assert!(!lowered.restore("overlay-1", false), "forgotten");
     }
@@ -239,8 +235,8 @@ mod tests {
     #[test]
     fn windows_are_tracked_separately() {
         let mut lowered = Lowered::default();
-        lowered.lower("overlay-1", true);
-        lowered.lower("overlay-2", true);
+        lowered.lower("overlay-1");
+        lowered.lower("overlay-2");
         assert!(lowered.restore("overlay-2", false));
         assert!(lowered.restore("overlay-1", false));
     }
