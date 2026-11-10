@@ -103,17 +103,72 @@ a{color:#2563eb}a:hover{color:#1d4ed8}
   <div role="toolbar" aria-label="Capture actions" style="position: absolute; left: 548px; top: 592px; height: 48px; box-sizing: border-box; padding: 6px; display: flex; align-items: center; gap: 4px; background: #18181b; border: 1px solid #27272a; border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,0.35);">
     <button aria-label="More options" aria-haspopup="menu" aria-expanded="true" title="More" style="width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 8px; background: #27272a; color: #fafafa;"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="19" cy="12" r="1.8"></circle></svg></button>
     <div style="width: 1px; height: 20px; margin: 0 4px; background: #27272a;"></div>
+    <!-- record (after 1.0): split button. The main part starts recording this region; the caret
+         opens the audio options, remembered between recordings. -->
+    <div style="position: relative; display: flex;">
+      <!-- once anything is drawn, hovering Record says the annotations won't carry over. No confirm:
+           Record starts clean and the annotations are dropped. -->
+      <sc-if value="{{recordTip}}" hint-placeholder-val="{{ false }}">
+        <div role="tooltip" style="position: absolute; bottom: 46px; left: 0; white-space: nowrap; padding: 6px 10px; border-radius: 8px; background: #fafafa; color: #09090b; font-size: 12px; font-weight: 500; box-shadow: 0 8px 20px rgba(0,0,0,0.3);">Annotations will be discarded.</div>
+      </sc-if>
+      <button title="Record" style="height: 36px; padding: 0 12px; display: flex; align-items: center; gap: 7px; border: 0; border-radius: 8px 0 0 8px; background: #27272a; color: #fafafa; font-family: inherit; font-size: 13px; font-weight: 500;"><span aria-hidden="true" style="width: 10px; height: 10px; border-radius: 50%; background: #ef4444;"></span>Record</button>
+      <button aria-label="Recording options" aria-haspopup="menu" aria-expanded="{{recordOpen}}" title="Recording options" style="width: 26px; height: 36px; display: flex; align-items: center; justify-content: center; border: 0; border-left: 1px solid #3f3f46; border-radius: 0 8px 8px 0; background: {{recordCaretBg}}; color: #a1a1aa;"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg></button>
+    </div>
     <button title="Share" style="height: 36px; padding: 0 12px; display: flex; align-items: center; gap: 6px; border: 0; border-radius: 8px; background: #27272a; color: #fafafa; font-family: inherit; font-size: 13px; font-weight: 500;"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8"></path><polyline points="16 6 12 2 8 6"></polyline><line x1="12" y1="2" x2="12" y2="15"></line></svg>Share</button>
-    <button title="Save (⌘S)" style="height: 36px; padding: 0 12px; display: flex; align-items: center; gap: 6px; border: 0; border-radius: 8px; background: #27272a; color: #fafafa; font-family: inherit; font-size: 13px; font-weight: 500;"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>Save</button>
-    <button title="Copy (⌘C)" style="height: 36px; padding: 0 12px; display: flex; align-items: center; gap: 8px; border: 0; border-radius: 8px; background: #fafafa; color: #09090b; font-family: inherit; font-size: 13px; font-weight: 600;"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"></rect><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"></path></svg>Copy<span style="padding: 1px 5px; border-radius: 4px; background: #e4e4e7; color: #52525b; font-size: 11px;">⌘C</span></button>
+    <!-- split buttons: the main part saves/copies at 1×; the caret opens the larger sizes -->
+    <div style="display: flex;">
+      <button title="Save (⌘S)" style="height: 36px; padding: 0 12px; display: flex; align-items: center; gap: 6px; border: 0; border-radius: 8px 0 0 8px; background: #27272a; color: #fafafa; font-family: inherit; font-size: 13px; font-weight: 500;"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>Save</button>
+      <button aria-label="Save at a larger size" aria-haspopup="menu" aria-expanded="{{saveOpen}}" title="Save larger" style="width: 26px; height: 36px; display: flex; align-items: center; justify-content: center; border: 0; border-left: 1px solid #3f3f46; border-radius: 0 8px 8px 0; background: {{saveCaretBg}}; color: #a1a1aa;"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg></button>
+    </div>
+    <div style="display: flex;">
+      <button title="Copy (⌘C)" style="height: 36px; padding: 0 12px; display: flex; align-items: center; gap: 8px; border: 0; border-radius: 8px 0 0 8px; background: #fafafa; color: #09090b; font-family: inherit; font-size: 13px; font-weight: 600;"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"></rect><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"></path></svg>Copy<span style="padding: 1px 5px; border-radius: 4px; background: #e4e4e7; color: #52525b; font-size: 11px;">⌘C</span></button>
+      <button aria-label="Copy at a larger size" aria-haspopup="menu" aria-expanded="{{copyOpen}}" title="Copy larger" style="width: 26px; height: 36px; display: flex; align-items: center; justify-content: center; border: 0; border-left: 1px solid #d4d4d8; border-radius: 0 8px 8px 0; background: {{copyCaretBg}}; color: #52525b;"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg></button>
+    </div>
     <button aria-label="Cancel" title="Cancel (Esc)" style="width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 8px; background: transparent; color: #a1a1aa;"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
   </div>
 
   <!-- more menu -->
+  <sc-if value="{{moreOpen}}" hint-placeholder-val="{{ false }}">
   <div role="menu" aria-label="More options" style="position: absolute; left: 548px; top: 648px; width: 220px; box-sizing: border-box; padding: 6px; display: flex; flex-direction: column; gap: 2px; background: #18181b; border: 1px solid #27272a; border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,0.35);">
     <button role="menuitemcheckbox" aria-checked="true" style="height: 36px; padding: 0 10px; display: flex; align-items: center; gap: 10px; border: 0; border-radius: 8px; background: transparent; color: #e4e4e7; font-family: inherit; font-size: 13px; font-weight: 500; text-align: left;"><span style="flex-grow: 1;">Remember region</span><span style="width: 32px; height: 18px; box-sizing: border-box; padding: 2px; display: flex; justify-content: flex-end; border-radius: 999px; background: {{selection}};"><span style="width: 14px; height: 14px; border-radius: 50%; background: #ffffff;"></span></span></button>
     <button role="menuitemcheckbox" aria-checked="false" style="height: 36px; padding: 0 10px; display: flex; align-items: center; gap: 10px; border: 0; border-radius: 8px; background: transparent; color: #e4e4e7; font-family: inherit; font-size: 13px; font-weight: 500; text-align: left;"><span style="flex-grow: 1;">Magnifier</span><span style="width: 32px; height: 18px; box-sizing: border-box; padding: 2px; display: flex; justify-content: flex-start; border-radius: 999px; background: #3f3f46;"><span style="width: 14px; height: 14px; border-radius: 50%; background: #a1a1aa;"></span></span></button>
   </div>
+  </sc-if>
+
+
+  <!-- recording options, under the Record caret. Both are remembered between recordings.
+       System audio records everything the Mac/PC plays (the system mix), so it has no device choice.
+       Microphone: the toggle turns it on (permission is asked the first time); the device name under
+       the label is the dropdown for the list of inputs. "System default" follows the OS setting; a picked device is remembered,
+       and if it's unplugged the recording falls back to the default and the row says so. -->
+  <sc-if value="{{recordOpen}}" hint-placeholder-val="{{ false }}">
+    <div role="menu" aria-label="Recording options" style="position: absolute; left: 607px; top: 648px; width: 250px; box-sizing: border-box; padding: 6px; display: flex; flex-direction: column; gap: 2px; background: #18181b; border: 1px solid #27272a; border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,0.35);">
+      <button role="menuitemcheckbox" aria-checked="true" style="height: 36px; padding: 0 10px; display: flex; align-items: center; gap: 10px; border: 0; border-radius: 8px; background: transparent; color: #e4e4e7; font-family: inherit; font-size: 13px; font-weight: 500; text-align: left;"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#a1a1aa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4.7a.7.7 0 0 0-1.2-.5L6.4 7.6A1.4 1.4 0 0 1 5.4 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.4a1.4 1.4 0 0 1 1 .4l3.4 3.4a.7.7 0 0 0 1.2-.5z"></path><path d="M16 9a5 5 0 0 1 0 6"></path><path d="M19.4 18.4a9 9 0 0 0 0-12.8"></path></svg><span style="flex-grow: 1;">System audio</span><span style="width: 32px; height: 18px; box-sizing: border-box; padding: 2px; display: flex; justify-content: flex-end; border-radius: 999px; background: #fafafa;"><span style="width: 14px; height: 14px; border-radius: 50%; background: #18181b;"></span></span></button>
+      <!-- microphone: same layout as System audio (icon, label, toggle in the same column). Under the
+           label, the current device is the dropdown: clicking it opens the input list. -->
+      <div role="menuitemcheckbox" aria-checked="true" style="height: 50px; padding: 0 10px; display: flex; align-items: center; gap: 10px; border-radius: 8px; color: #e4e4e7; font-size: 13px; font-weight: 500;"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#a1a1aa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19v3"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><rect x="9" y="2" width="6" height="13" rx="3"></rect></svg><span style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 3px;"><span>Microphone</span><button aria-haspopup="menu" aria-expanded="{{devicesOpen}}" aria-label="Microphone device, now {{device}}" style="max-width: 100%; height: 20px; margin-left: -6px; padding: 0 6px; display: flex; align-items: center; gap: 4px; border: 0; border-radius: 5px; background: {{deviceRowBg}}; font-family: inherit; font-size: 11px; font-weight: 500; color: #a1a1aa;"><span style="min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{device}}</span><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"></path></svg></button></span><span style="width: 32px; height: 18px; box-sizing: border-box; padding: 2px; display: flex; justify-content: flex-end; border-radius: 999px; background: #fafafa;"><span style="width: 14px; height: 14px; border-radius: 50%; background: #18181b;"></span></span></div>
+    </div>
+    </div>
+    <sc-if value="{{devicesOpen}}" hint-placeholder-val="{{ true }}">
+      <div role="menu" aria-label="Microphone" style="position: absolute; left: 643px; top: 742px; width: 250px; box-sizing: border-box; padding: 6px; display: flex; flex-direction: column; gap: 2px; background: #18181b; border: 1px solid #27272a; border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,0.35);">
+        <sc-for list="{{devices}}" as="d" hint-placeholder-count="4">
+          <button role="menuitemradio" aria-checked="{{d.on}}" style="height: 36px; padding: 0 10px; display: flex; align-items: center; gap: 10px; border: 0; border-radius: 8px; background: transparent; color: #e4e4e7; font-family: inherit; font-size: 13px; font-weight: 500; text-align: left; background: {{d.bg}};"><span style="width: 14px; display: flex;">{{d.mark}}</span><span style="flex-grow: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{d.name}}</span></button>
+        </sc-for>
+      </div>
+    </sc-if>
+  </sc-if>
+
+  <!-- larger-size menu, under the caret that opened it. Whole factors only; a size over 8192 px
+       per side is disabled. Picking an item does that action right away at that size and dismisses
+       the overlay, exactly like the main button (Save still asks where to save first). One-off: the
+       next Copy or Save is 1× again. -->
+  <sc-if value="{{sizeOpen}}" hint-placeholder-val="{{ true }}">
+    <div role="menu" aria-label="{{menuLabel}}" style="position: absolute; left: {{menuLeft}}; top: 648px; width: 230px; box-sizing: border-box; padding: 6px; display: flex; flex-direction: column; gap: 2px; background: #18181b; border: 1px solid #27272a; border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,0.35);">
+      <sc-for list="{{options}}" as="o" hint-placeholder-count="3">
+      <button role="menuitem" style="height: 36px; padding: 0 10px; display: flex; align-items: center; gap: 10px; border: 0; border-radius: 8px; background: {{o.bg}}; color: #e4e4e7; font-family: inherit; font-size: 13px; font-weight: 500; text-align: left;"><span style="flex-grow: 1;">{{o.label}}</span><span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: #71717a;">{{o.size}}</span></button>
+      </sc-for>
+    </div>
+  </sc-if>
 
   <!-- shortcut hint -->
   <div style="position: absolute; left: 0; right: 0; bottom: 28px; display: flex; justify-content: center;">
@@ -126,10 +181,31 @@ a{color:#2563eb}a:hover{color:#1d4ed8}
   </div>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"ink":{"editor":"color","default":"#EF4444","options":["#EF4444","#F97316","#3B82F6","#22C55E"]},"selection":{"editor":"color","default":"#3B82F6"},"$preview":{"width":1440,"height":900}}'>
+<script type="text/x-dc" data-dc-script data-props="{&quot;menu&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;copy&quot;,&quot;save&quot;,&quot;record&quot;,&quot;record hover&quot;,&quot;more&quot;,&quot;none&quot;],&quot;default&quot;:&quot;record&quot;},&quot;devices&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true},&quot;ink&quot;:{&quot;editor&quot;:&quot;color&quot;,&quot;default&quot;:&quot;#EF4444&quot;,&quot;options&quot;:[&quot;#EF4444&quot;,&quot;#F97316&quot;,&quot;#3B82F6&quot;,&quot;#22C55E&quot;]},&quot;selection&quot;:{&quot;editor&quot;:&quot;color&quot;,&quot;default&quot;:&quot;#3B82F6&quot;},&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900}}">
 class Component extends DCLogic {
   renderVals() {
-    return { ink: this.props.ink ?? '#EF4444', selection: this.props.selection ?? '#3B82F6' };
+    const menu = this.props.menu ?? 'record';
+    const verb = menu === 'save' ? 'Save' : 'Copy';
+    const options = [2, 3, 4].map((f, i) => ({
+      label: `${verb} at ${f}×`,
+      size: `${1260 * f} × ${1064 * f}`,
+      bg: i === 0 ? '#27272a' : 'transparent',
+    }));
+    return {
+      ink: this.props.ink ?? '#EF4444', selection: this.props.selection ?? '#3B82F6',
+      options, menuLabel: `${verb} larger`,
+      menuLeft: menu === 'save' ? '821px' : '927px',
+      sizeOpen: menu === 'copy' || menu === 'save', moreOpen: menu === 'more',
+      copyOpen: menu === 'copy', saveOpen: menu === 'save', recordOpen: menu === 'record',
+      device: 'MacBook Pro Microphone',
+      devicesOpen: menu === 'record' && (this.props.devices ?? true),
+      deviceRowBg: menu === 'record' && (this.props.devices ?? true) ? '#27272a' : 'transparent',
+      devices: ['System default', 'MacBook Pro Microphone', 'AirPods Pro', 'Shure MV7'].map((name) => ({ name, on: name === 'MacBook Pro Microphone', mark: name === 'MacBook Pro Microphone' ? '✓' : '', bg: 'transparent' })),
+      recordTip: menu === 'record hover',
+      recordCaretBg: menu === 'record' ? '#3f3f46' : '#27272a',
+      copyCaretBg: menu === 'copy' ? '#e4e4e7' : '#fafafa',
+      saveCaretBg: menu === 'save' ? '#3f3f46' : '#27272a',
+    };
   }
 }
 </script>

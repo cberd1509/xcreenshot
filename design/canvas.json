@@ -38,6 +38,27 @@
       "x": 960,
       "y": 1280
     },
+    "QuickCopy.dc.html": {
+      "h": 900,
+      "title": "Quick copy on: ready to drag",
+      "w": 1440,
+      "x": 4560,
+      "y": 0
+    },
+    "QuickCopyTip.dc.html": {
+      "h": 900,
+      "title": "Quick copy tip (after 3 plain copies in a row)",
+      "w": 1440,
+      "x": 7600,
+      "y": 0
+    },
+    "Recording.dc.html": {
+      "h": 900,
+      "title": "Recording a region (after 1.0)",
+      "w": 1440,
+      "x": 9120,
+      "y": 0
+    },
     "Settings.dc.html": {
       "h": 800,
       "title": "Settings",
@@ -51,6 +72,13 @@
       "w": 440,
       "x": 1980,
       "y": 1560
+    },
+    "Toast.dc.html": {
+      "h": 900,
+      "title": "Confirmation toasts (every Copy, Save, Share; stacked)",
+      "w": 1440,
+      "x": 6080,
+      "y": 0
     },
     "Tray.dc.html": {
       "h": 400,
@@ -72,20 +100,6 @@
       "w": 1440,
       "x": 1520,
       "y": 0
-    },
-    "QuickCopy.dc.html": {
-      "x": 4560,
-      "y": 0,
-      "w": 1440,
-      "h": 900,
-      "title": "Quick copy on: ready to drag"
-    },
-    "Toast.dc.html": {
-      "x": 6080,
-      "y": 0,
-      "w": 1440,
-      "h": 900,
-      "title": "Confirmation toasts (every Copy, Save, Share; stacked)"
     }
   },
   "createdOnFiles": {
@@ -113,7 +127,7 @@
     },
     "capture": {
       "kind": "title1",
-      "maxW": 7520,
+      "maxW": 8000,
       "text": "Capture overlay",
       "w": 240,
       "x": 0,
@@ -142,6 +156,8 @@
     "WindowSelect.dc.html",
     "QuickCopy.dc.html",
     "Toast.dc.html",
+    "QuickCopyTip.dc.html",
+    "Recording.dc.html",
     "Settings.dc.html",
     "Onboarding.dc.html",
     "Tray.dc.html",

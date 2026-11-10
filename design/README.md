@@ -14,6 +14,8 @@ Don't edit these files by hand. Change the canvas, then sync it: ask Claude to "
 | `Settings.dc.html` | Settings window |
 | `Onboarding.dc.html` | First run: Screen Recording permission (macOS) and the shortcut |
 | `QuickCopy.dc.html` | Overlay with quick copy on |
+| `QuickCopyTip.dc.html` | Quick copy tip, after three plain copies in a row |
+| `Recording.dc.html` | Recording a region (after 1.0) |
 | `Toast.dc.html` | Confirmation toasts (copy, save, share) |
 | `Tray.dc.html` | Menu bar menu |
 | `UpdateReady.dc.html` | Update ready dialog |
