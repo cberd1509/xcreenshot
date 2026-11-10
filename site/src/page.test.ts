@@ -1,6 +1,7 @@
 // The page's per-OS copy, checked against the Landing artboard.
 import { describe, expect, it } from 'vitest'
 import html from '../index.html?raw'
+import { SELECT_KEY, TOOLS } from '../../src/overlay/annotate/shapes'
 import { fillPlaceholders, type Download } from './release'
 
 const download = 'https://github.com/cberd1509/xcreenshot/releases/download/v0.4.0'
@@ -139,6 +140,14 @@ describe('Shortcuts', () => {
     const details = section.querySelector('details')!
     expect(details.open).toBe(false)
     expect(text(details.querySelector('summary h2'))).toBe('Shortcuts')
+  })
+
+  it("lists the overlay's tool keys", () => {
+    render(withWindows)
+    const toolKeys = $$('.shortcut')
+      .filter((row) => text(row.querySelector('dt'))?.startsWith('Tools:'))
+      .flatMap((row) => keys(row))
+    expect(toolKeys).toEqual([SELECT_KEY, ...TOOLS.map((t) => t.key)])
   })
 
   it('lists the macOS keys', () => {
