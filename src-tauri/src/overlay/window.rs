@@ -310,8 +310,7 @@ fn stage_unpainted<R: Runtime>(app: &AppHandle<R>, session: u64, displays: &[u32
     if phase(app).session() != Some(session) {
         return;
     }
-    let overlay = app.state::<Overlay>();
-    let shown = lock(&overlay.shown);
+    let shown = lock(&app.state::<Overlay>().shown).clone();
     for &d in displays.iter().filter(|d| !shown.contains(d)) {
         if let Some(window) = app.get_webview_window(&label(d)) {
             stage(&window, true);
@@ -641,16 +640,18 @@ fn stage<R: Runtime>(window: &WebviewWindow<R>, staged: bool) {
     let Some(display) = display_id(window.label()) else {
         return;
     };
-    {
+    let was_staged = {
         let overlay = window.state::<Overlay>();
         let mut list = lock(&overlay.staged);
-        if !staged && !list.contains(&display) {
-            return;
-        }
+        let was = list.contains(&display);
         list.retain(|&d| d != display);
         if staged {
             list.push(display);
         }
+        was
+    };
+    if !staged && !was_staged {
+        return;
     }
     let click_through = || {
         if let Err(e) = window.set_ignore_cursor_events(staged) {

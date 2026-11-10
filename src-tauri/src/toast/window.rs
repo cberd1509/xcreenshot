@@ -217,7 +217,7 @@ pub(crate) fn toast_idle<R: Runtime>(window: WebviewWindow<R>, state: State<'_, 
 /// Window level, Spaces and hiding: what Tauri's builder can't set.
 #[cfg(all(target_os = "macos", not(test)))]
 mod native {
-    use crate::macos::main_ns_window as ns_window;
+    use crate::macos::main_ns_window;
     use objc2_app_kit::{NSStatusWindowLevel, NSWindowCollectionBehavior};
     use tauri::{Runtime, WebviewWindow};
 
@@ -225,7 +225,7 @@ mod native {
     /// window cycle, and still on screen while the app is hidden (closing the overlay hides the
     /// app to give focus back).
     pub fn prepare<R: Runtime>(window: &WebviewWindow<R>) {
-        let Some(ns_window) = ns_window(window) else {
+        let Some(ns_window) = main_ns_window(window) else {
             return;
         };
         ns_window.setLevel(NSStatusWindowLevel);
@@ -240,7 +240,7 @@ mod native {
 
     /// Ordered front without becoming key or activating the app (Tauri's `show` makes it key).
     pub fn present<R: Runtime>(window: &WebviewWindow<R>) {
-        if let Some(ns_window) = ns_window(window) {
+        if let Some(ns_window) = main_ns_window(window) {
             ns_window.orderFrontRegardless();
         }
     }
