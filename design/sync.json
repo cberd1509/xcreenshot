@@ -1,11 +1,11 @@
 {
   "canvas": "https://claude.ai/artifact/RAcQ8kKKNBJCeC4Z3MriRr",
-  "version": "1794328810-e215",
-  "syncedAt": "2026-11-10T16:40:44Z",
+  "version": "1794334710-4ece",
+  "syncedAt": "2026-11-10T18:35:53Z",
   "files": {
     "AppIcon.dc.html": "72f6c195721c90f77635186b9c8426f39bbeb96157eb34cdcafc793048018bee",
     "Desktop.dc.html": "9ec3e1777dea7808f8b8a632d7d41e4640d812bbe0e4d06176df3926d24a7363",
-    "Landing.dc.html": "fd47851009dd5e83ebf95f986c0f8e986e72d552b179a583f94a0382ad605a0b",
+    "Landing.dc.html": "c23adbe852d418191674fb943281b95ef1741c3ac82fd1dacbd3669305939a51",
     "Main.dc.html": "84627227b71d217988c93599ae266fdf7c508610ea3d874b1cfa8ebc25673fca",
     "Onboarding.dc.html": "e20dc1cbcb6353981be761df7cbceec72ec429684e8d060a5ea47987e1e7bc67",
     "QuickCopy.dc.html": "088cc4e49d0f9a72371e6c66084063c6cb9533beec7db13d39c0b6e180c4d012",
@@ -13,10 +13,10 @@
     "Recording.dc.html": "d041ca3ea111d54c6a82cd79a07f52f7f61cf8bc2f3b36d75950613a1555b4df",
     "Settings.dc.html": "03490e6ed423a37b6c00b3cef85b218da3e1d7a22f7e0568775cfbf78581a2eb",
     "ShortcutNotice.dc.html": "0fa185fc938cdac81594aacb39c6dd4de9c2c0c48e35cbcbb42a1bc388203c45",
-    "Toast.dc.html": "47b4038356860581db9f42242a785d6a5e4de5a90e0d663f78494ba245d291eb",
+    "Toast.dc.html": "2085393d407d8933135826a7530190355a119bc56d361350b7e22a5aaca19e2f",
     "Tray.dc.html": "e3b1df2d15539b5e861fa674f23dbea549ae1f5b24f7750e3d640b9b682a8813",
     "UpdateReady.dc.html": "b99a91bb850a45b8a32f04e5b91cdf20b24f9fd07b959641669904034e46bd8b",
     "WindowSelect.dc.html": "1dc28eb44c1aeeeac04a15f7d92572d3f5b39e65906a533a1ba00c8113217a10",
-    "canvas.json": "30286b569ac2cd96c5b1ebdd3d3e97905174edbe4c59be17ede74d5a30351479"
+    "canvas.json": "43d68a832df7521633edce0146a660c1c2aee543f5b368b4e8f7974db8f2bfdb"
   }
 }

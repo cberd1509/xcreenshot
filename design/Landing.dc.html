@@ -100,6 +100,29 @@ a{color:#09090b}a:visited{color:#09090b}
     </div>
   </section>
 
+  <!-- shortcuts: every key in one place; follows the page's platform switch. Collapsed by
+       default (on the site: <details>/<summary>); the heading opens and closes it. -->
+  <section id="shortcuts" style="max-width: 1120px; margin: 0 auto; padding: 96px 24px 0; box-sizing: border-box;">
+    <h2 style="margin: 0;">
+      <button aria-expanded="{{keysOpen}}" aria-controls="shortcut-list" onClick="{{toggleKeys}}" style="width: 100%; padding: 0 0 20px; display: flex; align-items: center; gap: 8px; border: 0; border-bottom: {{keysRule}}; background: transparent; font-family: inherit; font-size: 13px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #09090b; text-align: left; cursor: pointer;">
+        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="{{keysChevron}}"><path d="m9 18 6-6-6-6"></path></svg>
+        Shortcuts
+      </button>
+    </h2>
+    <sc-if value="{{keysOpen}}" hint-placeholder-val="{{ true }}">
+    <div id="shortcut-list" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); column-gap: 48px;">
+      <sc-for list="{{keys}}" as="row" hint-placeholder-count="12">
+        <div style="min-height: 52px; padding: 10px 0; box-sizing: border-box; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid #e4e4e7;">
+          <span style="font-size: 14px; line-height: 20px; color: #09090b;">{{row.label}}</span>
+          <span style="display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 4px; font-size: 13px; color: #71717a;">
+            <sc-for list="{{row.keys}}" as="k" hint-placeholder-count="2"><span style="{{k.style}}">{{k.text}}</span></sc-for>
+          </span>
+        </div>
+      </sc-for>
+    </div>
+    </sc-if>
+  </section>
+
   <!-- install -->
   <section id="install" style="max-width: 1120px; margin: 0 auto; padding: 96px 24px 0; box-sizing: border-box; display: flex; flex-wrap: wrap; gap: 48px;">
     <div style="flex: 1 1 320px; display: flex; flex-direction: column; gap: 16px; align-items: flex-start;">
@@ -159,7 +182,7 @@ a{color:#09090b}a:visited{color:#09090b}
   </footer>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props="{&quot;os&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;mac&quot;,&quot;windows&quot;],&quot;default&quot;:&quot;mac&quot;},&quot;$preview&quot;:{&quot;width&quot;:1280,&quot;height&quot;:2600}}">
+<script type="text/x-dc" data-dc-script data-props="{&quot;os&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;mac&quot;,&quot;windows&quot;],&quot;default&quot;:&quot;mac&quot;},&quot;shortcutsOpen&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false},&quot;$preview&quot;:{&quot;width&quot;:1280,&quot;height&quot;:3300}}">
 class Component extends DCLogic {
   renderVals() {
     const os = this.state?.os ?? this.props.os ?? 'mac';
@@ -175,6 +198,30 @@ class Component extends DCLogic {
       home: mac ? 'menu bar' : 'system tray',
       mod: mac ? '⌘' : 'Ctrl',
       undo: mac ? '⌘Z' : 'Ctrl+Z',
+      keysOpen: this.state?.keysOpen ?? (this.props.shortcutsOpen ?? false),
+      toggleKeys: () => this.setState({ keysOpen: !(this.state?.keysOpen ?? (this.props.shortcutsOpen ?? false)) }),
+      keysChevron: (this.state?.keysOpen ?? (this.props.shortcutsOpen ?? false)) ? 'transform: rotate(90deg);' : '',
+      keysRule: (this.state?.keysOpen ?? (this.props.shortcutsOpen ?? false)) ? '1px solid #e4e4e7' : '1px solid #e4e4e7',
+      keys: (() => {
+        const kbd = 'display:inline-flex;align-items:center;justify-content:center;min-width:26px;height:26px;padding:0 7px;box-sizing:border-box;border-radius:6px;background:#fafafa;border:1px solid #d4d4d8;border-bottom-width:2px;font-family:JetBrains Mono,ui-monospace,monospace;font-size:13px;font-weight:600;color:#09090b';
+        const k = (...ks) => ks.map((t) => (t === 'or' || t === '/' || t === '+' || t.startsWith('hold') || t.startsWith('double')) ? { text: t, style: '' } : { text: t, style: kbd });
+        const m = mac ? '⌘' : 'Ctrl', sh = mac ? '⇧' : 'Shift';
+        return [
+          { label: 'Take a screenshot', keys: mac ? k('⌃', '⇧', '⌘', 'S') : k('PrtSc') },
+          { label: 'Select a window', keys: k('double-click') },
+          { label: 'Select the whole screen', keys: k(m, 'double-click') },
+          { label: 'Copy', keys: k(m, 'C', 'or', 'Enter') },
+          { label: 'Save as PNG', keys: k(m, 'S') },
+          { label: 'Undo / Redo', keys: k(m, 'Z', '/', sh, m, 'Z') },
+          { label: 'Tools: select, pen, line, arrow', keys: k('V', 'P', 'L', 'A') },
+          { label: 'Tools: rectangle, ellipse, highlighter, text, blur', keys: k('R', 'O', 'H', 'T', 'B') },
+          { label: 'Straight lines, circles', keys: k('hold', sh) },
+          { label: 'Move the selection or a shape', keys: k('←', '↑', '→', '↓', 'or', sh, '+', '←') },
+          { label: 'Delete a shape', keys: k(mac ? '⌫' : 'Delete') },
+          { label: 'Edit a text', keys: k('Enter', 'or', 'double-click') },
+          { label: 'Go back a step, then cancel', keys: k('Esc') },
+        ];
+      })(),
     };
   }
 }

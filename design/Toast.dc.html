@@ -23,7 +23,11 @@ body{margin:0}
        was on. Shown after every finished action (Copy, quick copy, Save, Share), with the system
        screenshot sound. Each fades out ~1.2 s after it appears. A new one goes at the bottom and
        pushes older ones up (dimmer); at most 3 are visible. The same action repeated while its
-       toast is still up updates that toast with a count instead of adding another. -->
+       toast is still up updates that toast with a count instead of adding another.
+       Saved has two buttons, Open (the file, in its default app) and Show in Finder (Show in
+       folder on Windows; the folder with the file selected). Only Saved toasts take clicks, they
+       still never take keyboard focus, they stay ~4 s, and hovering keeps them up. Clicking a button
+       does its action and dismisses that toast. -->
   <div style="position: absolute; left: 0; right: 0; bottom: 28px; display: flex; flex-direction: column; align-items: center; gap: 8px;">
     <sc-for list="{{toasts}}" as="t" hint-placeholder-count="3">
       <div role="status" style="{{t.style}}">
@@ -32,6 +36,12 @@ body{margin:0}
         </span>
         <b style="color: #fafafa; font-weight: 600;">{{t.title}}</b>
         <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px;">{{t.detail}}</span>
+        <sc-if value="{{t.actions}}" hint-placeholder-val="{{ false }}">
+          <span style="display: flex; gap: 4px; margin-left: 4px;">
+            <button style="height: 26px; padding: 0 10px; border: 0; border-radius: 999px; background: #fafafa; font-family: inherit; font-size: 12px; font-weight: 600; color: #09090b;">Open</button>
+            <button style="height: 26px; padding: 0 10px; border: 0; border-radius: 999px; background: #3f3f46; font-family: inherit; font-size: 12px; font-weight: 500; color: #fafafa;">{{reveal}}</button>
+          </span>
+        </sc-if>
         <sc-if value="{{t.count}}" hint-placeholder-val="{{ false }}">
           <span style="padding: 1px 7px; border-radius: 999px; background: #3f3f46; color: #fafafa; font-size: 12px; font-weight: 600;">{{t.count}}</span>
         </sc-if>
@@ -40,17 +50,22 @@ body{margin:0}
   </div>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"state":{"editor":"enum","options":["stacked","single"],"default":"stacked"},"$preview":{"width":1440,"height":900}}'>
+<script type="text/x-dc" data-dc-script data-props='{"state":{"editor":"enum","options":["stacked","single","saved"],"default":"stacked"},"os":{"editor":"enum","options":["mac","windows"],"default":"mac"},"$preview":{"width":1440,"height":900}}'>
 class Component extends DCLogic {
   renderVals() {
     const base = 'padding: 8px 14px 8px 10px; display: flex; align-items: center; gap: 10px; border-radius: 999px; background: rgba(24, 24, 27, 0.94); border: 1px solid #27272a; box-shadow: 0 12px 32px rgba(0,0,0,0.35); font-size: 13px; color: #a1a1aa;';
     const all = [
-      { title: 'Saved', detail: 'Screenshot 2026-11-06 at 23.12.png', count: '', style: base + ' opacity: 0.55; transform: scale(0.94);' },
+      { title: 'Saved', detail: 'Screenshot 2026-11-06 at 23.12.png', count: '', actions: true, style: base.replace('padding: 8px 14px 8px 10px', 'padding: 5px 5px 5px 10px') + ' opacity: 0.55; transform: scale(0.94);' },
       { title: 'Shared', detail: 'AirDrop', count: '', style: base + ' opacity: 0.8; transform: scale(0.97);' },
       { title: 'Copied', detail: '1260 × 1064', count: '×3', style: base },
     ];
     const single = [{ title: 'Copied', detail: '1260 × 1064', count: '', style: base }];
-    return { toasts: (this.props.state ?? 'stacked') === 'single' ? single : all };
+    const saved = [{ title: 'Saved', detail: 'Screenshot 2026-11-06 at 23.12.png', count: '', actions: true, style: base.replace('padding: 8px 14px 8px 10px', 'padding: 5px 5px 5px 10px') }];
+    const state = this.props.state ?? 'stacked';
+    return {
+      toasts: state === 'single' ? single : state === 'saved' ? saved : all,
+      reveal: (this.props.os ?? 'mac') === 'mac' ? 'Show in Finder' : 'Show in folder',
+    };
   }
 }
 </script>

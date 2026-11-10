@@ -1,6 +1,7 @@
 // The page's per-OS copy, checked against the Landing artboard.
 import { describe, expect, it } from 'vitest'
 import html from '../index.html?raw'
+import { SELECT_KEY, TOOLS } from '../../src/overlay/annotate/shapes'
 import { fillPlaceholders, type Download } from './release'
 
 const download = 'https://github.com/cberd1509/xcreenshot/releases/download/v0.4.0'
@@ -119,6 +120,72 @@ describe.each([
       'Press the shortcut, drag a region, mark it up, then copy or save. It lives in your menu ' +
         'bar or system tray.',
     )
+  })
+})
+
+/** Each Shortcuts row as "label: keys" for one OS, with every key cap in brackets. */
+const shortcutRows = (os: string) =>
+  $$('.shortcut').map((row) => {
+    const copy = seenOn(row, os)!
+    for (const cap of copy.querySelectorAll('kbd')) cap.textContent = `[${cap.textContent}]`
+    return `${text(copy.querySelector('dt'))}: ${text(copy.querySelector('dd'))}`
+  })
+
+describe('Shortcuts', () => {
+  it('sits between How it works and Install, collapsed under its heading', () => {
+    render(withWindows)
+    const section = $('#shortcuts')!
+    expect(section.previousElementSibling?.classList).toContain('steps-section')
+    expect(section.nextElementSibling?.id).toBe('install')
+    const details = section.querySelector('details')!
+    expect(details.open).toBe(false)
+    expect(text(details.querySelector('summary h2'))).toBe('Shortcuts')
+  })
+
+  it("lists the overlay's tool keys", () => {
+    render(withWindows)
+    const toolKeys = $$('.shortcut')
+      .filter((row) => text(row.querySelector('dt'))?.startsWith('Tools:'))
+      .flatMap((row) => keys(row))
+    expect(toolKeys).toEqual([SELECT_KEY, ...TOOLS.map((t) => t.key)])
+  })
+
+  it('lists the macOS keys', () => {
+    render(withWindows)
+    expect(shortcutRows('mac')).toEqual([
+      'Take a screenshot: [⌃][⇧][⌘][S]',
+      'Select a window: double-click',
+      'Select the whole screen: [⌘] double-click',
+      'Copy: [⌘][C] or [Enter]',
+      'Save as PNG: [⌘][S]',
+      'Undo / Redo: [⌘][Z] / [⇧][⌘][Z]',
+      'Tools: select, pen, line, arrow: [V][P][L][A]',
+      'Tools: rectangle, ellipse, highlighter, text, blur: [R][O][H][T][B]',
+      'Straight lines, circles: hold [⇧]',
+      'Move the selection or a shape: [←][↑][→][↓] or [⇧] + [←]',
+      'Delete a shape: [⌫]',
+      'Edit a text: [Enter] or double-click',
+      'Go back a step, then cancel: [Esc]',
+    ])
+  })
+
+  it('lists the Windows keys', () => {
+    render(withWindows)
+    expect(shortcutRows('other')).toEqual([
+      'Take a screenshot: [PrtSc]',
+      'Select a window: double-click',
+      'Select the whole screen: [Ctrl] double-click',
+      'Copy: [Ctrl][C] or [Enter]',
+      'Save as PNG: [Ctrl][S]',
+      'Undo / Redo: [Ctrl][Z] / [Shift][Ctrl][Z]',
+      'Tools: select, pen, line, arrow: [V][P][L][A]',
+      'Tools: rectangle, ellipse, highlighter, text, blur: [R][O][H][T][B]',
+      'Straight lines, circles: hold [Shift]',
+      'Move the selection or a shape: [←][↑][→][↓] or [Shift] + [←]',
+      'Delete a shape: [Delete]',
+      'Edit a text: [Enter] or double-click',
+      'Go back a step, then cancel: [Esc]',
+    ])
   })
 })
 
