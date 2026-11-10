@@ -169,7 +169,10 @@ The whole copy is about 70 ms for a full display, less for a normal selection.
   with a hidden message-only owner window. On every platform copies reach the clipboard in the
   order they were asked for (`output::order`): an older copy that finishes encoding later is
   skipped. The overlay page has no clipboard permission.
-- **Save dialog.** `tauri-plugin-dialog` from Rust (`blocking_save_file` on a worker), PNG
+- **Save dialog.** On macOS an app-modal `NSSavePanel` (`output::save_panel`), centred on the
+  capture's display. The overlays are hidden while it is open. `tauri-plugin-dialog` attached it
+  as a sheet to a full-screen overlay window, stuck at the top of the screen (#119). On Windows,
+  `tauri-plugin-dialog` from Rust (`blocking_save_file` on a worker). Both have a PNG
   filter, default name `xcreenshot-YYYY-MM-DD-HH.MM.SS.png` in local time. The filter makes the
   dialog add `.png` where the platform does that. If Rust still has to add it and that file
   exists, the dialog opens again with that name, so the user confirms the overwrite. We never

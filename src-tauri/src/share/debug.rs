@@ -6,7 +6,7 @@
 //! - `cancel`: like `overlay`, then dismisses the sheet after 2 s, which deletes the temp file
 //!   and puts Settings back at the screen saver level.
 
-use super::{Rect, ShareError, ShareOutcome};
+use super::{Opened, Rect, ShareError, ShareOutcome};
 use crate::windows::Open;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -43,7 +43,7 @@ type SharePng<R> = fn(
     &[u8],
     Rect,
     Box<dyn FnOnce(ShareOutcome) + Send>,
-) -> Result<(), ShareError>;
+) -> Result<Opened, ShareError>;
 
 pub fn schedule<R: Runtime>(app: &AppHandle<R>, open: Open<R>) {
     if let Some(mode) = mode(std::env::var("XCREENSHOT_DEBUG_SHARE").ok()) {
@@ -56,7 +56,7 @@ fn share_png<R: Runtime>(
     png: &[u8],
     anchor: Rect,
     on_done: Box<dyn FnOnce(ShareOutcome) + Send>,
-) -> Result<(), ShareError> {
+) -> Result<Opened, ShareError> {
     super::share_png(window, png, anchor, on_done)
 }
 
@@ -164,7 +164,7 @@ mod tests {
         png: &[u8],
         anchor: Rect,
         on_done: Box<dyn FnOnce(ShareOutcome) + Send>,
-    ) -> Result<(), ShareError> {
+    ) -> Result<Opened, ShareError> {
         assert_eq!(anchor, ANCHOR);
         SHARED
             .lock()

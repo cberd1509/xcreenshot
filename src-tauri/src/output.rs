@@ -7,6 +7,9 @@
 pub mod compose;
 /// Copies reach the clipboard in the order they were asked for.
 pub(crate) mod order;
+/// The Save dialog on macOS.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) mod save_panel;
 /// The Windows clipboard.
 #[cfg(any(target_os = "windows", test))]
 pub(crate) mod win_clipboard;

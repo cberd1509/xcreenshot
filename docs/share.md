@@ -10,7 +10,9 @@ pub fn share_png(
     png: &[u8],
     anchor: Rect,
     on_done: impl FnOnce(ShareOutcome) + Send + 'static,
-) -> Result<(), ShareError>
+) -> Result<Opened, ShareError>
+
+pub struct Opened { pub write: Duration, pub picker: Duration }
 
 pub enum ShareOutcome { Chosen(String), Cancelled }
 
@@ -21,11 +23,13 @@ pub fn restore_level(window: &WebviewWindow)
 - `share_png` returns as soon as the menu is on screen, without waiting for the user (the menu runs no nested tracking loop). It can be called from any thread, but it waits for the main thread to show the menu, so call it from an async command, not a sync one (those run on the main thread).
 - `on_done` runs once, on the main thread, when the menu closes: `Chosen(title)` (e.g. `"AirDrop"`) before that service shows its own UI, or `Cancelled` (also for a picker dropped after 10 minutes without an answer). It is not called if `share_png` returns an error.
 - Errors (`kind` when serialized): `unsupported`, `notReady` (`share::init` was not called), `io` (temp file), `window` (no native window or view).
+- `Opened` says how long the temp file write and showing the menu took, for the log.
 - `share::init(app)` runs at startup (already wired in `lib.rs`).
+- The chosen service shows its UI in its own window (`sourceWindowForShareItems` returns nil), with no transition from the source (`transitionImageForShareItem` returns nil). Otherwise it would hang a sheet on the overlay, which has just closed, and AppKit would bring that window back unpainted: a black screen (#118).
 
 ## From the overlay
 
-The overlay's Share button (macOS only; it is hidden where there is no share sheet) calls `overlay_share` with the same request as Copy and Save (`docs/annotations.md`), plus `anchor`, the button's rect. `overlay/export.rs` crops and annotates the selection, encodes it like a save (blur baked in, same `pHYs` density) and opens the sheet under the button.
+The overlay's Share button (macOS only; it is hidden where there is no share sheet) calls `overlay_share` with the same request as Copy and Save (`docs/annotations.md`), plus `anchor`, the button's rect. `overlay/export.rs` crops and annotates the selection, encodes it like a save (blur baked in, same `pHYs` density) and opens the sheet under the button. Each share logs its steps once the sheet is open: `share sheet open for WxH px (crop, encode, write, picker)`. `picker` is the main thread building and showing the menu; the other steps run on workers.
 
 The overlay sits at the screen saver level (1000), which would hide the menu (a pop-up menu window, level 101). `share_png` lowers it to 100 while the menu is open: still over the menu bar and Dock. So the overlay:
 

@@ -109,6 +109,14 @@ impl serde::Serialize for ShareError {
     }
 }
 
+/// How long opening the sheet took, for the log: writing the temp file, then showing the menu
+/// on the main thread (waiting for it included).
+#[derive(Debug, Default)]
+pub struct Opened {
+    pub write: Duration,
+    pub picker: Duration,
+}
+
 /// After a service reports back, the file is kept this long: some read it late.
 #[cfg_attr(not(all(target_os = "macos", not(test))), allow(dead_code))]
 const GRACE: Duration = Duration::from_secs(30);
@@ -157,7 +165,7 @@ pub fn share_png<R: Runtime>(
     png: &[u8],
     anchor: Rect,
     on_done: impl FnOnce(ShareOutcome) + Send + 'static,
-) -> Result<(), ShareError> {
+) -> Result<Opened, ShareError> {
     #[cfg(all(target_os = "macos", not(test)))]
     {
         let now = chrono::Local::now().naive_local();
@@ -182,10 +190,12 @@ fn share_with<R: Runtime>(
     now: chrono::NaiveDateTime,
     grace: Duration,
     show: impl FnOnce(&WebviewWindow<R>, Rect, &Path, Session) -> Result<(), ShareError>,
-) -> Result<(), ShareError> {
+) -> Result<Opened, ShareError> {
     let app = window.app_handle();
     let files = app.try_state::<TempFiles>().ok_or(ShareError::NotReady)?;
+    let started = Instant::now();
     let path = files.create(png, now)?;
+    let write = started.elapsed();
     let handle = app.clone();
     let shared = path.clone();
     let release = Box::new(move |delay: Duration| {
@@ -197,9 +207,14 @@ fn share_with<R: Runtime>(
         }
     });
     let session = Session::new(on_done, release, grace);
+    let shown = Instant::now();
     show(window, anchor, &path, session).inspect_err(|e| {
         log::error!("{e}");
         files.release(&path);
+    })?;
+    Ok(Opened {
+        write,
+        picker: shown.elapsed(),
     })
 }
 
