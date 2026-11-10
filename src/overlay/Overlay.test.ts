@@ -366,8 +366,11 @@ describe('Overlay', () => {
       })
       expect(called('overlay_painted')[0].args).toEqual({ session: 1, rendered: false })
 
+      // The next draw gives up sooner.
       await emit('overlay:show', small(2))
-      await sleep(PAINT_TIMEOUT_MS + 100)
+      await waitFor(() => expect(called('overlay_painted')).toHaveLength(2), {
+        timeout: FIRST_PAINT_TIMEOUT_MS - 100,
+      })
       expect(called('overlay_painted')[1].args).toEqual({ session: 2, rendered: false })
     } finally {
       frames.restore()

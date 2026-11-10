@@ -1,9 +1,10 @@
 //! Tauri glue for the toasts: the window, the sound and the page's two commands.
 //!
-//! [`show`] builds the window if needed, moves it to the bottom of the work area of the display
-//! the capture was on, plays the sound and sends the toast (`toast:show`), or keeps it until the page asks for
-//! it (`toast_ready`). The page calls `toast_idle` when its last toast has faded; the window
-//! then hides. A capture hides it at once ([`hide_for_capture`]), so no toast is in the frame.
+//! [`show`] builds the window if needed, moves it to the bottom of the work area of the display the
+//! capture was on, plays the sound and sends the toast (`toast:show`), or keeps it until the page
+//! asks for it (`toast_ready`). The page calls `toast_idle` when its last toast has faded; the
+//! window then hides. A capture hides it at once ([`hide_for_capture`]), so no toast is in the
+//! frame.
 
 use super::{LABEL, Queue, SIZE, Shown, Toast, place, room, sound};
 use crate::capture::{Bounds, Display};
@@ -29,8 +30,8 @@ impl Toasts {
     }
 }
 
-/// Shows `toast` at the bottom of the work area of the display `anchor` covers (an overlay
-/// window), with the screenshot sound. Does nothing unless the app manages [`Toasts`]. Main thread only.
+/// Shows `toast` at the bottom of the work area of the display `anchor` covers (an overlay window),
+/// with the screenshot sound. Does nothing unless the app manages [`Toasts`]. Main thread only.
 pub fn show<R: Runtime>(anchor: &WebviewWindow<R>, toast: Toast) {
     let app = anchor.app_handle();
     let Some(toasts) = app.try_state::<Toasts>() else {
@@ -102,11 +103,18 @@ pub fn hide_for_capture<R: Runtime>(app: &AppHandle<R>) {
 
 /// The part of `display` above the taskbar or the Dock, as the OS says now.
 fn area(display: Display) -> Bounds {
-    room(display.bounds, crate::pick::work_area_now(display))
+    let work = crate::pick::work_area_now(display);
+    if work.is_none() && cfg!(any(target_os = "macos", target_os = "windows")) {
+        log::warn!(
+            "no work area for display {}; the toasts use all of it",
+            display.id
+        );
+    }
+    room(display.bounds, work)
 }
 
-/// The display `window` (an overlay) covers, in its OS units (points on macOS, pixels on Windows), and how
-/// many of them make a logical px.
+/// The display `window` (an overlay) covers, in its OS units (points on macOS, pixels on Windows),
+/// and how many of them make a logical px.
 fn display_of<R: Runtime>(window: &WebviewWindow<R>) -> Option<(Display, f64)> {
     let id = crate::overlay::display_id(window.label())?;
     let scale = window.scale_factor().ok()?;
