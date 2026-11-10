@@ -88,6 +88,8 @@ pub enum CaptureError {
     Share(String),
     /// The page sent a copy or save request that does not make sense.
     Invalid(String),
+    /// The capture ended (Esc, or a newer one) before its copy reached the clipboard.
+    Ended,
 }
 
 impl CaptureError {
@@ -104,6 +106,7 @@ impl CaptureError {
             Self::Dialog(_) => "dialog",
             Self::Share(_) => "share",
             Self::Invalid(_) => "invalid",
+            Self::Ended => "ended",
         }
     }
 }
@@ -122,6 +125,7 @@ impl fmt::Display for CaptureError {
             Self::Dialog(e) => write!(f, "the Save dialog failed: {e}"),
             Self::Share(e) => write!(f, "could not share: {e}"),
             Self::Invalid(e) => write!(f, "invalid request: {e}"),
+            Self::Ended => f.write_str("the capture ended before the copy was written"),
         }
     }
 }
@@ -796,6 +800,7 @@ mod tests {
             CaptureError::Write("w".into()),
             CaptureError::Dialog("d".into()),
             CaptureError::Share("s".into()),
+            CaptureError::Ended,
         ]
         .map(|e| json(e)["kind"].as_str().unwrap().to_owned());
         assert_eq!(
@@ -808,7 +813,8 @@ mod tests {
                 "clipboard",
                 "write",
                 "dialog",
-                "share"
+                "share",
+                "ended"
             ]
         );
     }

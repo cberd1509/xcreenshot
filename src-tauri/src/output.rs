@@ -10,6 +10,8 @@ pub(crate) mod order;
 /// The Save dialog on macOS.
 #[cfg(any(target_os = "macos", test))]
 pub(crate) mod save_panel;
+/// Copy and Save at 2×, 3× and 4×.
+pub mod upscale;
 /// The Windows clipboard.
 #[cfg(any(target_os = "windows", test))]
 pub(crate) mod win_clipboard;
@@ -126,9 +128,20 @@ pub type Clipboard = Box<dyn Fn(&RgbaImage, Density) -> Result<(), CaptureError>
 /// The copy is numbered now, when it is asked for, so an older copy never replaces a newer one
 /// (`order`).
 pub fn os_clipboard<R: Runtime>(app: &AppHandle<R>) -> Clipboard {
-    static ORDER: order::CopyOrder = order::CopyOrder::new();
     order::ordered(&ORDER, platform_clipboard(app))
 }
+
+/// [`os_clipboard`], writing only while `wanted()` holds, asked under the copy order's lock
+/// right before the write (`order::guarded`); otherwise [`CaptureError::Ended`].
+pub fn os_clipboard_while<R: Runtime>(
+    app: &AppHandle<R>,
+    wanted: impl Fn() -> bool + Send + Sync + 'static,
+) -> Clipboard {
+    order::ordered(&ORDER, order::guarded(platform_clipboard(app), wanted))
+}
+
+/// Every copy's place in line: see [`order`].
+static ORDER: order::CopyOrder = order::CopyOrder::new();
 
 fn platform_clipboard<R: Runtime>(app: &AppHandle<R>) -> Clipboard {
     #[cfg(target_os = "macos")]

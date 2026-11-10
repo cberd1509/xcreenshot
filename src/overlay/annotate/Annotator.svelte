@@ -34,6 +34,7 @@
     type TextOptions,
   } from './text'
   import TextEditor from './TextEditor.svelte'
+  import type { Factor } from './upscale'
   import type ToolbarComponent from './Toolbar.svelte'
   import type { Option, ToolbarActions } from './Toolbar.svelte'
 
@@ -50,6 +51,7 @@
     options,
     actions: given = {},
     source = null,
+    size = null,
   }: {
     selection: Rect | null
     display: Size
@@ -59,6 +61,8 @@
     actions?: Partial<ToolbarActions>
     /** The frozen frame, for the blur preview. */
     source?: HTMLCanvasElement | null
+    /** The selection in physical px: Copy and Save show their larger sizes from it. */
+    size?: Size | null
   } = $props()
 
   const noop = () => {}
@@ -300,8 +304,8 @@
   function setText(change: Partial<TextOptions>) {
     const fontSize = change.size && TEXT_SIZES[change.size]
     if (selectedText && !editing) {
-      const { fontSize: size, background, text } = selectedText
-      const next = { fontSize: fontSize || size, background: change.background ?? background }
+      const { fontSize: was, background, text } = selectedText
+      const next = { fontSize: fontSize || was, background: change.background ?? background }
       const box = { ...selectedText, ...next, ...board!.measure(text, next.fontSize) }
       // A text that grows stays wholly in the selection, if it fits.
       const kept = selection ? { ...box, ...within(box, selection) } : box
@@ -504,13 +508,17 @@
   }
 
   /**
-   * The annotations alone at native size, for Rust to composite. `crop` is the physical rect
-   * being captured; `ratio` is physical px per logical px on each axis. See
+   * The annotations alone at native size times `factor`, for Rust to composite. `crop` is the
+   * physical rect being captured; `ratio` is physical px per logical px on each axis. See
    * docs/annotations.md.
    */
-  export function exportAnnotations(crop: Rect, ratio: Scale): Promise<AnnotationExport> {
+  export function exportAnnotations(
+    crop: Rect,
+    ratio: Scale,
+    factor: Factor = 1,
+  ): Promise<AnnotationExport> {
     finish()
-    return exportShapes(history.present, crop, ratio)
+    return exportShapes(history.present, crop, ratio, factor)
   }
 </script>
 
@@ -554,6 +562,7 @@
     bind:this={toolbar}
     {selection}
     {display}
+    {size}
     {tool}
     ontool={pick}
     bind:style={() => shownStyle, setStyle}

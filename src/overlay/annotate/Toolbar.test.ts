@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
+import type { Size } from '../geometry'
 import { COLORS, DEFAULT_STYLE, type Style, type Tool } from './shapes'
 import type { ShownTextOptions, TextOptions } from './text'
 import Toolbar, { type ToolbarActions } from './Toolbar.svelte'
@@ -14,12 +15,13 @@ type Props = Partial<{
   text: ShownTextOptions | null
   ontext: (t: Partial<TextOptions>) => void
   keepFocus: boolean
+  size: Size | null
 }>
 
 function setup(props: Props = {}) {
   const actions: ToolbarActions = {
-    copy: vi.fn<() => void>(),
-    save: vi.fn<() => void>(),
+    copy: vi.fn<ToolbarActions['copy']>(),
+    save: vi.fn<ToolbarActions['save']>(),
     share: vi.fn<ToolbarActions['share']>(),
     cancel: vi.fn<() => void>(),
     option: vi.fn<ToolbarActions['option']>(),
@@ -46,6 +48,7 @@ function setup(props: Props = {}) {
       canRedo: true,
       canClear: true,
       options: { rememberRegion: true, magnifier: false },
+      size: { width: 1260, height: 1064 },
       actions,
       mac: true,
       canShare: true,
@@ -63,6 +66,15 @@ const button = (name: string) => screen.getByRole('button', { name })
 const choice = (name: string) => screen.getByLabelText(name)
 const item = async (name: string) =>
   (await screen.findByText(name)).closest('[role=menuitemcheckbox]')!
+/** A larger size in the Copy or Save menu, by its label. */
+const sizeItem = async (name: string) => (await screen.findByText(name)).closest('[role=menuitem]')!
+/** An open menu, by its label (floating, so not in the accessibility tree for findByRole). */
+const menu = (name: string) =>
+  waitFor(() => {
+    const found = document.querySelector<HTMLElement>(`[role=menu][aria-label="${name}"]`)
+    expect(found).not.toBeNull()
+    return found!
+  })
 const tooltip = (name: string) =>
   screen.findByText(name, { selector: '[data-slot=tooltip-content]' })
 
@@ -241,18 +253,75 @@ describe('Toolbar', () => {
     await user.click(button('Copy'))
     await user.click(button('Save'))
     await user.click(button('Cancel'))
-    expect(actions.copy).toHaveBeenCalledOnce()
-    expect(actions.save).toHaveBeenCalledOnce()
+    // At 1×: the main parts of the split buttons.
+    expect(actions.copy).toHaveBeenCalledExactlyOnceWith()
+    expect(actions.save).toHaveBeenCalledExactlyOnceWith()
     expect(actions.cancel).toHaveBeenCalledOnce()
+  })
+
+  it('copies at a larger size from the Copy caret, each size with what it gives', async () => {
+    const { actions, user } = setup()
+    const caret = button('Copy at a larger size')
+    expect(caret).toHaveAttribute('aria-haspopup', 'menu')
+    await user.hover(caret)
+    expect(await tooltip('Copy larger')).toBeInTheDocument()
+    await user.click(caret)
+    const open = await menu('Copy larger')
+    const items = [...open.querySelectorAll('[role=menuitem]')].map((i) => i.textContent)
+    expect(items).toEqual([
+      'Copy at 2× 2520 × 2128',
+      'Copy at 3× 3780 × 3192',
+      'Copy at 4× 5040 × 4256',
+    ])
+    await user.click(screen.getByText('Copy at 3×'))
+    expect(actions.copy).toHaveBeenCalledExactlyOnceWith(3)
+    expect(actions.save).not.toHaveBeenCalled()
+    await waitFor(() => expect(document.querySelector('[role=menu]')).toBeNull())
+  })
+
+  it('saves at a larger size from the Save caret', async () => {
+    const { actions, user } = setup()
+    await user.click(button('Save at a larger size'))
+    expect(await menu('Save larger')).toBeInTheDocument()
+    await user.click(screen.getByText('Save at 2×'))
+    expect(actions.save).toHaveBeenCalledExactlyOnceWith(2)
+    expect(actions.copy).not.toHaveBeenCalled()
+  })
+
+  it('disables a size past 8192 px per side', async () => {
+    const { actions, user } = setup({ size: { width: 3600, height: 2338 } })
+    await user.click(button('Copy at a larger size'))
+    expect(await sizeItem('Copy at 2×')).not.toHaveAttribute('data-disabled')
+    expect(await sizeItem('Copy at 3×')).toHaveAttribute('data-disabled')
+    expect(await sizeItem('Copy at 4×')).toHaveAttribute('data-disabled')
+    expect(screen.getByText('14400 × 9352')).toBeInTheDocument()
+    await user.click(screen.getByText('Copy at 4×'))
+    expect(actions.copy).not.toHaveBeenCalled()
+  })
+
+  it('has no carets without the selection size', () => {
+    setup({ size: null })
+    expect(button('Save')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Save at a larger size' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Copy at a larger size' })).toBeNull()
   })
 
   it('shares under the Share button, between ⋯ and Save', async () => {
     const { actions, user } = setup()
     const share = button('Share')
-    const names = [...screen.getByRole('toolbar', { name: 'Capture actions' }).children]
-      .map((b) => b.getAttribute('aria-label') ?? b.textContent?.trim())
-      .filter(Boolean)
-    expect(names).toEqual(['More', 'Share', 'Save', 'Copy', 'Cancel'])
+    const bar = screen.getByRole('toolbar', { name: 'Capture actions' })
+    const names = [...bar.querySelectorAll('button')].map(
+      (b) => b.getAttribute('aria-label') ?? b.textContent?.trim(),
+    )
+    expect(names).toEqual([
+      'More',
+      'Share',
+      'Save',
+      'Save at a larger size',
+      'Copy',
+      'Copy at a larger size',
+      'Cancel',
+    ])
     // Made up at run time, so only the button's real rect can match it.
     const at = { x: Math.random() * 500, y: Math.random() * 500, width: 80, height: 36 }
     vi.spyOn(share, 'getBoundingClientRect').mockReturnValue(DOMRect.fromRect(at) as DOMRect)
@@ -301,6 +370,15 @@ describe('Toolbar', () => {
     await user.click(button('Color and size'))
     await screen.findByLabelText('Thick')
     expect(bar.closeMenus()).toBe(true)
+    const larger = async (verb: string) => {
+      await user.click(button(`${verb} at a larger size`))
+      await menu(`${verb} larger`)
+      expect(bar.menuOpen()).toBe(true)
+      expect(bar.closeMenus()).toBe(true)
+      await waitFor(() => expect(document.querySelector('[role=menu]')).toBeNull())
+    }
+    await larger('Copy')
+    await larger('Save')
   })
 
   it('shows text options only while asked to, and changes them', async () => {

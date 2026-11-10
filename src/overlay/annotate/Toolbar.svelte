@@ -1,14 +1,17 @@
 <script lang="ts" module>
   import type { ToggleKey } from '$lib/settings.svelte'
   import type { Rect } from '../geometry'
+  import type { Factor } from './upscale'
 
   /** Options in the ⋯ menu. */
   export type Option = Extract<ToggleKey, 'rememberRegion' | 'magnifier'>
 
   /** What the action bar's buttons and menu do. Wired by the overlay. */
   export type ToolbarActions = {
-    copy: () => void
-    save: () => void
+    /** Copies at 1×, or at a larger size picked under the Copy caret. */
+    copy: (factor?: Factor) => void
+    /** Saves at 1×, or at a larger size picked under the Save caret. */
+    save: (factor?: Factor) => void
     /** Opens the share sheet under `anchor`, the Share button in logical px in the page. */
     share: (anchor: Rect) => void
     /** Closes the overlay, as Esc does once nothing is left to undo. */
@@ -35,6 +38,7 @@
   let {
     selection,
     display,
+    size = null,
     tool,
     ontool,
     style = $bindable(),
@@ -56,6 +60,8 @@
     /** The selection, in logical px on the display. */
     selection: Rect
     display: Size
+    /** The selection in physical px, for the larger sizes under Copy and Save. */
+    size?: Size | null
     tool: Tool | null
     ontool: (tool: Tool | null) => void
     style: Style
@@ -87,22 +93,26 @@
 
   let colorsOpen = $state(false)
   let moreOpen = $state(false)
+  let copyOpen = $state(false)
+  let saveOpen = $state(false)
   let rail = $state<Size>({ width: 0, height: 0 })
   let bar = $state<Size>({ width: 0, height: 0 })
   const railAt = $derived(railPosition(selection, rail, display))
   const barAt = $derived(toolbarPosition(selection, bar, display))
 
-  /** Closes the color or ⋯ menu. Returns whether one was open (for Esc). */
+  /** Closes the color, ⋯, Copy or Save menu. Returns whether one was open (for Esc). */
   export function closeMenus(): boolean {
-    const open = colorsOpen || moreOpen
+    const open = menuOpen()
     colorsOpen = false
     moreOpen = false
+    copyOpen = false
+    saveOpen = false
     return open
   }
 
-  /** Whether the color or ⋯ menu is open: it owns the keyboard meanwhile. */
+  /** Whether the color, ⋯, Copy or Save menu is open: it owns the keyboard meanwhile. */
   export function menuOpen(): boolean {
-    return colorsOpen || moreOpen
+    return colorsOpen || moreOpen || copyOpen || saveOpen
   }
 
   const stop = (e: PointerEvent) => e.stopPropagation()
@@ -146,7 +156,17 @@
     onpointerdown={stop}
     role="presentation"
   >
-    <ActionBar {actions} {options} bind:moreOpen {keepFocus} {mod} {canShare} />
+    <ActionBar
+      {actions}
+      {options}
+      {size}
+      bind:moreOpen
+      bind:copyOpen
+      bind:saveOpen
+      {keepFocus}
+      {mod}
+      {canShare}
+    />
   </div>
 </Tooltip.Provider>
 

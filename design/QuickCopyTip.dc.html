@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Capture overlay: quick copy tip</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<!-- When: quick copy is off and the user has copied 3 captures in a row with no annotations,
+     within 10 minutes. The tip shows on the next capture, in place of the hint pill, before the
+     drag. "Not now" hides it and it never shows again. If it's ignored, it can show once more
+     later (at most twice ever). An annotation or a Save/Share resets the streak. -->
+<div style="width: 1440px; height: 900px; position: relative; overflow: hidden; font-family: Inter, system-ui, sans-serif; color: #fafafa; background: #3f4b5e;">
+  <div style="position: absolute; left: 0; top: 0;">
+    <dc-import name="Desktop" hint-size="1440px,900px"></dc-import>
+  </div>
+  <div style="position: absolute; inset: 0; background: rgba(9, 9, 11, 0.45);"></div>
+  <div style="position: absolute; left: 567px; top: 0; width: 1px; height: 900px; background: rgba(255, 255, 255, 0.35);"></div>
+  <div style="position: absolute; left: 0; top: 337px; width: 1440px; height: 1px; background: rgba(255, 255, 255, 0.35);"></div>
+
+  <!-- tip bar: same shape as the Quick copy bar -->
+  <div style="position: absolute; left: 0; right: 0; bottom: 28px; display: flex; justify-content: center;">
+    <div role="status" style="padding: 6px 6px 6px 14px; display: flex; align-items: center; gap: 12px; border-radius: 12px; background: rgba(24, 24, 27, 0.94); border: 1px solid #27272a; box-shadow: 0 12px 32px rgba(0,0,0,0.35); font-size: 13px; color: #a1a1aa;">
+      <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fafafa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"></path></svg>
+      <span><b style="color: #fafafa; font-weight: 600;">Just copying?</b> Quick copy copies as soon as you drag.</span>
+      <button style="height: 30px; padding: 0 12px; border: 0; border-radius: 8px; background: #fafafa; font-family: inherit; font-size: 13px; font-weight: 600; color: #09090b;">Turn on</button>
+      <button style="height: 30px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; font-family: inherit; font-size: 13px; font-weight: 500; color: #d4d4d8;">Not now</button>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

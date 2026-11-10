@@ -28,6 +28,7 @@
   } from './geometry'
   import Annotator from './annotate/Annotator.svelte'
   import { outputRequest } from './annotate/output'
+  import type { Factor } from './annotate/upscale'
   import { control, fieldShortcut, keyLabels, modifier, shortcut, typing } from './keys'
   import { afterPaint } from './paint'
   import { TOAST } from './panel'
@@ -291,18 +292,23 @@
   /**
    * Copies (closing the overlay), saves (Rust hides the windows while the Save dialog is open,
    * then closes, or shows them again on cancel) or shares (the share sheet opens under
-   * `anchor`; picking a service closes the overlay), annotations included. On failure the
-   * overlay stays open and says so.
+   * `anchor`; picking a service closes the overlay), annotations included, at `factor` times
+   * the size. On failure the overlay stays open and says so.
    */
-  async function finish(command: keyof typeof FAILED, rect: Rect, anchor?: Rect) {
+  async function finish(
+    command: keyof typeof FAILED,
+    rect: Rect,
+    { anchor, factor = 1 }: { anchor?: Rect; factor?: Factor } = {},
+  ) {
     if (busy) return
     busy = true
     try {
       const session = current
-      const marks = await annotator?.exportAnnotations(rect, scale)
+      const marks = await annotator?.exportAnnotations(rect, scale, factor)
       // Nothing in a quick copy capture is remembered (Ctrl+S works there too).
       const remember = !quick
-      const { body, headers } = outputRequest(session, rect, marks, { anchor, remember })
+      const options = { anchor, remember, factor }
+      const { body, headers } = outputRequest(session, rect, marks, options)
       await invoke(command, body, { headers })
     } catch (e) {
       console.error(`${command} failed`, e)
@@ -571,10 +577,11 @@
     {scale}
     source={canvas}
     options={{ rememberRegion: settings.rememberRegion, magnifier: settings.magnifier }}
+    size={physical}
     actions={{
-      copy: () => physical && void finish('overlay_copy', physical),
-      save: () => physical && void finish('overlay_save', physical),
-      share: (anchor) => physical && void finish('overlay_share', physical, anchor),
+      copy: (factor) => physical && void finish('overlay_copy', physical, { factor }),
+      save: (factor) => physical && void finish('overlay_save', physical, { factor }),
+      share: (anchor) => physical && void finish('overlay_share', physical, { anchor }),
       cancel: () => close(current),
       option: setCaptureOption,
     }}

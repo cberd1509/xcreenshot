@@ -49,6 +49,16 @@ describe('outputRequest', () => {
     })
   })
 
+  it('sends a larger size only when one was picked', () => {
+    expect(header(outputRequest(3, rect, null, { factor: 4 }))).toEqual({
+      session: 3,
+      rect,
+      blurs: [],
+      factor: 4,
+    })
+    expect(header(outputRequest(3, rect, null, { factor: 1 }))).not.toHaveProperty('factor')
+  })
+
   it('sends blurs with no layer', () => {
     const r = outputRequest(3, rect, { layer: null, blurs })
     expect(r.body).toHaveLength(0)

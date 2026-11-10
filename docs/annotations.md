@@ -16,7 +16,8 @@ logic.
 | `Toolbar.svelte`   | The toolbar: rail and action bar, placed (loaded on demand)         |
 | `Rail.svelte`      | The vertical tool rail: Select, the tools, color, undo, redo, clear |
 | `ColorMenu.svelte` | The color popover: swatches, a hex field and the stroke size        |
-| `ActionBar.svelte` | More (options), Share, Save, Copy and Cancel                        |
+| `ActionBar.svelte` | More (options), Share, Save, Copy and Cancel; Save and Copy split  |
+| `upscale.ts`       | The larger sizes under Save and Copy, and the 8192 px cap           |
 | `Tip.svelte`       | A tooltip with the label and its key                                |
 | `TextOptions.svelte` | The text tool's size and background, in the rail                  |
 | `TextEditor.svelte`  | The textarea that edits a text in place                           |
@@ -138,7 +139,7 @@ The final image is composed in Rust at native resolution. The page renders the a
 their own:
 
 ```ts
-annotator.exportAnnotations(crop: Rect, scale: Scale): Promise<AnnotationExport>
+annotator.exportAnnotations(crop: Rect, scale: Scale, factor = 1): Promise<AnnotationExport>
 
 type AnnotationExport = {
   layer: { rgba: Uint8ClampedArray; x: number; y: number; width: number; height: number } | null
@@ -154,6 +155,9 @@ type AnnotationExport = {
   `null` when nothing is drawn inside the crop.
 - `blurs` are rects in physical px relative to the crop, rounded outwards to whole pixels and
   clipped to it.
+- `factor` is a larger size picked under Copy or Save (2, 3 or 4). The layer is rendered at that
+  size (pixel ratio times the factor), so strokes and text stay sharp, and its box is in px of
+  the larger image. Blurs stay at 1×.
 
 ## Copy, save and share request
 
@@ -169,10 +173,11 @@ invoke('overlay_copy' | 'overlay_save' | 'overlay_share', body, {
 
 - `body` is the layer's `rgba` as a `Uint8Array` (empty without a layer). It reaches Rust as
   `InvokeBody::Raw`, never as JSON, and Rust reads the pixels in place.
-- `json` is `{ session, rect, layer?: { x, y, width, height }, blurs, anchor?, remember? }`.
+- `json` is `{ session, rect, layer?: { x, y, width, height }, blurs, anchor?, remember?, factor? }`.
   `rect` is the selection in physical px; `layer` is there only when the body has its pixels.
   `anchor` is the Share button's rect in logical px, for a share only (see `docs/share.md`).
-  `remember: false` keeps the region from being remembered: a quick copy sends it.
+  `remember: false` keeps the region from being remembered: a quick copy sends it. `factor` is
+  there only for a larger size.
 
 `overlay/export.rs` parses the request (the body must be exactly `width × height × 4` bytes, and
 there may be at most 256 blurs, each clipped to the selection) and crops the frame. Then `output/compose.rs`:
@@ -180,11 +185,18 @@ there may be at most 256 blurs, each clipped to the selection) and crops the fra
 1. pixelates each rect in `blurs`, destructively, in blocks of at least 16 px (larger for large
    rects; a shorter remainder joins the block before it). Each block's color matches none of the
    pixels it covers, so every pixel under a blur changes, even in a flat area (issue #16);
-2. draws the layer at (`x`, `y`), straight-alpha source-over with rounding (an opaque crop stays
+2. for a larger size, upscales the crop with Lanczos3 (`output/upscale.rs`, `fast_image_resize`),
+   then fills each blur's blocks again from the 1× image, nearest, so they stay as crisp as the
+   preview. Whole factors only, and at most 8192 px per side: the menu disables a size past it,
+   and Rust refuses one, or a layer past the output. The PNG keeps the frame's density, so the
+   larger image shows larger. A copy whose capture ended (Esc) while it was upscaled is dropped;
+3. draws the layer at (`x`, `y`), straight-alpha source-over with rounding (an opaque crop stays
    opaque), clipped to the crop.
 
-Then the PNG is encoded and copied or saved. Composing a full Retina screen (3024×1964) with a
+All of `compose::apply` runs on a worker with the clipboard write or the encode (for Save,
+while the dialog is open), with an owned copy of the layer. Then the PNG is copied or saved. Composing a full Retina screen (3024×1964) with a
 layer over all of it and a 1000×600 blur takes about 24 ms in a release build.
+`cargo run --release --example upscale` times a 1000×700 selection at 2×, 3× and 4×.
 
 Share (#19) will send the same request.
 

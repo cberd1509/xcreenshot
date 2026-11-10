@@ -1,7 +1,7 @@
 //! Times each step of a save on a 3840x2160 selection (a 4K display at 150%) made from a real
 //! screenshot, `cargo run --release --example save`. No screen needed.
 
-use image::{ImageBuffer, Rgba, RgbaImage, imageops};
+use image::{Rgba, RgbaImage, imageops};
 use std::time::{Duration, Instant};
 use xcreenshot_lib::capture::{self, CaptureError, Density, PixelRect};
 use xcreenshot_lib::output::{self, compose};
@@ -42,13 +42,9 @@ fn main() -> Result<(), CaptureError> {
     let mut size = 0;
     for _ in 0..RUNS {
         let t = Instant::now();
-        let mut image = capture::crop_pixels(&frame, rect)?;
+        let image = capture::crop_pixels(&frame, rect)?;
         let marks = compose::Marks {
-            layer: Some(compose::Layer {
-                x: 0,
-                y: 0,
-                pixels: ImageBuffer::from_raw(W, H, layer.as_raw().as_slice()).expect("size"),
-            }),
+            layer: compose::Layer::new(0, 0, W, H, layer.as_raw().as_slice()),
             blurs: vec![PixelRect {
                 x: 100,
                 y: 100,
@@ -56,7 +52,7 @@ fn main() -> Result<(), CaptureError> {
                 height: 200,
             }],
         };
-        compose::apply(&mut image, &marks);
+        let image = compose::apply(image, &marks, 1)?;
         steps[0].push(t.elapsed());
         let t = Instant::now();
         let png = capture::encode_png(&image, density)?;

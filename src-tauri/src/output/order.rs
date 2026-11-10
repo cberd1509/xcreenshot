@@ -46,6 +46,21 @@ impl CopyOrder {
     }
 }
 
+/// `clipboard`, writing only while `wanted()` holds; otherwise [`CaptureError::Ended`]. Under
+/// [`ordered`], it is asked inside the order's lock, right before the write, so nothing waits
+/// between the answer and the write.
+pub fn guarded(
+    clipboard: Clipboard,
+    wanted: impl Fn() -> bool + Send + Sync + 'static,
+) -> Clipboard {
+    Box::new(move |image, density| {
+        if !wanted() {
+            return Err(CaptureError::Ended);
+        }
+        clipboard(image, density)
+    })
+}
+
 /// `clipboard` for one copy, numbered by `order` now, when the copy is asked for.
 pub fn ordered(order: &'static CopyOrder, clipboard: Clipboard) -> Clipboard {
     let ticket = order.ticket();
@@ -116,5 +131,38 @@ mod tests {
         newer(&image, Density::ONE).unwrap();
         older(&image, Density::ONE).unwrap();
         assert_eq!(*written.lock().unwrap(), [2]);
+    }
+
+    #[test]
+    fn a_guarded_copy_asks_inside_the_order_lock_and_writes_only_if_wanted() {
+        static ORDER: CopyOrder = CopyOrder::new();
+        let written = Arc::new(Mutex::new(0));
+        let wanted = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let clipboard = || {
+            let (written, wanted) = (written.clone(), wanted.clone());
+            let write: Clipboard = Box::new(move |_, _| {
+                *written.lock().unwrap() += 1;
+                Ok(())
+            });
+            ordered(
+                &ORDER,
+                guarded(write, move || {
+                    // Asked while the order is locked: no other copy can write meanwhile.
+                    assert!(ORDER.written.try_lock().is_err());
+                    wanted.load(Ordering::SeqCst)
+                }),
+            )
+        };
+        let image = RgbaImage::new(1, 1);
+        clipboard()(&image, Density::ONE).unwrap();
+        assert_eq!(*written.lock().unwrap(), 1);
+        wanted.store(false, Ordering::SeqCst);
+        let ended = clipboard()(&image, Density::ONE);
+        assert_eq!(ended, Err(CaptureError::Ended));
+        assert_eq!(
+            *written.lock().unwrap(),
+            1,
+            "an ended capture leaves the clipboard"
+        );
     }
 }

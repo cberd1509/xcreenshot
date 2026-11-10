@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Recording a region</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<!-- While recording (after 1.0). There is no "full screen" mode: full screen is just a region that
+     reaches the edges (dragged edge to edge, or the ⌘/Ctrl double-click shortcut). What's drawn
+     is the same for every region:
+     - Red frame: always drawn. Outside the region where there's room; where the region touches a
+       screen edge, that side is drawn just inside it (it's never in the video).
+     - REC tab: on the frame's top-left corner, outside if there's room, otherwise just inside.
+     - Control bar: always the same full bar. Below the region (above it if there's no room); when
+       there's no room outside at all, it sits over the bottom of the region. It's draggable.
+     Everything here is never in the video. Only the pill takes clicks; the frame and tab let every
+     click, scroll and drag through. A 3-2-1 countdown (Esc cancels, not recorded) comes before every
+     recording. The menu bar / tray item shows ● and the time and stops on click; the capture
+     shortcut stops too. After Stop, the system Save dialog always opens (MP4, "Recording <date> at
+     <time>.mp4"), then the Saved toast. Esc doesn't stop a recording, so it can't end by accident. -->
+<div style="width: 1440px; height: 900px; position: relative; overflow: hidden; font-family: Inter, system-ui, sans-serif; color: #fafafa; background: #3f4b5e;">
+  <div style="position: absolute; left: 0; top: 0;">
+    <dc-import name="Desktop" hint-size="1440px,900px"></dc-import>
+  </div>
+
+  <!-- menu bar indicator (macOS); on Windows the tray icon turns red with the same menu -->
+  <div style="position: absolute; top: 3px; right: 168px; height: 18px; padding: 0 8px; display: flex; align-items: center; gap: 6px; border-radius: 5px; background: rgba(239, 68, 68, 0.95); font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; font-weight: 600; color: #ffffff;"><span aria-hidden="true" style="width: 6px; height: 6px; border-radius: 50%; background: #ffffff;"></span>{{time}}</div>
+
+  <!-- frame: always shown; sides at a screen edge move just inside -->
+  <sc-if value="{{showFrame}}" hint-placeholder-val="{{ true }}">
+    <div style="position: absolute; left: {{frameL}}; top: {{frameT}}; width: {{frameW}}; height: {{frameH}}; box-sizing: border-box; border: 2px solid #ef4444; border-radius: 4px; box-shadow: 0 0 0 1px rgba(9, 9, 11, 0.4), 0 0 24px rgba(239, 68, 68, 0.35);"></div>
+  </sc-if>
+  <sc-if value="{{showTab}}" hint-placeholder-val="{{ true }}">
+    <div style="position: absolute; left: {{tabL}}; top: {{tabT}}; height: 24px; padding: 0 8px; display: flex; align-items: center; gap: 6px; border-radius: {{tabRadius}}; background: #ef4444; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; color: #ffffff;"><span aria-hidden="true" style="width: 7px; height: 7px; border-radius: 50%; background: #ffffff;"></span>REC</div>
+  </sc-if>
+
+  <!-- countdown, centred on the region -->
+  <sc-if value="{{countdown}}" hint-placeholder-val="{{ false }}">
+    <div style="position: absolute; left: {{regL}}; top: {{regT}}; width: {{regW}}; height: {{regH}}; display: flex; align-items: center; justify-content: center;">
+      <div style="width: 160px; height: 160px; border-radius: 50%; background: rgba(24, 24, 27, 0.85); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;">
+        <span style="font-size: 72px; font-weight: 700; line-height: 1; color: #fafafa;">3</span>
+        <span style="font-size: 12px; color: #a1a1aa;">Esc to cancel</span>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- control bar: the same in every case -->
+  <sc-if value="{{pillOutside}}" hint-placeholder-val="{{ true }}">
+    <div style="position: absolute; left: {{regL}}; width: {{regW}}; top: {{pillT}}; display: flex; justify-content: center;">
+      <div role="toolbar" aria-label="Recording" style="padding: 6px 6px 6px 14px; display: flex; align-items: center; gap: 12px; border-radius: 12px; background: rgba(24, 24, 27, 0.94); border: 1px solid #27272a; box-shadow: 0 12px 32px rgba(0,0,0,0.35); font-size: 13px; color: #a1a1aa;">
+        <span aria-hidden="true" style="width: 10px; height: 10px; border-radius: 50%; background: #ef4444;"></span>
+        <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; color: #fafafa;">{{time}}</span>
+        <div style="width: 1px; height: 20px; background: #3f3f46;"></div>
+        <!-- audio state; clicking toggles it for the rest of this recording -->
+        <button aria-label="System audio {{sysLabel}}" title="System audio" style="width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 8px; background: transparent; color: {{sysColor}};"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4.7a.7.7 0 0 0-1.2-.5L6.4 7.6A1.4 1.4 0 0 1 5.4 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.4a1.4 1.4 0 0 1 1 .4l3.4 3.4a.7.7 0 0 0 1.2-.5z"></path><path d="M16 9a5 5 0 0 1 0 6"></path><path d="M19.4 18.4a9 9 0 0 0 0-12.8"></path></svg></button>
+        <button aria-label="Microphone {{micLabel}}" title="Microphone" style="width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 8px; background: transparent; color: {{micColor}};"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19v3"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><rect x="9" y="2" width="6" height="13" rx="3"></rect></svg></button>
+        <button title="Stop ({{stopKeys}})" style="height: 30px; padding: 0 12px; display: flex; align-items: center; gap: 7px; border: 0; border-radius: 8px; background: #fafafa; font-family: inherit; font-size: 13px; font-weight: 600; color: #09090b;"><span aria-hidden="true" style="width: 10px; height: 10px; border-radius: 2px; background: #09090b;"></span>Stop</button>
+      </div>
+    </div>
+  </sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;region&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;room around it&quot;,&quot;near the edges&quot;,&quot;edge to edge&quot;],&quot;default&quot;:&quot;room around it&quot;},&quot;countdown&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false},&quot;systemAudio&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true},&quot;microphone&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true},&quot;os&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;mac&quot;,&quot;windows&quot;],&quot;default&quot;:&quot;mac&quot;},&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900}}">
+class Component extends DCLogic {
+  renderVals() {
+    const sys = this.props.systemAudio ?? true;
+    const mic = this.props.microphone ?? true;
+    const kind = this.props.region ?? 'room around it';
+    const countdown = this.props.countdown ?? false;
+    // region rectangles on a 1440×900 screen (menu bar is 24px)
+    const r = kind === 'edge to edge' ? { l: 0, t: 24, w: 1440, h: 876 }
+      : kind === 'near the edges' ? { l: 20, t: 40, w: 1400, h: 840 }
+      : { l: 357, t: 177, w: 726, h: 456 };
+    const below = 900 - (r.t + r.h);
+    const above = r.t - 24;
+    const px = (n) => n + 'px';
+    // frame edges: 2px outside the region, clamped to the screen (below the menu bar)
+    const fl = Math.max(r.l - 2, 0), ft = Math.max(r.t - 2, 24);
+    const fr = Math.min(r.l + r.w + 2, 1440), fb = Math.min(r.t + r.h + 2, 900);
+    return {
+      regL: px(r.l), regT: px(r.t), regW: px(r.w), regH: px(r.h),
+      frameL: px(fl), frameT: px(ft), frameW: px(fr - fl), frameH: px(fb - ft),
+      tabL: px(above >= 28 ? fl : fl + 8), tabT: px(above >= 28 ? r.t - 28 : ft + 8),
+      tabRadius: above >= 28 ? '6px 6px 0 0' : '6px',
+      showFrame: true, showTab: true,
+      countdown,
+      pillOutside: !countdown,
+      pillT: below >= 56 ? px(r.t + r.h + 14) : above >= 56 ? px(r.t - 56) : px(r.t + r.h - 66),
+      time: countdown ? '0:00' : '0:12',
+      sysColor: sys ? '#fafafa' : '#52525b', sysLabel: sys ? 'on' : 'off',
+      micColor: mic ? '#fafafa' : '#52525b', micLabel: mic ? 'on' : 'off',
+      stopKeys: (this.props.os ?? 'mac') === 'mac' ? '⌃⇧⌘S' : 'PrtSc',
+    };
+  }
+}
+</script>
+</body>
+</html>

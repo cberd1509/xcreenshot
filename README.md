@@ -32,7 +32,7 @@ Website: https://cberd1509.github.io/xcreenshot/
 - **Exact sizes.** Type a width and height, or lock the aspect ratio.
 - **Remember region.** Reopen with your last selection, ready to go.
 - **Annotate in place.** Arrows, lines, rectangles, circles, pen, highlighter, text and blur, in any color.
-- **Copy or save.** Straight to the clipboard or a PNG file, at the size you saw it.
+- **Copy or save.** Straight to the clipboard or a PNG file, at the size you saw it or at 2×, 3× or 4×.
 - **Private by design.** No accounts, no tracking, no uploads.
 - **Tiny and native-feeling.** A small menu bar and system tray app, not a browser in disguise.
 
