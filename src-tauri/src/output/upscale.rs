@@ -29,16 +29,13 @@ pub fn allowed(width: u32, height: u32, factor: u32) -> bool {
     factor == 1 || (FACTORS.contains(&factor) && scaled(width, height, factor).is_some())
 }
 
-/// `image` at `factor`, with Lanczos3. 1× is a copy. The factor must be [`allowed`].
+/// `image` at `factor`, with Lanczos3. The factor must be [`allowed`] and above 1.
 ///
 /// Alpha is not premultiplied: captures are opaque, and that skips two passes.
 pub fn upscale(image: &RgbaImage, factor: u32) -> Result<RgbaImage, CaptureError> {
     let (w, h) = image.dimensions();
-    if !allowed(w, h, factor) {
+    if factor == 1 || !allowed(w, h, factor) {
         return Err(CaptureError::Invalid(format!("{w}x{h} px at {factor}x")));
-    }
-    if factor == 1 {
-        return Ok(image.clone());
     }
     let failed = |e: &dyn std::fmt::Display| CaptureError::Encode(format!("upscale: {e}"));
     let src = ImageRef::new(w, h, image.as_raw(), PixelType::U8x4).map_err(|e| failed(&e))?;
@@ -96,19 +93,13 @@ mod tests {
     }
 
     #[test]
-    fn one_is_a_copy() {
-        let image = RgbaImage::from_fn(3, 2, |x, y| Rgba([x as u8, y as u8, 1, 255]));
-        assert_eq!(upscale(&image, 1).unwrap(), image);
-    }
-
-    #[test]
     fn refuses_a_factor_that_is_not_allowed() {
         let image = RgbaImage::new(3000, 1);
         assert!(matches!(upscale(&image, 3), Err(CaptureError::Invalid(_))));
-        assert!(matches!(
-            upscale(&RgbaImage::new(2, 2), 5),
-            Err(CaptureError::Invalid(_))
-        ));
+        for factor in [1, 5] {
+            let refused = upscale(&RgbaImage::new(2, 2), factor);
+            assert!(matches!(refused, Err(CaptureError::Invalid(_))));
+        }
     }
 
     #[test]

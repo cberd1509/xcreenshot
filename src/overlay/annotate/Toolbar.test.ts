@@ -299,10 +299,11 @@ describe('Toolbar', () => {
     expect(actions.copy).not.toHaveBeenCalled()
   })
 
-  it('has no larger sizes without the selection size', async () => {
-    const { user } = setup({ size: null })
-    await user.click(button('Save at a larger size'))
-    expect((await menu('Save larger')).querySelectorAll('[role=menuitem]')).toHaveLength(0)
+  it('has no carets without the selection size', () => {
+    setup({ size: null })
+    expect(button('Save')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Save at a larger size' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Copy at a larger size' })).toBeNull()
   })
 
   it('shares under the Share button, between ⋯ and Save', async () => {

@@ -1,44 +1,98 @@
-//! Puts the annotations on the cropped selection, pure.
+//! Puts the annotations on the cropped selection, at the size asked for, pure.
 //!
 //! Blur is destructive: each rect is pixelated in large blocks before anything else is drawn,
-//! so nothing under it survives in the image (see issue #16). Then the page's annotation layer
-//! (straight-alpha RGBA) is drawn over the crop.
+//! so nothing under it survives in the image (see issue #16). For a larger size the crop is then
+//! upscaled (`output::upscale`). Last, the page's annotation layer (straight-alpha RGBA), which
+//! the page rendered at that size, is drawn over it, so strokes and text stay sharp.
 
-use crate::capture::{PixelRect, clamp_rect};
+use super::upscale;
+use crate::capture::{CaptureError, PixelRect, clamp_rect};
 use image::{ImageBuffer, Rgba, RgbaImage};
+use std::borrow::Cow;
 
 /// Smallest pixelation block, in physical px. Large enough that text under it is unreadable.
 pub const BLOCK: u32 = 16;
 
-/// The page's annotation layer, read in place from the request, and where it goes on the crop.
+/// The page's annotation layer, read in place from the request (or owned, to go to a worker),
+/// and where it goes on the output.
 #[derive(Debug, PartialEq)]
 pub struct Layer<'a> {
     pub x: u32,
     pub y: u32,
-    pub pixels: ImageBuffer<Rgba<u8>, &'a [u8]>,
+    pub pixels: ImageBuffer<Rgba<u8>, Cow<'a, [u8]>>,
 }
 
-/// The annotations to put on the crop, in px relative to it.
+impl<'a> Layer<'a> {
+    /// A `width × height` layer at (`x`, `y`), or `None` if `bytes` is not exactly its pixels.
+    pub fn new(
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        bytes: impl Into<Cow<'a, [u8]>>,
+    ) -> Option<Self> {
+        let pixels = ImageBuffer::from_raw(width, height, bytes.into())?;
+        Some(Self { x, y, pixels })
+    }
+}
+
+/// The annotations to put on the crop: blurs in px of the crop, the layer in px of the output.
 #[derive(Debug, Default, PartialEq)]
 pub struct Marks<'a> {
     pub layer: Option<Layer<'a>>,
     pub blurs: Vec<PixelRect>,
 }
 
-/// Pixelates the blur rects, then draws the layer over the crop. Anything outside the crop is
-/// left out.
-pub fn apply(image: &mut RgbaImage, marks: &Marks) {
-    blur(image, &marks.blurs);
-    if let Some(layer) = &marks.layer {
-        composite(image, layer);
+impl Marks<'_> {
+    /// A copy that owns the layer's pixels, so it can go to a worker.
+    pub fn to_owned(&self) -> Marks<'static> {
+        let layer = self.layer.as_ref().map(|l| Layer {
+            x: l.x,
+            y: l.y,
+            pixels: ImageBuffer::from_raw(
+                l.pixels.width(),
+                l.pixels.height(),
+                Cow::Owned(l.pixels.as_raw().to_vec()),
+            )
+            .expect("same size"),
+        });
+        Marks {
+            layer,
+            blurs: self.blurs.clone(),
+        }
     }
 }
 
-/// Pixelates each rect. For a larger size this comes first, on the crop, so the blocks are the
-/// ones the page previewed; then the image is upscaled and the layer drawn at that size.
-pub fn blur(image: &mut RgbaImage, blurs: &[PixelRect]) {
-    for &rect in blurs {
-        pixelate(image, rect);
+/// Pixelates the blur rects on the crop, upscales it `factor` times, then draws the layer over
+/// it. Anything outside the image is left out. The factor must be `upscale::allowed`.
+pub fn apply(mut image: RgbaImage, marks: &Marks, factor: u32) -> Result<RgbaImage, CaptureError> {
+    for &rect in &marks.blurs {
+        pixelate(&mut image, rect);
+    }
+    if factor != 1 {
+        let small = image;
+        image = upscale::upscale(&small, factor)?;
+        // The blocks stay crisp, as previewed: each is filled again from the 1x image, nearest,
+        // so Lanczos neither softens them nor rings at their edges.
+        for &rect in &marks.blurs {
+            sharpen_blocks(&mut image, &small, rect, factor);
+        }
+    }
+    if let Some(layer) = &marks.layer {
+        composite(&mut image, layer);
+    }
+    Ok(image)
+}
+
+/// Copies `rect` of `small` (px of the crop) onto `image`, `factor` times larger, nearest.
+fn sharpen_blocks(image: &mut RgbaImage, small: &RgbaImage, rect: PixelRect, factor: u32) {
+    let Some(r) = clamp_rect(rect, small.width(), small.height()) else {
+        return;
+    };
+    for y in r.y * factor..(r.y + r.height) * factor {
+        for x in r.x * factor..(r.x + r.width) * factor {
+            image.put_pixel(x, y, *small.get_pixel(x / factor, y / factor));
+        }
     }
 }
 
@@ -46,7 +100,7 @@ pub fn blur(image: &mut RgbaImage, blurs: &[PixelRect]) {
 ///
 /// Not `imageops::overlay`: its blend truncates, so a half-transparent stroke over the opaque
 /// screenshot comes out with alpha 254, and the PNG would be slightly see-through there.
-pub fn composite(image: &mut RgbaImage, layer: &Layer) {
+fn composite(image: &mut RgbaImage, layer: &Layer) {
     let (w, h) = image.dimensions();
     let (lw, lh) = layer.pixels.dimensions();
     let at = PixelRect {
@@ -166,11 +220,12 @@ mod tests {
     }
 
     fn layer(x: u32, y: u32, w: u32, h: u32, bytes: &[u8]) -> Layer<'_> {
-        Layer {
-            x,
-            y,
-            pixels: ImageBuffer::from_raw(w, h, bytes).unwrap(),
-        }
+        Layer::new(x, y, w, h, bytes).unwrap()
+    }
+
+    /// `apply` at 1x, in place.
+    fn put(image: &mut RgbaImage, marks: &Marks) {
+        *image = apply(std::mem::take(image), marks, 1).unwrap();
     }
 
     #[test]
@@ -181,7 +236,7 @@ mod tests {
             layer: Some(layer(0, 0, 3, 1, &bytes)),
             blurs: vec![],
         };
-        apply(&mut image, &marks);
+        put(&mut image, &marks);
         // Opaque replaces, half blends, transparent leaves the pixel.
         assert_eq!(image.get_pixel(0, 0).0, [255, 0, 0, 255]);
         assert_eq!(image.get_pixel(1, 0).0, [128, 0, 127, 255]);
@@ -204,7 +259,7 @@ mod tests {
             layer: Some(layer(2, 2, 3, 3, &bytes)),
             blurs: vec![],
         };
-        apply(&mut image, &marks);
+        put(&mut image, &marks);
         for (x, y, p) in image.enumerate_pixels() {
             let inside = x >= 2 && y >= 2;
             assert_eq!(*p == Rgba([1, 1, 1, 255]), inside, "({x}, {y})");
@@ -217,7 +272,7 @@ mod tests {
             layer: Some(layer(9, 9, 3, 3, &bytes)),
             blurs: vec![],
         };
-        apply(&mut image, &off);
+        put(&mut image, &off);
     }
 
     #[test]
@@ -347,14 +402,60 @@ mod tests {
             layer: Some(layer(0, 0, 1, 1, &white)),
             blurs: vec![px(0, 0, 16, 16)],
         };
-        apply(&mut image, &marks);
+        put(&mut image, &marks);
         // The layer is on top of the blur, not blurred into it.
         assert_eq!(*image.get_pixel(0, 0), Rgba(white));
         assert_eq!(image.get_pixel(1, 1), image.get_pixel(15, 15));
         // Nothing to do.
         let before = image.clone();
-        apply(&mut image, &Marks::default());
+        put(&mut image, &Marks::default());
         assert_eq!(image, before);
+    }
+
+    #[test]
+    fn a_layer_needs_exactly_its_pixels() {
+        assert!(Layer::new(0, 0, 2, 1, &[0u8; 8][..]).is_some());
+        assert!(Layer::new(0, 0, 2, 1, &[0u8; 7][..]).is_none());
+    }
+
+    #[test]
+    fn an_owned_copy_has_the_same_marks() {
+        let bytes = [1u8, 2, 3, 4];
+        let marks = Marks {
+            layer: Some(layer(1, 2, 1, 1, &bytes)),
+            blurs: vec![px(0, 0, 4, 4)],
+        };
+        let owned = marks.to_owned();
+        assert_eq!(owned, marks);
+        assert!(matches!(
+            owned.layer.unwrap().pixels.into_raw(),
+            Cow::Owned(_)
+        ));
+    }
+
+    #[test]
+    fn at_a_larger_size_blurs_at_1x_upscales_then_draws_the_layer_sharp() {
+        let white = [255u8; 4].repeat(4);
+        let marks = Marks {
+            layer: Some(layer(0, 0, 2, 2, &white)),
+            blurs: vec![px(0, 0, 2, 2)],
+        };
+        let out = apply(gradient(2, 2), &marks, 2).unwrap();
+        assert_eq!(out.dimensions(), (4, 4));
+        // The 2x2 dot covers the top-left 2x2 of the output, crisp.
+        for (x, y) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+            assert_eq!(*out.get_pixel(x, y), Rgba([255; 4]));
+        }
+        // The rest is the blur's one flat block, upscaled: still flat.
+        let mut blurred = gradient(2, 2);
+        pixelate(&mut blurred, px(0, 0, 2, 2));
+        for (x, y, p) in out.enumerate_pixels() {
+            if x >= 2 || y >= 2 {
+                assert_eq!(p, blurred.get_pixel(0, 0), "({x}, {y})");
+            }
+        }
+        // A size past the cap is refused.
+        assert!(apply(gradient(3000, 1), &Marks::default(), 3).is_err());
     }
 
     /// Composing a full Retina screen's layer: run with `--ignored --nocapture` for timing.
@@ -369,7 +470,7 @@ mod tests {
             blurs: vec![px(0, 0, 1000, 600)],
         };
         let started = std::time::Instant::now();
-        apply(&mut image, &marks);
+        put(&mut image, &marks);
         println!("composed {w}x{h} in {:?}", started.elapsed());
     }
 }

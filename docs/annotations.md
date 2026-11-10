@@ -185,13 +185,16 @@ there may be at most 256 blurs, each clipped to the selection) and crops the fra
 1. pixelates each rect in `blurs`, destructively, in blocks of at least 16 px (larger for large
    rects; a shorter remainder joins the block before it). Each block's color matches none of the
    pixels it covers, so every pixel under a blur changes, even in a flat area (issue #16);
-2. for a larger size, upscales the crop with Lanczos3 (`output/upscale.rs`, `fast_image_resize`)
-   on a worker. Whole factors only, and at most 8192 px per side: the menu disables a size past
-   it, and Rust refuses one. The PNG keeps the frame's density, so the larger image shows larger;
+2. for a larger size, upscales the crop with Lanczos3 (`output/upscale.rs`, `fast_image_resize`),
+   then fills each blur's blocks again from the 1× image, nearest, so they stay as crisp as the
+   preview. Whole factors only, and at most 8192 px per side: the menu disables a size past it,
+   and Rust refuses one, or a layer past the output. The PNG keeps the frame's density, so the
+   larger image shows larger. A copy whose capture ended (Esc) while it was upscaled is dropped;
 3. draws the layer at (`x`, `y`), straight-alpha source-over with rounding (an opaque crop stays
    opaque), clipped to the crop.
 
-Then the PNG is encoded and copied or saved. Composing a full Retina screen (3024×1964) with a
+All of `compose::apply` runs on a worker with the clipboard write or the encode (for Save,
+while the dialog is open), with an owned copy of the layer. Then the PNG is copied or saved. Composing a full Retina screen (3024×1964) with a
 layer over all of it and a 1000×600 blur takes about 24 ms in a release build.
 `cargo run --release --example upscale` times a 1000×700 selection at 2×, 3× and 4×.
 

@@ -59,9 +59,16 @@
   const ICON = 'flex size-9 items-center justify-center rounded-lg [&_svg]:size-[18px]'
   const LABELED =
     'flex h-9 items-center gap-1.5 rounded-lg px-3 text-[13px] font-medium [&_svg]:size-4'
-  /** The caret half of a split button. */
+  type Verb = 'Save' | 'Copy'
+  /** The caret half of a split button, and its colours per button. */
   const CARET =
     'flex h-9 w-[26px] items-center justify-center rounded-l-none rounded-r-lg border-l [&_svg]:size-3.5'
+  const CARET_COLORS: Record<Verb, string> = {
+    Save: 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:bg-zinc-700 aria-expanded:bg-zinc-700',
+    Copy: 'border-zinc-300 bg-zinc-50 text-zinc-600 hover:bg-zinc-200 aria-expanded:bg-zinc-200',
+  }
+  /** The main part's right corners are the caret's, when there is one. */
+  const split = $derived(sizes.length > 0 ? 'rounded-r-none' : '')
   const OPTIONS: { key: Option; label: string }[] = [
     { key: 'rememberRegion', label: 'Remember region' },
     { key: 'magnifier', label: 'Magnifier' },
@@ -98,21 +105,22 @@
   <button
     {...props}
     type="button"
-    class="{LABELED} rounded-r-none bg-zinc-800 text-zinc-50 hover:bg-zinc-700"
+    class="{LABELED} {split} bg-zinc-800 text-zinc-50 hover:bg-zinc-700"
     onclick={() => actions.save()}
   >
     <SaveIcon />Save
   </button>
 {/snippet}
 
-{#snippet saveCaret(props: Record<string, unknown>)}
+<!-- The caret half of a split button, coloured like its main part. -->
+{#snippet caret(props: Record<string, unknown>, verb: Verb)}
   <DropdownMenu.Trigger {...props}>
     {#snippet child({ props: inner })}
       <button
         {...inner}
         type="button"
-        class="{CARET} border-zinc-700 bg-zinc-800 text-zinc-400 hover:bg-zinc-700 aria-expanded:bg-zinc-700"
-        aria-label="Save at a larger size"
+        class="{CARET} {CARET_COLORS[verb]}"
+        aria-label="{verb} at a larger size"
       >
         <CaretIcon />
       </button>
@@ -120,24 +128,17 @@
   </DropdownMenu.Trigger>
 {/snippet}
 
+{#snippet saveCaret(props: Record<string, unknown>)}
+  {@render caret(props, 'Save')}
+{/snippet}
+
 {#snippet copyCaret(props: Record<string, unknown>)}
-  <DropdownMenu.Trigger {...props}>
-    {#snippet child({ props: inner })}
-      <button
-        {...inner}
-        type="button"
-        class="{CARET} border-zinc-300 bg-zinc-50 text-zinc-600 hover:bg-zinc-200 aria-expanded:bg-zinc-200"
-        aria-label="Copy at a larger size"
-      >
-        <CaretIcon />
-      </button>
-    {/snippet}
-  </DropdownMenu.Trigger>
+  {@render caret(props, 'Copy')}
 {/snippet}
 
 <!-- The larger sizes under a caret: whole factors, each with the size it gives; one past the
      cap is disabled. -->
-{#snippet larger(verb: string, anchor: HTMLElement | null, pick: (factor: Factor) => void)}
+{#snippet larger(verb: Verb, anchor: HTMLElement | null, pick: (factor: Factor) => void)}
   <DropdownMenu.Content
     customAnchor={anchor}
     side="bottom"
@@ -222,25 +223,29 @@
   {/if}
   <div class="flex" bind:this={saveGroup}>
     <Tip label="Save" keys="{mod}S" side="top" sideOffset={10} trigger={save} />
-    <DropdownMenu.Root bind:open={saveOpen}>
-      <Tip label="Save larger" side="top" sideOffset={10} trigger={saveCaret} />
-      {@render larger('Save', saveGroup, (factor) => actions.save(factor))}
-    </DropdownMenu.Root>
+    {#if split}
+      <DropdownMenu.Root bind:open={saveOpen}>
+        <Tip label="Save larger" side="top" sideOffset={10} trigger={saveCaret} />
+        {@render larger('Save', saveGroup, (factor) => actions.save(factor))}
+      </DropdownMenu.Root>
+    {/if}
   </div>
   <div class="flex" bind:this={copyGroup}>
     <button
       type="button"
-      class="{LABELED} gap-2 rounded-r-none bg-zinc-50 font-semibold text-zinc-950 hover:bg-white"
+      class="{LABELED} gap-2 {split} bg-zinc-50 font-semibold text-zinc-950 hover:bg-white"
       aria-label="Copy"
       onclick={() => actions.copy()}
     >
       <CopyIcon />Copy
       <kbd class="{KEY} py-px">{mod}C</kbd>
     </button>
-    <DropdownMenu.Root bind:open={copyOpen}>
-      <Tip label="Copy larger" side="top" sideOffset={10} trigger={copyCaret} />
-      {@render larger('Copy', copyGroup, (factor) => actions.copy(factor))}
-    </DropdownMenu.Root>
+    {#if split}
+      <DropdownMenu.Root bind:open={copyOpen}>
+        <Tip label="Copy larger" side="top" sideOffset={10} trigger={copyCaret} />
+        {@render larger('Copy', copyGroup, (factor) => actions.copy(factor))}
+      </DropdownMenu.Root>
+    {/if}
   </div>
   <Tip label="Cancel" keys="Esc" side="top" sideOffset={10} trigger={cancel} />
 </div>

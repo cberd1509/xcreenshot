@@ -1,10 +1,10 @@
 //! Times Copy and Save at 2×, 3× and 4× on a 1000x700 selection made from a real screenshot,
 //! `cargo run --release --example upscale`. No screen needed.
 //!
-//! Each step is what `overlay/export.rs` does: crop and blur at 1×, upscale (Lanczos3), draw the
-//! layer the page rendered at that size, then encode the PNG.
+//! Each step is what `overlay/export.rs` does: crop, then `compose::apply` (blur at 1×, upscale
+//! with Lanczos3, draw the layer the page rendered at that size), then encode the PNG.
 
-use image::{ImageBuffer, Rgba, RgbaImage, imageops};
+use image::{Rgba, RgbaImage, imageops};
 use std::time::{Duration, Instant};
 use xcreenshot_lib::capture::{self, CaptureError, Density, PixelRect};
 use xcreenshot_lib::output::{compose, upscale};
@@ -48,28 +48,27 @@ fn main() -> Result<(), CaptureError> {
                 layer.put_pixel(x, y, Rgba([239, 68, 68, 255]));
             }
         }
-        let mut steps: [Vec<Duration>; 4] = Default::default();
+        let mut steps: [Vec<Duration>; 3] = Default::default();
         let mut size = 0;
         for _ in 0..RUNS {
             let t = Instant::now();
-            let mut image = capture::crop_pixels(&frame, rect)?;
-            compose::blur(&mut image, &[blur]);
+            let image = capture::crop_pixels(&frame, rect)?;
             steps[0].push(t.elapsed());
             let t = Instant::now();
-            let mut image = upscale::upscale(&image, factor)?;
+            let marks = compose::Marks {
+                layer: compose::Layer::new(0, 0, ow, oh, layer.as_raw().as_slice()),
+                blurs: vec![blur],
+            };
+            let image = compose::apply(image, &marks, factor)?;
             steps[1].push(t.elapsed());
             let t = Instant::now();
-            let pixels = ImageBuffer::from_raw(ow, oh, layer.as_raw().as_slice()).expect("size");
-            compose::composite(&mut image, &compose::Layer { x: 0, y: 0, pixels });
-            steps[2].push(t.elapsed());
-            let t = Instant::now();
             let png = capture::encode_png(&image, density)?;
-            steps[3].push(t.elapsed());
+            steps[2].push(t.elapsed());
             size = png.len();
         }
-        let [crop, up, draw, encode] = steps.map(median);
+        let [crop, annotate, encode] = steps.map(median);
         println!(
-            "  {factor}x -> {ow}x{oh}: crop + blur {crop:.1} ms, upscale {up:.1} ms, layer {draw:.1} ms, \
+            "  {factor}x -> {ow}x{oh}: crop {crop:.1} ms, blur + upscale + layer {annotate:.1} ms, \
              PNG {encode:.1} ms ({:.1} MB)",
             size as f64 / 1e6
         );

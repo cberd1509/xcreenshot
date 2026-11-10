@@ -36,7 +36,7 @@ use crate::region::{self, Region};
 use crate::share::{self, OnDone, Opened, ShareError, ShareOutcome};
 use crate::toast::{self, Toast};
 use chrono::NaiveDateTime;
-use image::{ImageBuffer, RgbaImage};
+use image::RgbaImage;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -140,13 +140,12 @@ pub(crate) fn parse<'a>(
                 at.width,
                 at.height
             );
-            let pixels =
-                ImageBuffer::from_raw(at.width, at.height, bytes).ok_or_else(|| invalid(size))?;
-            Ok::<_, CaptureError>(Layer {
-                x: at.x,
-                y: at.y,
-                pixels,
-            })
+            // In px of the output: the selection times the factor (the page rendered it so).
+            let (ow, oh) = (w * head.factor, h * head.factor);
+            if at.x.saturating_add(at.width) > ow || at.y.saturating_add(at.height) > oh {
+                return Err(invalid(format!("a {size} past the {ow}x{oh} output")));
+            }
+            Layer::new(at.x, at.y, at.width, at.height, bytes).ok_or_else(|| invalid(size))
         })
         .transpose()?;
     Ok(Output {
@@ -205,18 +204,26 @@ async fn copy_with<R: Runtime>(
     else {
         return Ok(());
     };
-    // Cropped and annotated here: the annotations are read in place from the request.
-    let image = annotated(&frame, out).await?;
-    drop(frame);
+    let (image, marks) = cropped(frame, out)?;
+    let factor = out.factor;
+    let app = window.app_handle().clone();
     let copied = spawn_blocking(move || {
+        let image = compose::apply(image, &marks, factor)?;
+        // A larger size takes a while: if Esc ended the capture meanwhile, the clipboard stays.
+        if factor > 1 && app.state::<Overlay>().phase().saves(session).is_none() {
+            return Ok(None);
+        }
         clipboard(&image, density)?;
-        Ok(image.dimensions())
+        Ok(Some(image.dimensions()))
     })
     .await
     .unwrap_or_else(|e| Err(CaptureError::Clipboard(e.to_string())));
-    let (width, height) = copied.inspect_err(|e| log::warn!("copy failed: {e}"))?;
+    let Some((width, height)) = copied.inspect_err(|e| log::warn!("copy failed: {e}"))? else {
+        log::info!("copy dropped: the capture ended while it was upscaled");
+        return Ok(());
+    };
     let ms = started.elapsed().as_secs_f64() * 1000.0;
-    log::info!("copied {width}x{height} px in {ms:.0} ms");
+    log::info!("copied {width}x{height} px ({factor}x) in {ms:.0} ms");
     if let Some(region) = region {
         remember(region);
     }
@@ -275,27 +282,26 @@ fn selected_frame<R: Runtime>(
     })
 }
 
-/// The selection cropped from the frame, with its annotations on it, at the request's factor.
-///
-/// Blurs pixelate the crop first; a larger size is then upscaled on a worker (Lanczos3), and the
-/// layer, which the page rendered at that size, is drawn over it, so strokes and text stay sharp.
-async fn annotated(frame: &RgbaImage, out: &Output<'_>) -> Result<RgbaImage, CaptureError> {
-    let mut image = capture::crop_pixels(frame, out.rect)?;
-    compose::blur(&mut image, &out.marks.blurs);
-    let factor = out.factor;
-    if factor > 1 {
-        let started = Instant::now();
-        image = spawn_blocking(move || upscale::upscale(&image, factor))
-            .await
-            .unwrap_or_else(|e| Err(CaptureError::Encode(e.to_string())))?;
-        let ms = started.elapsed().as_secs_f64() * 1000.0;
-        let (w, h) = image.dimensions();
-        log::info!("upscaled to {w}x{h} px ({factor}x) in {ms:.0} ms");
-    }
-    if let Some(layer) = &out.marks.layer {
-        compose::composite(&mut image, layer);
-    }
-    Ok(image)
+/// The selection cropped from the frame, and its annotations, owned: a worker puts them
+/// together with `compose::apply` at the request's factor, off the async runtime. The frame is
+/// dropped here, so it is not kept alive meanwhile. An empty selection is an error.
+fn cropped(
+    frame: Arc<RgbaImage>,
+    out: &Output,
+) -> Result<(RgbaImage, Marks<'static>), CaptureError> {
+    let image = capture::crop_pixels(&frame, out.rect)?;
+    Ok((image, out.marks.to_owned()))
+}
+
+/// The annotated image as a PNG, and its size (`compose::apply`, then `encode_png`).
+fn annotated_png(
+    image: RgbaImage,
+    marks: &Marks,
+    factor: u32,
+    density: Density,
+) -> Result<(Vec<u8>, (u32, u32)), CaptureError> {
+    let image = compose::apply(image, marks, factor)?;
+    capture::encode_png(&image, density).map(|png| (png, image.dimensions()))
 }
 
 /// Asks where to save the selection, with its annotations, writes it and closes the overlay.
@@ -339,8 +345,7 @@ async fn save_with<R: Runtime>(
     };
     // Checked before anything hides, so an empty selection just stays.
     let started = Instant::now();
-    let image = annotated(&frame, out).await?;
-    drop(frame);
+    let (image, marks) = cropped(frame, out)?;
     let mut steps = Steps::default();
     steps.done("crop", started);
     if !state.phase().begin_save(session) {
@@ -355,12 +360,13 @@ async fn save_with<R: Runtime>(
             log::warn!("could not release Esc for the Save dialog");
         }
     });
-    // Encoded while the dialog is open, so a picked path waits only for the write. A cancel
-    // lets the encode finish and drops the PNG: one wasted encode, on a worker.
-    let size = image.dimensions();
+    // Annotated (and upscaled) and encoded while the dialog is open, so a picked path waits only
+    // for the write. A cancel lets the work finish and drops the PNG: wasted, but on a worker.
+    let factor = out.factor;
     let encoding = spawn_blocking(move || {
         let started = Instant::now();
-        capture::encode_png(&image, density).map(|png| (png, started.elapsed()))
+        annotated_png(image, &marks, factor, density)
+            .map(|(png, size)| (png, size, started.elapsed()))
     });
     let saver = Arc::new(saver);
     let asker = Arc::clone(&saver);
@@ -406,11 +412,9 @@ async fn save_with<R: Runtime>(
             toast::show(&anchor, saved);
         }
     });
-    written.inspect_err(|e| log::error!("{e} ({steps})"))?;
+    let (width, height) = written.inspect_err(|e| log::error!("{e} ({steps})"))?;
     log::info!(
-        "saved {}x{} px to {} ({steps})",
-        size.0,
-        size.1,
+        "saved {width}x{height} px ({factor}x) to {} ({steps})",
         path.display()
     );
     Ok(())
@@ -444,21 +448,24 @@ fn choose(
     }
 }
 
-/// Waits for the PNG being encoded on a worker, then writes it and remembers its folder on
-/// workers, adding each step reached to `steps`, a failed one too.
+/// A PNG being made on a worker: the PNG, the image's size and how long it took.
+type Encoding = JoinHandle<Result<(Vec<u8>, (u32, u32), Duration), CaptureError>>;
+
+/// Waits for the PNG being made on a worker, then writes it and remembers its folder on workers,
+/// adding each step reached to `steps`, a failed one too. Returns the image's size.
 async fn write_when_encoded(
-    encoding: JoinHandle<Result<(Vec<u8>, Duration), CaptureError>>,
+    encoding: Encoding,
     path: PathBuf,
     saver: Arc<impl Saver>,
     steps: &mut Steps,
-) -> Result<(), CaptureError> {
+) -> Result<(u32, u32), CaptureError> {
     let started = Instant::now();
     let encoded = encoding
         .await
         .unwrap_or_else(|e| Err(CaptureError::Encode(e.to_string())));
     let waited = steps.done("wait for the PNG", started);
-    let (png, encode) = encoded?;
-    steps.add("encode", encode);
+    let (png, size, encode) = encoded?;
+    steps.add("annotate and encode", encode);
     let target = path.clone();
     let wrote = spawn_blocking(move || {
         output::write_file(&target, &png)
@@ -472,7 +479,7 @@ async fn write_when_encoded(
         let _ = spawn_blocking(move || saver.remember_dir(&dir)).await;
         steps.done("remember folder", written);
     }
-    Ok(())
+    Ok(size)
 }
 
 /// The steps of a save so far, in order, with how long each took, for the log.
@@ -556,16 +563,15 @@ async fn share_with<R: Runtime>(
         return Ok(());
     };
     let started = Instant::now();
-    let image = annotated(&frame, out).await?;
-    drop(frame);
+    let (image, marks) = cropped(frame, out)?;
     let mut steps = Steps::default();
-    let cropped = steps.done("crop", started);
-    let size = image.dimensions();
+    let crop = steps.done("crop", started);
     // The same PNG a save writes: the services read it from the temp file.
-    let png = spawn_blocking(move || capture::encode_png(&image, density))
+    let factor = out.factor;
+    let (png, size) = spawn_blocking(move || annotated_png(image, &marks, factor, density))
         .await
         .unwrap_or_else(|e| Err(CaptureError::Encode(e.to_string())))?;
-    steps.done("encode", cropped);
+    steps.done("annotate and encode", crop);
     if !state.phase().begin_share(session) {
         return Ok(());
     }
@@ -1088,20 +1094,14 @@ mod tests {
     /// A white dot at (0, 0) of the crop, and the rest of a 2x2 crop blurred.
     fn marks() -> Marks<'static> {
         Marks {
-            layer: Some(Layer {
-                x: 0,
-                y: 0,
-                pixels: ImageBuffer::from_raw(1, 1, &WHITE[..]).unwrap(),
-            }),
+            layer: Layer::new(0, 0, 1, 1, &WHITE[..]),
             blurs: vec![px(0, 0, 2, 2)],
         }
     }
 
     /// `expected(1, 0, 2, 2)` with `marks()` on it.
     fn marked() -> RgbaImage {
-        let mut image = expected(1, 0, 2, 2);
-        compose::apply(&mut image, &marks());
-        image
+        compose::apply(expected(1, 0, 2, 2), &marks(), 1).unwrap()
     }
 
     #[test]
@@ -1170,15 +1170,10 @@ mod tests {
         let w = window(h, 1);
         // A white 2x2 dot at (0, 0) of the crop at 2x: the layer is already at that size.
         let white = WHITE.repeat(4);
-        let dot = || Layer {
-            x: 0,
-            y: 0,
-            pixels: ImageBuffer::from_raw(2, 2, &white[..]).unwrap(),
-        };
         let out = Output {
             factor: 2,
             marks: Marks {
-                layer: Some(dot()),
+                layer: Layer::new(0, 0, 2, 2, &white[..]),
                 blurs: vec![px(0, 0, 2, 2)],
             },
             ..plain(session, px(1, 0, 2, 2))
@@ -1186,15 +1181,11 @@ mod tests {
         let copying = copy_with(&w, &state, &out, c, forget());
         assert_eq!(tauri::async_runtime::block_on(copying), Ok(()));
         let copied = images.lock().unwrap()[0].clone();
-        // The crop pixelated at 1x (one flat block), upscaled, then the dot drawn sharp.
-        let mut blurred = expected(1, 0, 2, 2);
-        compose::blur(&mut blurred, &[px(0, 0, 2, 2)]);
-        let mut want = upscale::upscale(&blurred, 2).unwrap();
-        compose::composite(&mut want, &dot());
+        // The crop blurred at 1x, upscaled, then the dot drawn sharp (see `compose::apply`).
+        let want = compose::apply(expected(1, 0, 2, 2), &out.marks, 2).unwrap();
         assert_eq!(copied.dimensions(), (4, 4));
         assert_eq!(copied, want);
         assert_eq!(*copied.get_pixel(1, 1), image::Rgba(WHITE));
-        assert_eq!(copied.get_pixel(3, 3), blurred.get_pixel(1, 1));
         wait_until("the overlay to close", || is_idle(h));
         let copied = Toast::Copied {
             width: 4,
@@ -1216,7 +1207,7 @@ mod tests {
             ..plain(session, px(1, 0, 2, 2))
         };
         assert_eq!(save_out(h, &out, &saver, dir.path()), Ok(()));
-        let want = upscale::upscale(&expected(1, 0, 2, 2), 3).unwrap();
+        let want = compose::apply(expected(1, 0, 2, 2), &Marks::default(), 3).unwrap();
         // The density stays the frame's: the larger image shows larger.
         assert_clean_png(&fs::read(&path).unwrap(), &want, RETINA);
         wait_until("the overlay to close", || is_idle(h));
@@ -1802,6 +1793,22 @@ mod tests {
         for (w, factor) in [(2049, 4), (3, 5), (3, 0)] {
             let e = parse(&body, &at(w, factor)).unwrap_err();
             assert!(matches!(e, CaptureError::Invalid(_)), "{e}");
+        }
+    }
+
+    #[test]
+    fn refuses_a_layer_past_the_output() {
+        // A 2x1 selection at 2x is 4x2: a 1x1 layer fits at (3, 1), not at (4, 0) or (0, 2).
+        let body = InvokeBody::Raw(vec![0; 4]);
+        let at = |x: u32, y: u32| {
+            headers(&format!(
+                r#"{{"session":1,"rect":{{"x":0,"y":0,"width":2,"height":1}},"factor":2,"layer":{{"x":{x},"y":{y},"width":1,"height":1}}}}"#
+            ))
+        };
+        assert!(parse(&body, &at(3, 1)).is_ok());
+        for (x, y) in [(4, 0), (0, 2), (u32::MAX, 0)] {
+            let e = parse(&body, &at(x, y)).unwrap_err();
+            assert!(e.to_string().contains("past the 4x2 output"), "{e}");
         }
     }
 
