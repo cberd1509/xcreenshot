@@ -68,7 +68,7 @@ mod tests {
     fn reads_this_process_on_macos() {
         match now() {
             Some(u) => assert!(u.resident > 0 && u.footprint > 0, "{u:?}"),
-            None => assert!(!cfg!(target_os = "macos")),
+            None => assert_ne!(std::env::consts::OS, "macos"),
         }
     }
 }
