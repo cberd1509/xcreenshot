@@ -888,7 +888,8 @@ mod tests {
         let layer = || Layer {
             x: 0,
             y: 0,
-            pixels: ImageBuffer::from_raw(1, 1, &pixels[..]).unwrap(),
+            pixels: image::ImageBuffer::from_raw(1, 1, std::borrow::Cow::Borrowed(&pixels[..]))
+                .unwrap(),
         };
         let marks = |layer, blurs| Marks { layer, blurs };
         assert_eq!(copy_output(&marks(None, vec![]), 0), tip::Output::PlainCopy);
